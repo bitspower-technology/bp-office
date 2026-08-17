@@ -1,0 +1,1892 @@
+import React, { useEffect, useRef, useState, useCallback } from 'react'
+import { AgentLoop, composeSkills, type AgentImage, type ToolDisplay } from '@genoffice/agent-core'
+import type { RenderSlide } from '@genoffice/pptx-render'
+import type { AiSettings, AttachmentAddResult, AttachmentMeta } from '../../shared/ipc'
+import { ATTACHMENT_IMAGE_EXTS } from '../../shared/ipc'
+import { createSlidesSkill, type DeckAccess, type ClarifyQuestion } from './slides-skill'
+import { createFilesSkill } from './files-skill'
+import { createElectronTransport } from './transport'
+import { renderSlidesToPngBase64 } from '../export-render'
+import { useI18n, t as tGlobal, aiLangDirective, type TFunc } from '../i18n/locale'
+import { Markdown } from '@genoffice/ui'
+import { BPOfficeMark } from '../components/icons'
+import sendEnterOn from '../assets/send-enter-on.png'
+import sendEnterOff from '../assets/send-enter-off.png'
+import sendStop from '../assets/send-stop.png'
+import attachIcon from '../assets/attach-icon.png'
+import filePdfIcon from '../assets/file-pdf.png'
+import fileWordIcon from '../assets/file-word.png'
+import fileExcelIcon from '../assets/file-excel.png'
+import filePptIcon from '../assets/file-ppt.png'
+import fileImageIcon from '../assets/file-image.png'
+import fileVideoIcon from '../assets/file-video.png'
+import fileVoiceIcon from '../assets/file-voice.png'
+import fileDocumentIcon from '../assets/file-document.png'
+import fileGeneralIcon from '../assets/file-general.png'
+import { IconNewChat, IconSidebarCollapseLeft } from '../components/icons'
+
+interface ToolActivity {
+  name: string
+  summary: string
+  /** still executing: rendered as a spinner chip, replaced in place when the tool finishes */
+  running?: boolean
+  isError?: boolean
+  /** Full tool output (truncated to 2000 chars) */
+  output?: string
+  /**
+   * Side-channel display data: structured UI data filled by tools, not in LLM context.
+   * Takes priority over name-based inference.
+   */
+  display?: ToolDisplay
+}
+
+/** Max stored chars of tool output (UI-side truncation, doesn't affect what the LLM receives) */
+const TOOL_OUTPUT_MAX_CHARS = 2000
+
+/** Clipboard bitmap MIME → attachment extension (matches ATTACHMENT_IMAGE_EXTS) */
+const PASTE_MIME_EXT: Record<string, string> = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/gif': 'gif',
+  'image/webp': 'webp',
+}
+
+/** File-type icons for attachment cards; extensions the
+ *  attachment allowlist doesn't accept yet are mapped ahead so they light up when added */
+const ATTACHMENT_CARD_ICON_GROUPS: [icon: string, exts: string[]][] = [
+  [fileWordIcon, ['doc', 'docx']],
+  [fileExcelIcon, ['xls', 'xlsx', 'csv', 'tsv']],
+  [filePptIcon, ['ppt', 'pptx']],
+  [filePdfIcon, ['pdf']],
+  [fileImageIcon, ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg', 'tiff', 'heic']],
+  [fileVideoIcon, ['mp4', 'mov', 'avi', 'mkv', 'webm', 'm4v']],
+  [fileVoiceIcon, ['mp3', 'wav', 'm4a', 'aac', 'flac', 'ogg', 'opus']],
+  [
+    fileDocumentIcon,
+    [
+      'txt',
+      'md',
+      'markdown',
+      'rtf',
+      'log',
+      'json',
+      'yaml',
+      'yml',
+      'xml',
+      'html',
+      'htm',
+      'js',
+      'ts',
+      'tsx',
+      'jsx',
+      'py',
+      'java',
+      'c',
+      'h',
+      'cpp',
+      'go',
+      'rs',
+      'rb',
+      'sh',
+      'sql',
+      'css',
+    ],
+  ],
+]
+
+const ATTACHMENT_CARD_ICONS: Record<string, string> = Object.fromEntries(
+  ATTACHMENT_CARD_ICON_GROUPS.flatMap(([icon, exts]) => exts.map((ext) => [ext, icon])),
+)
+
+function AttachmentCardIcon({ ext }: { ext: string }) {
+  return <img src={ATTACHMENT_CARD_ICONS[ext] ?? fileGeneralIcon} alt="" aria-hidden />
+}
+
+/** Card name slot width: 190 card - 2 border - 8/14 padding - 40 icon - 10 gap */
+const CARD_NAME_MAX_WIDTH = 116
+let cardNameCtx: CanvasRenderingContext2D | null = null
+
+/** Ellipsize like the design: cut at the limit, strip trailing -_./spaces so
+ *  punctuation never sits against the …; CSS text-overflow stays as fallback */
+function truncateCardName(name: string): string {
+  cardNameCtx ??= document.createElement('canvas').getContext('2d')
+  if (!cardNameCtx) return name
+  // must match the stack the card name actually renders with (body font in styles.css)
+  cardNameCtx.font =
+    "500 13px 'Segoe UI', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif"
+  if (cardNameCtx.measureText(name).width <= CARD_NAME_MAX_WIDTH) return name
+  let lo = 1
+  let hi = name.length
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1
+    if (cardNameCtx.measureText(`${name.slice(0, mid)}…`).width <= CARD_NAME_MAX_WIDTH) lo = mid
+    else hi = mid - 1
+  }
+  return `${name.slice(0, lo).replace(/[-_.\s]+$/, '')}…`
+}
+
+/** Read-only echo of the attachments a user message consumed from the composer
+ *  (image previews when the file is still readable; otherwise the placeholder icon) */
+function SentAttachments({
+  atts,
+  previews,
+}: {
+  atts: AttachmentMeta[]
+  previews: Record<string, string>
+}) {
+  return (
+    <div className="ai-msg-attachments">
+      {atts.map((a) =>
+        ATTACHMENT_IMAGE_EXTS.has(a.ext) ? (
+          <span key={a.path} className="ai-attachment-thumb" title={a.name}>
+            {previews[a.path] ? (
+              <img src={previews[a.path]} alt={a.name} />
+            ) : (
+              <span className="ai-attachment-thumb-pending" aria-hidden>
+                <img src={fileImageIcon} alt="" />
+              </span>
+            )}
+          </span>
+        ) : (
+          <span key={a.path} className="ai-attachment-card" title={a.name}>
+            <span className="ai-attachment-card-icon">
+              <AttachmentCardIcon ext={a.ext} />
+            </span>
+            <span className="ai-attachment-card-meta">
+              <span className="ai-attachment-card-name">{truncateCardName(a.name)}</span>
+              <span className="ai-attachment-card-size">{formatAttachmentSize(a.sizeBytes)}</span>
+            </span>
+          </span>
+        ),
+      )}
+    </div>
+  )
+}
+
+function formatAttachmentSize(bytes: number): string {
+  return bytes >= 1024 * 1024
+    ? `${(bytes / (1024 * 1024)).toFixed(2)} MB`
+    : `${(bytes / 1024).toFixed(2)} KB`
+}
+
+/** Cap on tool args/output persisted to the transcript (the store layer has another 16k truncation fallback) */
+const PERSIST_TOOL_FIELD_MAX = 16_000
+
+/** Tool args → JSON string (truncated; returns undefined on serialization failure, doesn't block persistence) */
+function safeJsonInput(input: unknown): string | undefined {
+  try {
+    const s = JSON.stringify(input)
+    return s && s !== '{}' ? s.slice(0, PERSIST_TOOL_FIELD_MAX) : undefined
+  } catch {
+    return undefined
+  }
+}
+
+interface ChatEntry {
+  role: 'user' | 'assistant'
+  text: string
+  error?: string
+  streaming?: boolean
+  /** the run failed and this user message was rolled back out of the model context */
+  undelivered?: boolean
+  tools?: ToolActivity[]
+  /** Main-process rollback point for this turn's deck edits — rendered as an inline roll-back action */
+  snapshotId?: number
+  /** attachments consumed from the composer by this user message (read-only echo chips) */
+  attachments?: AttachmentMeta[]
+}
+
+/** Empty deck → generation starters; deck with content → polish starters */
+const starterPrompts = (t: TFunc, deckEmpty: boolean): string[] =>
+  deckEmpty
+    ? [t('aiStarterGenReport'), t('aiStarterGenLaunch'), t('aiStarterGenTraining')]
+    : [t('aiStarterPolishTitle'), t('aiStarterTighten'), t('aiStarterProofread')]
+
+interface AiPanelProps {
+  slides: RenderSlide[]
+  current: number
+  selectedIds: string[]
+  /** no slide carries real content yet — the empty-state copy offers generation instead of polish */
+  deckEmpty?: boolean
+  /** Decoded image cache from App (SlideThumb needs it) — powers AI-vision slide screenshots */
+  images: Map<string, HTMLImageElement>
+  applySlide: (slideIndex: number, updated: RenderSlide) => void
+  applyDeck: (slides: RenderSlide[], goTo?: number) => void
+  fitWidthPx: number
+  settings: AiSettings
+  /** Preset instruction pushed from the ribbon/start screen; sent immediately when autoRun. When displayText exists the chat bubble shows only it while the full text still goes to the model.
+      attachments are local files added in the start-screen input, taking effect with the first message.
+      slideShot attaches a rendering of the current slide so the model sees what it's editing (AI Beautify) */
+  preset?: {
+    text: string
+    nonce: number
+    autoRun?: boolean
+    displayText?: string
+    attachments?: AttachmentMeta[]
+    slideShot?: boolean
+  } | null
+  /** false shows only the collapsed rail; the component stays mounted so panel state survives */
+  open?: boolean
+  /** expand from the collapsed rail */
+  onExpand?: () => void
+  onCollapse?: () => void
+  /** Visible rollback action; uses the same main-process history as Cmd/Ctrl+Z. */
+  onUndo?: () => void
+  /** Absolute path of the currently open file (for chat history persistence) */
+  currentFilePath?: string | null
+}
+
+/** Some locales already end the label with an ellipsis — normalize to exactly one. */
+function withEllipsis(label: string): string {
+  return `${label.replace(/(?:…|\.{3})+$/u, '')}…`
+}
+
+/** Two-phase waiting→thinking indicator (mirrors AiTypingIndicator in packages/ui):
+ *  grow/shrink blue dots first, then after ~1.2s only the shimmering "Thinking…" text — never both at once. */
+function AiTypingIndicator({ label }: { readonly label: string }) {
+  const [elapsed, setElapsed] = useState(0)
+  const [showLabel, setShowLabel] = useState(false)
+
+  useEffect(() => {
+    const phase = setTimeout(() => setShowLabel(true), 1200)
+    const timer = setInterval(() => setElapsed((s) => s + 1), 1000)
+    return () => {
+      clearTimeout(phase)
+      clearInterval(timer)
+    }
+  }, [])
+
+  return (
+    <span className="ai-typing" role="status" aria-label={label}>
+      {showLabel ? (
+        <span className="ai-typing-label">
+          {withEllipsis(label)}
+          {elapsed >= 3 && (
+            <span className="ai-typing-elapsed" aria-hidden>{` · ${elapsed}s`}</span>
+          )}
+        </span>
+      ) : (
+        <span className="ai-typing-dots" aria-hidden>
+          <span className="ai-typing-dot-slot">
+            <span className="ai-typing-dot-grow" />
+          </span>
+          <span className="ai-typing-dot-slot">
+            <span className="ai-typing-dot-shrink" />
+          </span>
+        </span>
+      )}
+    </span>
+  )
+}
+
+/** Resizable panel width: persisted; min/max match the Excel panel */
+const PANEL_WIDTH_KEY = 'slides-ai-panel-width'
+const PANEL_WIDTH_DEFAULT = 360
+const PANEL_WIDTH_MIN = 280
+
+function clampPanelWidth(w: number): number {
+  return Math.min(Math.max(w, PANEL_WIDTH_MIN), Math.min(720, Math.round(window.innerWidth * 0.6)))
+}
+
+function loadPanelWidth(): number {
+  const saved = Number(localStorage.getItem(PANEL_WIDTH_KEY))
+  return Number.isFinite(saved) && saved > 0 ? clampPanelWidth(saved) : PANEL_WIDTH_DEFAULT
+}
+
+export function AiPanel({
+  slides,
+  current,
+  selectedIds,
+  deckEmpty,
+  images,
+  applySlide,
+  applyDeck,
+  fitWidthPx,
+  settings,
+  preset,
+  open = true,
+  onExpand,
+  onCollapse,
+  currentFilePath,
+}: AiPanelProps) {
+  const { t } = useI18n()
+  const [input, setInput] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [chat, setChat] = useState<ChatEntry[]>([])
+  /** Past conversation restored from JSONL (read-only transcript, not fed to the model) */
+  const [historicChat, setHistoricChat] = useState<ChatEntry[]>([])
+  const [copiedIdx, setCopiedIdx] = useState<number | null>(null)
+  const [attachments, setAttachments] = useState<AttachmentMeta[]>([])
+  const [attachNotice, setAttachNotice] = useState<string | null>(null)
+  /** Data-URL previews for image attachments, keyed by path. */
+  const [attachmentPreviews, setAttachmentPreviews] = useState<Record<string, string>>({})
+  /** image paths with a read already issued — one readAttachmentImage per attach, even while pending */
+  const previewRequestedRef = useRef(new Set<string>())
+  /** Attachments consumed by earlier sends this session: sending clears the composer, but the
+      files skill must keep reading them mid-run and in follow-up turns. Deduped by path
+      against the live composer list. */
+  const sentAttachmentsRef = useRef<AttachmentMeta[]>([])
+  useEffect(() => {
+    // previews cover the composer plus every image echoed on a sent/history message
+    // (history chips re-read the file by its stored path; a deleted file keeps the placeholder)
+    const wanted = [
+      ...attachments,
+      ...chat.flatMap((e) => e.attachments ?? []),
+      ...historicChat.flatMap((e) => e.attachments ?? []),
+    ]
+    const alive = new Set(wanted.map((a) => a.path))
+    // drop previews (and request markers) of removed attachments, so memory is reclaimed and a re-attach re-reads
+    setAttachmentPreviews((prev) => {
+      const stale = Object.keys(prev).filter((p) => !alive.has(p))
+      if (stale.length === 0) return prev
+      const next = { ...prev }
+      for (const p of stale) delete next[p]
+      return next
+    })
+    for (const p of previewRequestedRef.current) {
+      if (!alive.has(p)) previewRequestedRef.current.delete(p)
+    }
+    for (const a of wanted) {
+      if (!ATTACHMENT_IMAGE_EXTS.has(a.ext) || previewRequestedRef.current.has(a.path)) continue
+      previewRequestedRef.current.add(a.path)
+      void window.desktop.readAttachmentImage(a.path).then((r) => {
+        if (!previewRequestedRef.current.has(a.path)) return // removed while the read was in flight
+        if (r.ok && r.base64 && r.mime) {
+          setAttachmentPreviews((prev) => ({
+            ...prev,
+            [a.path]: `data:${r.mime};base64,${r.base64}`,
+          }))
+        }
+      })
+    }
+  }, [attachments, chat, historicChat])
+  /** paints the strip's scrollbar thumb while the user scrolls it (cleared 800ms after the last event) */
+  const attachScrollFadeRef = useRef(0)
+  const onAttachmentsScroll = (e: React.UIEvent<HTMLDivElement>): void => {
+    const el = e.currentTarget
+    el.classList.add('is-scrolling')
+    window.clearTimeout(attachScrollFadeRef.current)
+    attachScrollFadeRef.current = window.setTimeout(() => el.classList.remove('is-scrolling'), 800)
+  }
+  const [dragOver, setDragOver] = useState(false)
+  const [panelWidth, setPanelWidth] = useState(loadPanelWidth)
+  const asideRef = useRef<HTMLElement>(null)
+
+  // The .ai-dock wrapper owns the animated width (Excel-parity 180ms slide);
+  // it tracks the resizable panel width through this variable
+  // `open` dep: the aside ref only exists while expanded
+  useEffect(() => {
+    const dock = asideRef.current?.closest('.ai-dock') as HTMLElement | null
+    dock?.style.setProperty('--ai-panel-width', `${panelWidth}px`)
+  }, [panelWidth, open])
+  const [resizing, setResizing] = useState(false)
+
+  // Re-clamp the persisted width when the window shrinks (max is 60% of the window)
+  useEffect(() => {
+    const onResize = () => setPanelWidth((w) => clampPanelWidth(w))
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+  /* Answered clarify receipts (answered-state card): view-only record, not chat data */
+  const [clarifyAnswers, setClarifyAnswers] = useState<
+    Array<{ afterIdx: number; qa: Array<{ q: string; a: string }> }>
+  >([])
+  const logRef = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<HTMLTextAreaElement>(null)
+  /** Stop following once the user scrolls up; re-attach when near the bottom */
+  const stickToBottomRef = useRef(true)
+  /** Current chat's projectId/chatId, set after resolve succeeds */
+  const chatRefIds = useRef<{ projectId: string; chatId: string } | null>(null)
+
+  // The loop instance survives across renders; closures read refs for the latest state
+  const slidesRef = useRef(slides)
+  slidesRef.current = slides
+  const currentRef = useRef(current)
+  currentRef.current = current
+  const selectedRef = useRef(selectedIds)
+  selectedRef.current = selectedIds
+  const applySlideRef = useRef(applySlide)
+  applySlideRef.current = applySlide
+  const applyDeckRef = useRef(applyDeck)
+  applyDeckRef.current = applyDeck
+  const settingsRef = useRef(settings)
+  settingsRef.current = settings
+  const imagesRef = useRef(images)
+  imagesRef.current = images
+  const attachmentsRef = useRef(attachments)
+  attachmentsRef.current = attachments
+  /** attachments consumed by the most recent send — retry resends the same set */
+  const lastAttachmentsRef = useRef<AttachmentMeta[]>([])
+  /** composer attachments plus everything already sent this session (deduped by path) */
+  const availableAttachments = (): AttachmentMeta[] => {
+    const seen = new Set<string>()
+    return [...sentAttachmentsRef.current, ...attachmentsRef.current].filter((a) =>
+      seen.has(a.path) ? false : (seen.add(a.path), true),
+    )
+  }
+  // Paths of text attachments already read via read_attachment should not be sent twice.
+  // while any current text attachment is still unread
+  const readAttachmentPathsRef = useRef<Set<string>>(new Set())
+
+  const instructionRef = useRef('')
+  const lastInstructionRef = useRef('')
+  /** Paired with lastInstructionRef: keeps the bubble showing only the user's request on retries */
+  const lastDisplayTextRef = useRef<string | undefined>(undefined)
+  /** Mirror of the last turn's (the final reply's turn) tool activity — used when persisting the assistant message,
+      avoiding side effects inside the setState updater (StrictMode double-invokes updaters, duplicating history writes) */
+  const lastTurnToolsRef = useRef<ToolActivity[]>([])
+  /** Tool activity of the whole run (with args/output, accumulated across turns) — for full transcript persistence */
+  const runToolsRef = useRef<
+    Array<{ name: string; summary: string; isError?: boolean; input?: string; output?: string }>
+  >([])
+
+  // ── Chat history persistence ──────────────────────────────────────────────
+  /** Resolve chatId and load history on first mount (AiPanel resets by key; no need to watch currentFilePath changes) */
+  useEffect(() => {
+    const api = (window as Window & { projectApi?: typeof window.projectApi }).projectApi
+    if (!api) return
+    const tempChatId = `unsaved-${Date.now()}`
+    void api
+      .resolveChat({ filePath: currentFilePath ?? null, tempChatId })
+      .then((ids) => {
+        chatRefIds.current = ids
+        return api.loadChat({ projectId: ids.projectId, chatId: ids.chatId, limit: 200 })
+      })
+      .then((msgs) => {
+        if (msgs.length === 0) return
+        setHistoricChat(
+          msgs.map((m) => ({
+            role: m.role,
+            text: m.text,
+            tools: m.tools?.map((t) => ({
+              name: t.name,
+              summary: t.summary,
+              isError: t.isError,
+              output: t.output ? t.output.slice(0, TOOL_OUTPUT_MAX_CHARS) : undefined,
+            })),
+            // stored metadata only: no thumbnail read for history, the chips render name/size
+            attachments: m.attachments
+              ?.filter((a) => a.path)
+              .map((a) => ({
+                name: a.name,
+                path: a.path ?? '',
+                ext: a.ext ?? '',
+                sizeBytes: a.sizeBytes ?? 0,
+              })),
+          })),
+        )
+        // Restore model context: follow-ups after reopening a file continue the earlier conversation (only when the loop is idle with no history)
+        loopRef.current?.restore(msgs.map((m) => ({ role: m.role, text: m.text })))
+      })
+      .catch(() => {
+        /* History load failures are silent */
+      })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  /** After an unsaved draft lands and gets a real path, bind the unsaved-* history to that file (recoverable by path on reopen) */
+  useEffect(() => {
+    const ids = chatRefIds.current
+    const api = (window as Window & { projectApi?: typeof window.projectApi }).projectApi
+    if (!api || !ids || !currentFilePath || !ids.chatId.startsWith('unsaved-')) return
+    void api
+      .rebindChat({
+        projectId: ids.projectId,
+        tempChatId: ids.chatId,
+        newFilePath: currentFilePath,
+      })
+      .then((r) => {
+        if (r?.chatId) chatRefIds.current = r
+      })
+      .catch(() => {
+        /* Silent */
+      })
+  }, [currentFilePath])
+
+  /** Persist one message (fails silently). tools include args/output (truncated by the store layer); attachments store metadata only. */
+  const persistMessage = (
+    role: 'user' | 'assistant',
+    text: string,
+    tools?: Array<{
+      name: string
+      summary: string
+      isError?: boolean
+      input?: string
+      output?: string
+    }>,
+    attachments?: AttachmentMeta[],
+  ) => {
+    const ids = chatRefIds.current
+    const api = (window as Window & { projectApi?: typeof window.projectApi }).projectApi
+    if (!ids || !api) return
+    void api
+      .appendChat({
+        projectId: ids.projectId,
+        chatId: ids.chatId,
+        role,
+        text,
+        ...(tools && tools.length > 0 ? { tools } : {}),
+        ...(attachments && attachments.length > 0
+          ? {
+              attachments: attachments.map((a) => ({
+                name: a.name,
+                path: a.path,
+                ext: a.ext,
+                sizeBytes: a.sizeBytes,
+              })),
+            }
+          : {}),
+      })
+      .catch(() => {
+        /* Silent */
+      })
+  }
+
+  // Resolved when the user submits/cancels; the AI takes the answer and continues.
+  const [activeClarify, setActiveClarify] = useState<ClarifyQuestion[] | null>(null)
+  const clarifyResolverRef = useRef<((r: { answers: string; cancelled?: boolean }) => void) | null>(
+    null,
+  )
+
+  /** Synchronous re-entry guard between runWith trigger and loop.run (see the comment inside runWith) */
+  const runStartingRef = useRef(false)
+  /** Wall-clock start of the current run, drives the elapsed badge */
+  const runStartedAtRef = useRef(0)
+  const historyBatchActiveRef = useRef(false)
+  const inputEditedSinceRunRef = useRef(false)
+  /** This run's rollback batch — carried onto the QC entry when a QC pass
+      follows (mid-turn segments never show the action toolbar) */
+  const runSnapshotIdRef = useRef<number | null>(null)
+
+  const patchLastAssistant = (
+    patch: Partial<ChatEntry> | ((last: ChatEntry) => Partial<ChatEntry>),
+  ) => {
+    setChat((prev) => {
+      const next = [...prev]
+      const last = next[next.length - 1]
+      if (!last || last.role !== 'assistant') return prev
+      next[next.length - 1] = { ...last, ...(typeof patch === 'function' ? patch(last) : patch) }
+      return next
+    })
+  }
+
+  const finishHistoryBatch = async () => {
+    if (!historyBatchActiveRef.current) return
+    historyBatchActiveRef.current = false
+    const id = await window.slidesApi.endHistoryBatch()
+    if (typeof id !== 'number') return
+    runSnapshotIdRef.current = id
+    patchLastAssistant({ snapshotId: id })
+  }
+
+  const rollback = async (snapshotId: number) => {
+    const restored = await window.slidesApi.aiSnapshotRestore(snapshotId)
+    if (!restored) {
+      // Evicted from the main-process snapshot ring — retire the dead action
+      setChat((prev) =>
+        prev.map((e) => (e.snapshotId === snapshotId ? { ...e, snapshotId: undefined } : e)),
+      )
+      return
+    }
+    applyDeckRef.current(restored, Math.min(currentRef.current, restored.length - 1))
+    // The deck rewound to before this batch, so this and every later rollback
+    // point now describe discarded futures (ids are monotonic across batches)
+    setChat((prev) =>
+      prev.map((e) =>
+        e.snapshotId != null && e.snapshotId >= snapshotId ? { ...e, snapshotId: undefined } : e,
+      ),
+    )
+  }
+
+  const loopRef = useRef<AgentLoop | null>(null)
+  if (!loopRef.current) {
+    const access: DeckAccess = {
+      getSlides: () => slidesRef.current,
+      getCurrent: () => currentRef.current,
+      getSelectedIds: () => selectedRef.current,
+      applySlide: (i, updated) => applySlideRef.current(i, updated),
+      applyDeck: (all, goTo) => applyDeckRef.current(all, goTo),
+      askClarification: (questions: ClarifyQuestion[]) =>
+        new Promise<{ answers: string; cancelled?: boolean }>((resolve) => {
+          clarifyResolverRef.current = resolve
+          setActiveClarify(questions)
+        }),
+      fitWidthPx,
+    }
+    loopRef.current = new AgentLoop({
+      transport: createElectronTransport(() => settingsRef.current),
+      systemSuffix: aiLangDirective,
+      skill: composeSkills('slides+files', '', [
+        createSlidesSkill(access),
+        createFilesSkill(availableAttachments, (path) => readAttachmentPathsRef.current.add(path)),
+      ]),
+      // Page-by-page deck generation needs more tool rounds
+      maxTurns: 24,
+      events: {
+        onText: (text) => patchLastAssistant({ text }),
+        onToolStart: (call) => {
+          // Live "running" chip: replaced in place by onToolExecuted
+          const activity: ToolActivity = {
+            name: call.name,
+            summary: call.name.replace(/[_-]+/g, ' '),
+            running: true,
+          }
+          patchLastAssistant((last) => ({ tools: [...(last.tools ?? []), activity] }))
+        },
+        onToolExecuted: ({ call, execution }) => {
+          const activity: ToolActivity = {
+            name: call.name,
+            summary: execution.summary,
+            isError: execution.isError,
+            output: execution.output ? execution.output.slice(0, TOOL_OUTPUT_MAX_CHARS) : undefined,
+            // Side channel: display comes from tools, not into LLM context, UI only
+            display: execution.display,
+          }
+          lastTurnToolsRef.current.push(activity)
+          if (!execution.display) {
+            runToolsRef.current.push({
+              name: call.name,
+              summary: execution.summary,
+              isError: execution.isError,
+              input: safeJsonInput(call.input),
+              output: execution.output
+                ? execution.output.slice(0, PERSIST_TOOL_FIELD_MAX)
+                : undefined,
+            })
+          }
+          patchLastAssistant((last) => {
+            // Swap out the running placeholder pushed by onToolStart (parse-fail calls have none)
+            const tools = [...(last.tools ?? [])]
+            if (tools.at(-1)?.running) tools.pop()
+            return { tools: [...tools, activity] }
+          })
+        },
+        onTurnEnd: () => {
+          lastTurnToolsRef.current = []
+          patchLastAssistant({ streaming: false })
+          setChat((prev) => [...prev, { role: 'assistant', text: '', streaming: true }])
+        },
+        onDone: ({ text, cancelled, turnLimit }) => {
+          const finalText = turnLimit
+            ? [text, tGlobal('aiTurnLimit')].filter(Boolean).join('\n\n')
+            : text || (cancelled ? tGlobal('aiStoppedNote') : '')
+          const ranTools = runToolsRef.current.length > 0
+          setChat((prev) => {
+            const next = [...prev]
+            const last = next.at(-1)
+            if (!last || last.role !== 'assistant') return prev
+            // Tool-heavy runs often end with an empty closing turn. Earlier
+            // bubbles already show the executed work — drop the empty trailing
+            // bubble instead of mislabeling the whole run as "no content".
+            if (!finalText && !last.text && !last.tools?.length && ranTools) {
+              next.pop()
+              return next
+            }
+            next[next.length - 1] = {
+              ...last,
+              streaming: false,
+              text: finalText || (last.tools?.length ? last.text : tGlobal('aiNoResponse')),
+              // A stop mid-tool can leave a running placeholder behind — drop it
+              tools: last.tools?.filter((tl) => !tl.running),
+            }
+            return next
+          })
+          void finishHistoryBatch().finally(() => setBusy(false))
+          // Persist the assistant message; tools store the run's activity.
+          // side effects outside the updater (StrictMode double-invokes updaters, duplicating history writes)
+          if (finalText && !cancelled) {
+            persistMessage('assistant', finalText, runToolsRef.current)
+          }
+        },
+        onError: (error) => {
+          setChat((prev) => {
+            const next = [...prev]
+            // the loop rolled this run's user message out of the model context — surface that
+            for (let i = next.length - 1; i >= 0; i--) {
+              const entry = next[i]!
+              if (entry.role === 'user') {
+                next[i] = { ...entry, undelivered: true }
+                break
+              }
+            }
+            const last = next.at(-1)
+            if (last?.role === 'assistant') {
+              next[next.length - 1] = {
+                ...last,
+                streaming: false,
+                error,
+                tools: last.tools?.filter((tl) => !tl.running),
+              }
+            }
+            return next
+          })
+          void finishHistoryBatch().finally(() => setBusy(false))
+        },
+      },
+    })
+  }
+
+  useEffect(() => {
+    if (!preset) return
+    // Attachments from the start screen: merge into attachments first (ref updated synchronously so this runWith can read them),
+    // then trigger the run. Deduplicated by path, safe under StrictMode double runs.
+    if (preset.attachments && preset.attachments.length > 0) {
+      const seen = new Set(attachmentsRef.current.map((a) => a.path))
+      const merged = [
+        ...attachmentsRef.current,
+        ...preset.attachments.filter((a) => !seen.has(a.path)),
+      ]
+      attachmentsRef.current = merged
+      setAttachments(merged)
+    }
+    if (preset.autoRun)
+      runWith(preset.text, preset.displayText, { slideShot: preset.slideShot ?? false })
+    else {
+      setInput(preset.text)
+      inputRef.current?.focus()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [preset?.nonce])
+
+  // `open` dep: re-expanding lands on messages streamed while collapsed
+  useEffect(() => {
+    if (stickToBottomRef.current) {
+      logRef.current?.scrollTo({ top: logRef.current.scrollHeight })
+    }
+  }, [chat, open])
+
+  const onLogScroll = () => {
+    const el = logRef.current
+    if (!el) return
+    stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48
+  }
+
+  // Input box auto-sizes, up to seven lines (keep in sync with the CSS max-height);
+  // empty clears the inline height outright so the CSS min-height governs
+  // (a hidden-at-measure pass can leave a stale value), same as the shared AiComposer.
+  useEffect(() => {
+    const ta = inputRef.current
+    if (!ta) return
+    if (input === '') {
+      ta.style.height = ''
+      return
+    }
+    ta.style.height = 'auto'
+    ta.style.height = `${Math.min(ta.scrollHeight, 168)}px`
+    // `open` dep: re-measure after expand restores a draft
+  }, [input, open])
+
+  const run = () => runWith(input.trim())
+
+  /** Image attachments read as base64, sent multimodally with this user message (≤5MB per image, max 20; isomorphic to docs) */
+  const MAX_IMAGES_PER_MESSAGE = 20
+  const collectImageAttachments = async (atts: AttachmentMeta[]): Promise<AgentImage[]> => {
+    const imageAtts = atts.filter((a) => ATTACHMENT_IMAGE_EXTS.has(a.ext))
+    const images: AgentImage[] = []
+    const failures: string[] = []
+    for (const att of imageAtts.slice(0, MAX_IMAGES_PER_MESSAGE)) {
+      const result = await window.desktop.readAttachmentImage(att.path)
+      if (result.ok && result.base64 && result.mime) {
+        images.push({ base64: result.base64, mime: result.mime })
+      } else {
+        failures.push(result.error ?? t('aiReadFailed', { name: att.name }))
+      }
+    }
+    if (imageAtts.length > MAX_IMAGES_PER_MESSAGE) {
+      failures.push(t('aiTooManyImages', { max: MAX_IMAGES_PER_MESSAGE }))
+    }
+    if (failures.length > 0) {
+      setAttachNotice(failures.join(';'))
+      window.setTimeout(() => setAttachNotice(null), 5000)
+    }
+    return images
+  }
+
+  /** Current slide rendered at pixelRatio 1 (vision-friendly size); null when rendering fails */
+  const captureSlideShot = async (pageIndex: number): Promise<AgentImage | null> => {
+    const slide = slidesRef.current[pageIndex]
+    if (!slide) return null
+    try {
+      const [png] = await renderSlidesToPngBase64([slide], imagesRef.current, 1)
+      return png ? { base64: png, mime: 'image/png' } : null
+    } catch {
+      return null
+    }
+  }
+
+  const runWith = (
+    instruction: string,
+    displayText?: string,
+    opts?: { slideShot?: boolean; attachments?: AttachmentMeta[] },
+  ) => {
+    const loop = loopRef.current
+    // runStartingRef: loop.run is called only after attachments are read asynchronously, during which loop.busy is still false,
+    // so duplicate triggers must be blocked synchronously (e.g. StrictMode double-running the preset autoRun effect),
+    // otherwise two sets of bubbles get pushed and the earlier assistant placeholder stays at "thinking" forever.
+    if (!instruction || !loop || loop.busy || runStartingRef.current) return
+    runStartingRef.current = true
+    setInput('')
+    // The message consumes the composer attachments: they ride along (echoed on the
+    // bubble, images multimodal, files via the files skill) and the composer clears.
+    const sentAtts = opts?.attachments ?? attachmentsRef.current
+    if (!opts?.attachments && sentAtts.length > 0) {
+      const seen = new Set(sentAttachmentsRef.current.map((a) => a.path))
+      sentAttachmentsRef.current = [
+        ...sentAttachmentsRef.current,
+        ...sentAtts.filter((a) => !seen.has(a.path)),
+      ]
+      setAttachments([])
+      attachmentsRef.current = []
+    }
+    lastAttachmentsRef.current = sentAtts
+    inputEditedSinceRunRef.current = false
+    instructionRef.current = instruction
+    lastInstructionRef.current = instruction
+    lastDisplayTextRef.current = displayText
+    lastTurnToolsRef.current = []
+    runToolsRef.current = []
+    runSnapshotIdRef.current = null
+    stickToBottomRef.current = true
+    // Internal orchestration prompts skip the chat bubble and go only to the model.
+    const shown = displayText ?? instruction
+    setChat((prev) => [
+      // Fallback: clear leftover streaming flags on history entries, avoiding orphan "thinking" placeholders
+      ...prev.map((e) => (e.role === 'assistant' && e.streaming ? { ...e, streaming: false } : e)),
+      { role: 'user', text: shown, ...(sentAtts.length > 0 ? { attachments: sentAtts } : {}) },
+      { role: 'assistant', text: '', streaming: true },
+    ])
+    runStartedAtRef.current = Date.now()
+    setBusy(true)
+    // Persist the user message (store display text + attachment metadata; loop.restore rebuilds model context on file reopen)
+    persistMessage('user', shown, undefined, sentAtts)
+    void collectImageAttachments(sentAtts)
+      .then(async (images) => {
+        // AI Beautify sends the current slide's rendering along, so the model sees what it edits;
+        // the note rides on the model instruction only — the chat bubble stays the localized preset text
+        let modelInstruction = instruction
+        if (opts?.slideShot) {
+          const shot = await captureSlideShot(currentRef.current)
+          if (shot) {
+            images.push(shot)
+            modelInstruction += `\n\n(Attached image: the current rendering of this slide, slideIndex ${currentRef.current}. Use it to spot visual issues the element inventory can't show.)`
+          }
+        }
+        // Clear the flag before run: loop.run sets running synchronously, leaving no re-entry window
+        runStartingRef.current = false
+        if (await window.slidesApi.beginHistoryBatch()) historyBatchActiveRef.current = true
+        loop.run(modelInstruction, images)
+      })
+      .catch(() => {
+        runStartingRef.current = false
+        void finishHistoryBatch().finally(() => setBusy(false))
+      })
+  }
+
+  /** Finish pending survey cards as "skipped" (called on stop/new conversation, avoiding leftover cards and orphan promises) */
+  const dismissClarify = () => {
+    clarifyResolverRef.current?.({ answers: '', cancelled: true })
+    clarifyResolverRef.current = null
+    setActiveClarify(null)
+  }
+
+  const cancel = () => {
+    dismissClarify()
+    loopRef.current?.cancel()
+  }
+
+  const retry = () =>
+    runWith(lastInstructionRef.current, lastDisplayTextRef.current, {
+      attachments: lastAttachmentsRef.current,
+    })
+
+  const newChat = () => {
+    dismissClarify()
+    loopRef.current?.reset()
+    setBusy(false)
+    setChat([])
+    sentAttachmentsRef.current = []
+    readAttachmentPathsRef.current.clear()
+    inputRef.current?.focus()
+  }
+
+  const copyMessage = (text: string, idx: number) => {
+    void navigator.clipboard.writeText(text)
+    setCopiedIdx(idx)
+    window.setTimeout(() => setCopiedIdx((cur) => (cur === idx ? null : cur)), 1200)
+  }
+
+  const mergeAttachments = (result: AttachmentAddResult | null) => {
+    if (!result) return
+    if (result.accepted.length > 0) {
+      setAttachments((prev) => {
+        const seen = new Set(prev.map((a) => a.path))
+        return [...prev, ...result.accepted.filter((a) => !seen.has(a.path))]
+      })
+    }
+    if (result.rejected.length > 0) {
+      setAttachNotice(result.rejected.join(';'))
+      window.setTimeout(() => setAttachNotice(null), 5000)
+    }
+  }
+
+  const pickAttachments = async () => mergeAttachments(await window.desktop.pickAttachments())
+
+  const onDrop = async (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setDragOver(false)
+    const paths = Array.from(e.dataTransfer.files)
+      .map((f) => window.desktop.getPathForFile(f))
+      .filter(Boolean)
+    if (paths.length > 0) mergeAttachments(await window.desktop.addAttachmentPaths(paths))
+  }
+
+  /** Files pasted into the input box: those with local paths go the regular attachment route; pure bitmaps like screenshots land in a temp file first */
+  const onPasteFiles = async (files: File[]) => {
+    const paths: string[] = []
+    for (const f of files) {
+      const p = window.desktop.getPathForFile(f)
+      if (p) {
+        paths.push(p)
+        continue
+      }
+      const ext = PASTE_MIME_EXT[f.type] ?? f.name.split('.').pop()?.toLowerCase() ?? 'bin'
+      mergeAttachments(await window.desktop.addPastedImage(await f.arrayBuffer(), ext))
+    }
+    if (paths.length > 0) mergeAttachments(await window.desktop.addAttachmentPaths(paths))
+  }
+
+  const removeAttachment = (path: string) =>
+    setAttachments((prev) => prev.filter((a) => a.path !== path))
+
+  const resizeCleanupRef = useRef<(() => void) | null>(null)
+  useEffect(() => () => resizeCleanupRef.current?.(), [])
+
+  /** Drag the right edge to resize: the panel is flush with the window's left edge, so width = clientX */
+  const startResize = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    const resizer = e.currentTarget
+    setResizing(true)
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+    const onMove = (ev: PointerEvent) => {
+      setPanelWidth(clampPanelWidth(ev.clientX))
+    }
+    let done = false
+    const cleanup = () => {
+      if (done) return
+      done = true
+      resizeCleanupRef.current = null
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', cleanup)
+      window.removeEventListener('pointercancel', cleanup)
+      resizer.removeEventListener('lostpointercapture', cleanup)
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+      setResizing(false)
+      setPanelWidth((w) => {
+        localStorage.setItem(PANEL_WIDTH_KEY, String(Math.round(w)))
+        return w
+      })
+    }
+    resizeCleanupRef.current = cleanup
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', cleanup)
+    window.addEventListener('pointercancel', cleanup)
+    // lostpointercapture also fires if the resizer is unmounted mid-drag (panel collapse)
+    resizer.addEventListener('lostpointercapture', cleanup)
+    resizer.setPointerCapture(e.pointerId)
+  }
+
+  // collapsed: rail only — after all hooks, so the instance and its state survive
+  if (!open) {
+    return (
+      <button
+        className="ai-rail"
+        data-tip={t('appAiRailExpand')}
+        aria-label={t('appAiRailExpand')}
+        onClick={onExpand}
+      >
+        <BPOfficeMark size={22} />
+      </button>
+    )
+  }
+
+  return (
+    <aside
+      ref={asideRef}
+      style={{ width: '100%' }}
+      className={`ai-panel${dragOver ? ' ai-panel-dragover' : ''}${resizing ? ' ai-panel-resizing' : ''}`}
+      onDragOver={(e) => {
+        if (e.dataTransfer.types.includes('Files')) {
+          e.preventDefault()
+          e.stopPropagation()
+          setDragOver(true)
+        }
+      }}
+      onDragLeave={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragOver(false)
+      }}
+      onDrop={onDrop}
+    >
+      <div
+        className="ai-panel-resizer"
+        onPointerDown={startResize}
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="BP-Office AI"
+      />
+      <div className="ai-panel-header">
+        <span className="ai-panel-title">
+          <BPOfficeMark size={22} />
+          {t('aiPanelTitle')}
+        </span>
+        <div className="ai-panel-header-actions">
+          {chat.length > 0 && (
+            <button
+              className="ai-header-btn"
+              onClick={newChat}
+              data-tip={t('aiNewChat')}
+              aria-label={t('aiNewChat')}
+            >
+              <IconNewChat size={15} />
+            </button>
+          )}
+          {onCollapse && (
+            <button
+              className="ai-header-btn"
+              onClick={onCollapse}
+              data-tip={t('aiCollapsePanel')}
+              aria-label={t('aiCollapsePanel')}
+            >
+              <IconSidebarCollapseLeft size={15} />
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div ref={logRef} className="ai-chat" onScroll={onLogScroll}>
+        {/* Past conversation (read-only transcript, not fed to the model), displayed continuously with the current turn */}
+        {historicChat.length > 0 && (
+          <>
+            {historicChat.map((entry, i) => (
+              <div key={`h${i}`} className={`ai-msg ai-msg-${entry.role} ai-msg-historic`}>
+                {entry.role === 'user' && entry.attachments && entry.attachments.length > 0 && (
+                  <SentAttachments atts={entry.attachments} previews={attachmentPreviews} />
+                )}
+                {entry.tools && entry.tools.length > 0 && <ToolChipList tools={entry.tools} />}
+                {entry.text && <Markdown text={entry.text} />}
+              </div>
+            ))}
+            <div className="ai-history-sep">{t('aiHistorySep')}</div>
+          </>
+        )}
+        {chat.length === 0 && historicChat.length === 0 && (
+          <div className="ai-chat-empty">
+            <div className="ai-chat-empty-title">
+              {t(deckEmpty ? 'aiEmptyGenTitle' : 'aiEmptyTitle')}
+            </div>
+            <div className="ai-chat-empty-body">
+              {t(deckEmpty ? 'aiEmptyGenBody1' : 'aiEmptyBody1')}
+              <br />
+              {t(deckEmpty ? 'aiEmptyGenBody2' : 'aiEmptyBody2')}
+            </div>
+            <div className="ai-starter-list">
+              {starterPrompts(t, deckEmpty ?? false).map((p) => (
+                <button
+                  key={p}
+                  className="ai-starter"
+                  onClick={() => {
+                    setInput(p)
+                    inputRef.current?.focus()
+                  }}
+                >
+                  {p}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+        {chat.map((entry, i) => {
+          if (
+            entry.role === 'assistant' &&
+            !entry.text &&
+            !entry.streaming &&
+            !entry.error &&
+            !entry.tools?.length
+          ) {
+            return null
+          }
+          const isLast = i === chat.length - 1
+          // Action row appears once per completed reply: on the turn's final segment only
+          // (mid-turn segments have a following assistant entry; the live turn ends when !busy)
+          const nextEntry = chat[i + 1]
+          const turnEnded = nextEntry ? nextEntry.role === 'user' : !busy
+          const showToolbar =
+            entry.role === 'assistant' &&
+            !entry.streaming &&
+            turnEnded &&
+            // edits-only turns have no text but still carry the rollback point
+            (!!(entry.text || entry.error) || entry.snapshotId != null)
+          return (
+            <div
+              key={i}
+              className={`ai-msg ai-msg-${entry.role}${entry.role === 'assistant' && entry.streaming ? ' ai-msg-streaming' : ''}`}
+            >
+              {entry.role === 'user' && entry.attachments && entry.attachments.length > 0 && (
+                <SentAttachments atts={entry.attachments} previews={attachmentPreviews} />
+              )}
+              {entry.role === 'assistant' && !entry.text && entry.streaming ? (
+                <span className="ai-typing-row">
+                  <AiTypingIndicator
+                    label={entry.tools?.length ? t('aiContinuing') : t('aiThinking')}
+                  />
+                </span>
+              ) : entry.role === 'assistant' ? (
+                <Markdown text={entry.text} />
+              ) : (
+                entry.text
+              )}
+              {entry.role === 'user' && entry.undelivered && (
+                <div className="ai-msg-undelivered">{t('aiUndelivered')}</div>
+              )}
+              {entry.tools && entry.tools.length > 0 && <ToolChipList tools={entry.tools} />}
+              {entry.error && (
+                <>
+                  <div className="ai-msg-error">{t('aiMsgError', { error: entry.error })}</div>
+                  <button
+                    className="ai-settings-btn"
+                    onClick={() => void window.slidesApi.openLocalAiSettings()}
+                  >
+                    {t('aiOpenLocalAiSettings')}
+                  </button>
+                </>
+              )}
+              {showToolbar && (
+                <div className="ai-msg-toolbar">
+                  {entry.text && (
+                    <button
+                      className="ai-msg-tool-btn"
+                      onClick={() => copyMessage(entry.text, i)}
+                      aria-label={t('aiCopyReply')}
+                      data-tip={t('aiCopyReply')}
+                    >
+                      {copiedIdx === i ? (
+                        <svg
+                          width="14"
+                          height="14"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="1.8"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        >
+                          <polyline points="20 6 9 17 4 12" />
+                        </svg>
+                      ) : (
+                        <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                          <path
+                            d="M14.6113 5.34253C16.0608 5.3428 17.2363 6.518 17.2363 7.96753V15.5066C17.2361 16.956 16.0607 18.1313 14.6113 18.1316H7.07227C5.62267 18.1316 4.44751 16.9561 4.44727 15.5066V7.96753C4.44732 6.51783 5.62255 5.34253 7.07227 5.34253H14.6113ZM7.07227 6.59253C6.31291 6.59253 5.69732 7.20819 5.69727 7.96753V15.5066C5.69751 16.2658 6.31302 16.8816 7.07227 16.8816H14.6113C15.3703 16.8813 15.9861 16.2656 15.9863 15.5066V7.96753C15.9863 7.20835 15.3705 6.5928 14.6113 6.59253H7.07227ZM10.0176 2.8689C10.3626 2.86905 10.6426 3.14882 10.6426 3.4939C10.6425 3.83888 10.3626 4.11874 10.0176 4.1189H4.59961C3.84022 4.1189 3.22461 4.73451 3.22461 5.4939V11.324C3.22433 11.6689 2.94461 11.949 2.59961 11.949C2.25461 11.949 1.97489 11.6689 1.97461 11.324V5.4939C1.97461 4.04415 3.14987 2.8689 4.59961 2.8689H10.0176Z"
+                            fill="currentColor"
+                          />
+                        </svg>
+                      )}
+                    </button>
+                  )}
+                  {isLast && !busy && lastInstructionRef.current && (
+                    <button
+                      className="ai-msg-tool-btn"
+                      onClick={retry}
+                      aria-label={t('aiRegenerate')}
+                      data-tip={t('aiRegenerate')}
+                    >
+                      {/* 24-canvas glyph at 18px (near-full-bleed paths, sized for optical
+                          parity with the copy icon): stroke 1.5 paints 1.125px (1:16) */}
+                      <svg
+                        style={{ width: 18, height: 18 }}
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        aria-hidden
+                      >
+                        <path d="M3.68881 9.85339C4.1791 8.0054 5.28205 6.30704 6.9459 5.09101C10.8046 2.27085 16.2188 3.11279 19.0389 6.97147C19.7242 7.90904 20.1932 8.93842 20.4553 10.0001" />
+                        <path d="M2.00452 8.46411L2.87229 10.7059C2.96814 10.9535 3.24658 11.0765 3.4942 10.9807L5.73594 10.1129" />
+                        <path d="M20.3308 14.4908C19.8405 16.3388 18.7376 18.0372 17.0738 19.2532C13.215 22.0734 7.80083 21.2314 4.98071 17.3728C4.22167 16.3342 3.72792 15.183 3.48686 13.9999" />
+                        <path d="M22.0151 15.8801L21.1474 13.6384C21.0515 13.3908 20.7731 13.2677 20.5255 13.3636L18.2837 14.2314" />
+                      </svg>
+                    </button>
+                  )}
+                  {entry.snapshotId != null && (
+                    <>
+                      {/* hairline between reply actions (icons) and the document action (icon+label);
+                          CSS shows it only when an icon button actually precedes it */}
+                      <span className="ai-rollback-sep" aria-hidden />
+                      <RollbackButton
+                        disabled={busy}
+                        onClick={() => void rollback(entry.snapshotId!)}
+                      />
+                    </>
+                  )}
+                </div>
+              )}
+              {clarifyAnswers
+                .filter((c) => c.afterIdx === i)
+                .map((c, k) => (
+                  <div key={`ca${k}`} className="ai-clarify-answered">
+                    {c.qa.map((pair, m) => (
+                      <div key={m} className="ai-clarify-answered-row">
+                        <div className="ai-clarify-answered-q">{pair.q}</div>
+                        <div className="ai-clarify-answered-a">{pair.a}</div>
+                      </div>
+                    ))}
+                  </div>
+                ))}
+            </div>
+          )
+        })}
+        {activeClarify && (
+          <div className="ai-clarify-chip" role="status">
+            <span className="ai-clarify-chip-eyebrow">{t('aiClarifyTitle')}</span>
+            <span className="ai-clarify-chip-arrow" aria-hidden>
+              ↓
+            </span>
+          </div>
+        )}
+      </div>
+
+      {activeClarify ? (
+        /* Docked in the composer slot with the composer's own outer spacing */
+        <div className="ai-composer">
+          <ClarifyCard
+            questions={activeClarify}
+            onSubmit={(answers, qa) => {
+              clarifyResolverRef.current?.({ answers })
+              clarifyResolverRef.current = null
+              setActiveClarify(null)
+              setClarifyAnswers((prev) => [...prev, { afterIdx: chat.length - 1, qa }])
+            }}
+            onSkip={() => {
+              clarifyResolverRef.current?.({ answers: '', cancelled: true })
+              clarifyResolverRef.current = null
+              setActiveClarify(null)
+            }}
+          />
+        </div>
+      ) : (
+        <div className="ai-composer">
+          {attachNotice && <div className="ai-attach-notice">{attachNotice}</div>}
+          <div className="ai-input-box">
+            {attachments.length > 0 && (
+              <div className="ai-attachments" onScroll={onAttachmentsScroll}>
+                {attachments.map((a) =>
+                  ATTACHMENT_IMAGE_EXTS.has(a.ext) ? (
+                    <span key={a.path} className="ai-attachment-thumb" data-tip={a.path}>
+                      {attachmentPreviews[a.path] ? (
+                        <img src={attachmentPreviews[a.path]} alt={a.name} />
+                      ) : (
+                        <span className="ai-attachment-thumb-pending" aria-hidden>
+                          <img src={fileImageIcon} alt="" />
+                        </span>
+                      )}
+                      <button
+                        className="ai-attachment-thumb-remove"
+                        onClick={() => removeAttachment(a.path)}
+                        data-tip={t('aiRemoveAttachment')}
+                        aria-label={t('aiRemoveAttachment')}
+                      >
+                        <svg width="16" height="16" viewBox="0 0 32 32" aria-hidden>
+                          <path
+                            d="M24 9.4L22.6 8L16 14.6L9.4 8L8 9.4l6.6 6.6L8 22.6L9.4 24l6.6-6.6l6.6 6.6l1.4-1.4l-6.6-6.6L24 9.4z"
+                            fill="currentColor"
+                            stroke="currentColor"
+                            strokeWidth="0.25"
+                          />
+                        </svg>
+                      </button>
+                    </span>
+                  ) : (
+                    <span key={a.path} className="ai-attachment-card" data-tip={a.path}>
+                      <span className="ai-attachment-card-icon">
+                        <AttachmentCardIcon ext={a.ext} />
+                      </span>
+                      <span className="ai-attachment-card-meta">
+                        <span className="ai-attachment-card-name">{truncateCardName(a.name)}</span>
+                        <span className="ai-attachment-card-size">
+                          {formatAttachmentSize(a.sizeBytes)}
+                        </span>
+                      </span>
+                      <button
+                        className="ai-attachment-thumb-remove"
+                        onClick={() => removeAttachment(a.path)}
+                        data-tip={t('aiRemoveAttachment')}
+                        aria-label={t('aiRemoveAttachment')}
+                      >
+                        <svg width="16" height="16" viewBox="0 0 32 32" aria-hidden>
+                          <path
+                            d="M24 9.4L22.6 8L16 14.6L9.4 8L8 9.4l6.6 6.6L8 22.6L9.4 24l6.6-6.6l6.6 6.6l1.4-1.4l-6.6-6.6L24 9.4z"
+                            fill="currentColor"
+                            stroke="currentColor"
+                            strokeWidth="0.25"
+                          />
+                        </svg>
+                      </button>
+                    </span>
+                  ),
+                )}
+              </div>
+            )}
+            <textarea
+              ref={inputRef}
+              value={input}
+              data-slides-ai-input="true"
+              data-deck-undo-ready={!busy && !inputEditedSinceRunRef.current ? 'true' : 'false'}
+              placeholder={t(deckEmpty ? 'aiInputPlaceholderGen' : 'aiInputPlaceholder')}
+              onChange={(e) => {
+                inputEditedSinceRunRef.current = true
+                setInput(e.target.value)
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+                  e.preventDefault()
+                  run()
+                } else if (e.key === 'Escape' && busy) {
+                  e.preventDefault()
+                  cancel()
+                }
+              }}
+              onPaste={(e) => {
+                const files = Array.from(e.clipboardData.files)
+                if (files.length === 0) return
+                e.preventDefault()
+                void onPasteFiles(files)
+              }}
+              rows={1}
+            />
+            <div className="ai-input-footer">
+              <button
+                className="ai-attach-btn"
+                onClick={pickAttachments}
+                data-tip={t('aiAttachTitle')}
+                aria-label={t('aiAttachTitle')}
+              >
+                <img src={attachIcon} alt="" aria-hidden />
+              </button>
+              {busy ? (
+                <button
+                  className="ai-send-btn ai-stop-btn"
+                  onClick={cancel}
+                  data-tip={t('aiStopGeneration')}
+                  aria-label={t('aiStop')}
+                >
+                  <img src={sendStop} alt="" aria-hidden />
+                </button>
+              ) : (
+                <button
+                  className="ai-send-btn"
+                  onClick={run}
+                  disabled={!input.trim()}
+                  data-tip={t('aiSend')}
+                  aria-label={t('aiSend')}
+                >
+                  <img src={input.trim() ? sendEnterOn : sendEnterOff} alt="" aria-hidden />
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </aside>
+  )
+}
+
+/** Image URL regex: starts with http(s), extension is a common image format */
+const IMAGE_URL_RE = /https?:\/\/[^\s"'<>]+\.(?:jpg|jpeg|png|webp|gif|bmp|svg)(?:\?[^\s"'<>]*)?/gi
+
+/** URL regex (inline link detection) */
+const URL_RE = /https?:\/\/[^\s"'<>]+/g
+
+/** Extract the list of image URLs from tool output */
+function extractImageUrls(text: string): string[] {
+  return Array.from(new Set(Array.from(text.matchAll(IMAGE_URL_RE), (m) => m[0])))
+}
+
+/** Open external links (Electron renderer: window.open target=_blank, Electron routes external links to the system browser) */
+function openExternal(url: string) {
+  window.open(url, '_blank', 'noreferrer')
+}
+
+/** Split text into plain-text and link fragments by URL */
+function renderLineWithLinks(line: string, keyPrefix: string): React.ReactNode {
+  const parts: React.ReactNode[] = []
+  let last = 0
+  const re = new RegExp(URL_RE.source, 'g')
+  let m: RegExpExecArray | null
+  while ((m = re.exec(line)) !== null) {
+    if (m.index > last) parts.push(line.slice(last, m.index))
+    const url = m[0]
+    parts.push(
+      <a
+        key={`${keyPrefix}-${m.index}`}
+        href={url}
+        className="ai-tool-output-link"
+        onClick={(e) => {
+          e.preventDefault()
+          openExternal(url)
+        }}
+      >
+        {url}
+      </a>,
+    )
+    last = m.index + url.length
+  }
+  if (last < line.length) parts.push(line.slice(last))
+  return parts
+}
+
+/** Tool output panel: prefer display side-channel data, falling back to name-based inference + output text */
+function ToolOutputPanel({
+  name,
+  output,
+  display,
+}: {
+  name: string
+  output: string
+  display?: ToolDisplay
+}) {
+  // ── Preferred: structured display data filled by the tool ──
+  if (display?.kind === 'images' && display.items && display.items.length > 0) {
+    return (
+      <div className="ai-tool-output ai-tool-output-images">
+        {display.items.map((item, i) => (
+          <ImageThumb key={i} url={item.url} title={item.title} />
+        ))}
+      </div>
+    )
+  }
+
+  if (display?.kind === 'links' && display.items && display.items.length > 0) {
+    return (
+      <div className="ai-tool-output ai-tool-output-links">
+        {display.items.map((item, i) => (
+          <div key={i} className="ai-tool-output-link-row">
+            <a
+              className="ai-tool-output-link"
+              href={item.url}
+              onClick={(e) => {
+                e.preventDefault()
+                openExternal(item.url)
+              }}
+              data-tip={item.url}
+            >
+              {item.title || item.url}
+            </a>
+          </div>
+        ))}
+      </div>
+    )
+  }
+
+  if (display?.kind === 'text' && display.text) {
+    return <div className="ai-tool-output ai-tool-output-pre">{display.text}</div>
+  }
+
+  // ── Fallback: name-based inference (backward compatible, used when display is missing) ──
+  const isImageSearch = /image_search|搜图|image.*search/i.test(name)
+  const isWebSearch = /web_search|search_web|网页.*搜索|搜索|browse/i.test(name)
+
+  if (isImageSearch) {
+    const urls = extractImageUrls(output)
+    if (urls.length > 0) {
+      return (
+        <div className="ai-tool-output ai-tool-output-images">
+          {urls.map((url, i) => (
+            <ImageThumb key={i} url={url} />
+          ))}
+        </div>
+      )
+    }
+  }
+
+  if (isWebSearch) {
+    const lines = output.split('\n')
+    return (
+      <div className="ai-tool-output ai-tool-output-text">
+        {lines.map((line, i) => (
+          <div key={i} className="ai-tool-output-line">
+            {renderLineWithLinks(line, String(i))}
+          </div>
+        ))}
+      </div>
+    )
+  }
+
+  // Default: pre-wrap plain text
+  return <div className="ai-tool-output ai-tool-output-pre">{output}</div>
+}
+
+/** Single thumbnail: broken images auto-hide */
+function ImageThumb({ url, title }: { url: string; title?: string }) {
+  const [hidden, setHidden] = useState(false)
+  if (hidden) return null
+  return (
+    <button
+      className="ai-tool-output-img-btn"
+      onClick={() => openExternal(url)}
+      data-tip={title ?? url}
+    >
+      <img src={url} alt={title ?? ''} loading="lazy" onError={() => setHidden(true)} />
+    </button>
+  )
+}
+
+/** Step-row status icons (timeline glyphs: 14px in a 20px slot, 1.6 stroke) */
+function StepIcon({ status }: { status: 'running' | 'done' | 'error' }) {
+  if (status === 'running') {
+    return (
+      <svg
+        viewBox="0 0 24 24"
+        width="14"
+        height="14"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden
+      >
+        <path d="M6.5 3.5h11M6.5 20.5h11M8 3.5v3.2c0 2.6 4 4.2 4 5.3 0 1.1 4 2.7 4 5.3v3.2M16 3.5v3.2c0 2.6-4 4.2-4 5.3 0 1.1-4 2.7-4 5.3v3.2" />
+      </svg>
+    )
+  }
+  if (status === 'error') {
+    return (
+      <svg
+        viewBox="0 0 24 24"
+        width="14"
+        height="14"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden
+      >
+        <circle cx="12" cy="12" r="9" />
+        <path d="m9.2 9.2 5.6 5.6M14.8 9.2l-5.6 5.6" />
+      </svg>
+    )
+  }
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="14"
+      height="14"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <circle cx="12" cy="12" r="9" />
+      <path d="m8.5 12.4 2.4 2.4 4.6-5" />
+    </svg>
+  )
+}
+
+/** Quiet roll-back action in the message toolbar: restores the deck to before the run's edits */
+function RollbackButton({ disabled, onClick }: { disabled: boolean; onClick: () => void }) {
+  const { t: tr } = useI18n()
+  return (
+    <button type="button" className="ai-rollback-btn" disabled={disabled} onClick={onClick}>
+      {/* 24-canvas glyph at 18px (optical parity with the toolbar icons): stroke 1.5 paints 1.125px (1:16) */}
+      <svg
+        width="18"
+        height="18"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden
+      >
+        <path d="M5.91026 4L2.5 7.14791L5.91026 10.8205" />
+        <path d="M3.96154 7.41028H15.1636C18.5169 7.41028 21.3646 10.1484 21.4953 13.5C21.6334 17.0416 18.707 20.0769 15.1636 20.0769H6.88384" />
+      </svg>
+      {tr('aiRollback')}
+    </button>
+  )
+}
+
+/** Tool activity group: a single quiet summary row
+ *  that auto-opens while tools run, auto-collapses into "Worked · N steps" when they finish,
+ *  and a manual toggle that always wins. Rows inside are step rows with 1px connectors. */
+function ToolChipList({ tools }: { tools: ToolActivity[] }) {
+  const { t: tr } = useI18n()
+  const [expanded, setExpanded] = useState<Set<number>>(new Set())
+  const [userOpen, setUserOpen] = useState<boolean | null>(null)
+
+  const toggle = useCallback((j: number) => {
+    setExpanded((prev) => {
+      const next = new Set(prev)
+      if (next.has(j)) next.delete(j)
+      else next.add(j)
+      return next
+    })
+  }, [])
+
+  const anyRunning = tools.some((tool) => tool.running)
+  const open = userOpen ?? anyRunning
+  const label = anyRunning ? tr('aiGroupWorking') : tr('aiWorkedSteps', { n: tools.length })
+
+  return (
+    <div className="ai-work-group">
+      <button
+        type="button"
+        className={`ai-work-group-summary${anyRunning ? ' running' : ''}`}
+        aria-expanded={open}
+        onClick={() => setUserOpen(!open)}
+      >
+        {anyRunning && !open && <span className="ai-tool-chip-spinner" aria-hidden />}
+        <span className="ai-work-group-label">{label}</span>
+        <span className={`ai-tool-chip-caret${open ? ' open' : ''}`} aria-hidden>
+          ›
+        </span>
+      </button>
+      <div className={`ai-work-group-body${open ? ' open' : ''}`}>
+        <div className="ai-work-group-body-inner">
+          {tools.map((tool, j) => {
+            const hasDisplayData = !!(
+              tool.display?.items?.length ||
+              (tool.display?.kind === 'text' && tool.display.text)
+            )
+            const hasOutput = !tool.running && (!!tool.output || hasDisplayData)
+            const isOpen = expanded.has(j)
+            const stepStatus = tool.running ? 'running' : tool.isError ? 'error' : 'done'
+            return (
+              <div key={j} className="ai-step-row">
+                <span className={`ai-step-icon ${stepStatus}`} aria-hidden>
+                  <StepIcon status={stepStatus} />
+                </span>
+                <div className="ai-step-content">
+                  {hasOutput ? (
+                    <button
+                      type="button"
+                      className="ai-step-title clickable"
+                      data-tip={tool.name}
+                      aria-expanded={isOpen}
+                      onClick={() => toggle(j)}
+                    >
+                      {tool.summary}
+                    </button>
+                  ) : (
+                    <span className="ai-step-title" data-tip={tool.name}>
+                      {tool.summary}
+                    </span>
+                  )}
+                  {hasOutput && isOpen && (
+                    <div className="ai-step-detail">
+                      <ToolOutputPanel
+                        name={tool.name}
+                        output={tool.output ?? ''}
+                        display={tool.display}
+                      />
+                    </div>
+                  )}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/** Survey card: options clickable per question (single/multi), with "decide for me" and "Other (fill in)". */
+function ClarifyCard({
+  questions,
+  onSubmit,
+  onSkip,
+}: {
+  questions: ClarifyQuestion[]
+  onSubmit: (answers: string, qa: Array<{ q: string; a: string }>) => void
+  onSkip: () => void
+}) {
+  const { t } = useI18n()
+  // Per question: set of selected options + the "Other" free text
+  const [picked, setPicked] = useState<Record<string, Set<string>>>({})
+  const [other, setOther] = useState<Record<string, string>>({})
+  // Latest selections for the delayed auto-submit (the timer closure would otherwise
+  // read the pre-click state and drop the final pick)
+  const pickedRef = useRef(picked)
+  pickedRef.current = picked
+  const otherRef = useRef(other)
+  otherRef.current = other
+  // Pager view-state (one question at a time): back-nav limited to visited range,
+  // single-select auto-advances after a beat, typing cancels the pending advance
+  const [qIdx, setQIdx] = useState(0)
+  const [furthest, setFurthest] = useState(0)
+  const [slideDir, setSlideDir] = useState<'next' | 'prev'>('next')
+  const advanceTimerRef = useRef<number | null>(null)
+
+  const cancelAdvance = () => {
+    if (advanceTimerRef.current) {
+      window.clearTimeout(advanceTimerRef.current)
+      advanceTimerRef.current = null
+    }
+  }
+
+  const goTo = (i: number) => {
+    cancelAdvance()
+    const clamped = Math.max(0, Math.min(i, questions.length - 1))
+    setSlideDir(clamped >= qIdx ? 'next' : 'prev')
+    setQIdx(clamped)
+    setFurthest((f) => Math.max(f, clamped))
+  }
+
+  // Single-select: picking advances; picking on the LAST question submits after the
+  // same beat (typing in "Other" or navigating cancels the pending action)
+  const scheduleAdvance = (from: number) => {
+    cancelAdvance()
+    const last = from >= questions.length - 1
+    advanceTimerRef.current = window.setTimeout(() => {
+      advanceTimerRef.current = null
+      if (last) submit()
+      else goTo(from + 1)
+    }, 250)
+  }
+
+  useEffect(() => cancelAdvance, [])
+
+  const toggle = (qid: string, opt: string, multi?: boolean) => {
+    setPicked((prev) => {
+      const cur = new Set(prev[qid] ?? [])
+      if (multi) {
+        if (cur.has(opt)) cur.delete(opt)
+        else cur.add(opt)
+      } else {
+        cur.clear()
+        cur.add(opt)
+      }
+      return { ...prev, [qid]: cur }
+    })
+  }
+
+  const submit = () => {
+    const qa = questions.map((q) => {
+      const chosen = [...(pickedRef.current[q.id] ?? [])]
+      const ot = (otherRef.current[q.id] ?? '').trim()
+      if (ot) chosen.push(ot)
+      const ans = chosen.length ? chosen.join('、') : t('aiClarifyDecideAnswer')
+      return { q: q.label, a: ans }
+    })
+    onSubmit(qa.map(({ q, a }) => `${q}: ${a}`).join('\n'), qa)
+  }
+
+  const q = questions[qIdx]
+  const isLast = qIdx === questions.length - 1
+  const selCount = picked[q.id]?.size ?? 0
+  const decideAnswer = t('aiClarifyDecideAnswer')
+
+  const renderOpt = (opt: string, label: string) => (
+    <button
+      key={opt}
+      className={`ai-clarify-opt${q.multi ? ' multi' : ''}${picked[q.id]?.has(opt) ? ' ai-clarify-opt-on' : ''}`}
+      role={q.multi ? 'checkbox' : 'radio'}
+      aria-checked={picked[q.id]?.has(opt) ?? false}
+      onClick={() => {
+        toggle(q.id, opt, q.multi)
+        if (!q.multi) scheduleAdvance(qIdx)
+      }}
+    >
+      <span className="ai-clarify-opt-box" aria-hidden />
+      <span className="ai-clarify-opt-label">{label}</span>
+      {!q.multi && (
+        <span className="ai-clarify-opt-arrow" aria-hidden>
+          ›
+        </span>
+      )}
+    </button>
+  )
+
+  return (
+    <div className="ai-clarify-card">
+      <div className="ai-clarify-head">
+        <span className="ai-clarify-head-label">{t('aiClarifyTitle')}</span>
+        <span className="ai-clarify-head-progress" aria-live="polite">
+          {`${qIdx + 1} / ${questions.length}`}
+        </span>
+        <span className="ai-clarify-head-arrows">
+          <button
+            type="button"
+            className="ai-clarify-head-arrow"
+            disabled={qIdx === 0}
+            onClick={() => goTo(qIdx - 1)}
+            aria-label="‹"
+          >
+            ‹
+          </button>
+          <button
+            type="button"
+            className="ai-clarify-head-arrow"
+            disabled={qIdx >= furthest}
+            onClick={() => goTo(qIdx + 1)}
+            aria-label="›"
+          >
+            ›
+          </button>
+        </span>
+      </div>
+      <div key={q.id} className={`ai-clarify-q slide-${slideDir}`}>
+        <div className="ai-clarify-label">{q.label}</div>
+        {q.description && <div className="ai-clarify-desc">{q.description}</div>}
+        <div className="ai-clarify-opts">
+          {q.options.map((opt) => renderOpt(opt, opt))}
+          {renderOpt(decideAnswer, t('aiClarifyDecide'))}
+        </div>
+        <input
+          className="ai-clarify-other"
+          placeholder={t('aiClarifyOther')}
+          value={other[q.id] ?? ''}
+          onChange={(e) => {
+            cancelAdvance()
+            setOther((p) => ({ ...p, [q.id]: e.target.value }))
+          }}
+        />
+      </div>
+      <div className={`ai-clarify-actions${q.multi ? ' multi' : ''}`}>
+        {q.multi && selCount > 0 && (
+          <span className="ai-clarify-count">{t('aiClarifySelected', { n: selCount })}</span>
+        )}
+        <span className="ai-clarify-actions-btns">
+          <button className="ai-clarify-skip" onClick={onSkip}>
+            {t('aiClarifySkip')}
+          </button>
+          {isLast ? (
+            <button className="ai-clarify-submit" onClick={submit}>
+              {t('aiClarifySubmit')}
+            </button>
+          ) : (
+            /* Only multi-select advances via the filled foot arrow; single-select advances by picking */
+            q.multi && (
+              <button
+                type="button"
+                className="ai-clarify-next"
+                onClick={() => goTo(qIdx + 1)}
+                aria-label="›"
+              >
+                ›
+              </button>
+            )
+          )}
+        </span>
+      </div>
+    </div>
+  )
+}

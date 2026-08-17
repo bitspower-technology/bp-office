@@ -1,0 +1,7 @@
+node_modules/
+apps/*/out/
+apps/*/target/
+apps/shell/release/
+tools/install-electron.mjs
+rustup-init.sh
+build-bp-office.bat
