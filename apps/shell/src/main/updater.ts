@@ -379,6 +379,58 @@ export function applyUpdateChannel(channel: UpdateChannel): void {
   autoUpdater.checkForUpdates().catch((err) => log('check failed:', err?.message ?? err))
 }
 
+
+
+// Auto-update on startup: check for a new version and install before launch
+// Controlled by GENOFFICE_AUTO_UPDATE=1 env var (set in packaged builds)
+// When enabled, the app checks for updates immediately on startup and
+// automatically downloads and installs any available update before showing
+// the main window.
+export async function checkAutoUpdateOnStartup(
+  getWindow: () => BrowserWindow | null,
+): Promise<void> {
+  if (!app.isPackaged) return
+  if (process.env.GENOFFICE_AUTO_UPDATE !== '1') return
+
+  log('checking for auto-update on startup...')
+
+  try {
+    const update = await autoUpdater.checkForUpdates()
+    if (!update || !update.updateInfo) {
+      log('no update available on startup')
+      return
+    }
+
+    const newVersion = update.updateInfo.version
+    const currentVersion = app.getVersion()
+    log('update available:', newVersion, 'current:', currentVersion)
+
+    // Show a minimal update window during startup
+    const win = getWindow()
+    if (win) {
+      pushUpdateState({
+        phase: 'available',
+        version: newVersion,
+        currentVersion: currentVersion,
+        percent: 0,
+        lang: htmlLang(getUiLang()),
+        strings: uiStrings(),
+      })
+      showUpdateWindow(win)
+    }
+
+    // Auto-download and install
+    autoUpdater.autoDownload = true
+    autoUpdater.autoInstallOnAppQuit = true
+    autoUpdater.autoInstallOnAppQuit = true
+
+    // The download will start automatically and install on next restart
+    log('auto-update download started')
+  } catch (err) {
+    log('auto-update check failed:', err?.message ?? err)
+  }
+}
+
 export function initAutoUpdater(
   getWindow: () => BrowserWindow | null,
   initialChannel: UpdateChannel = 'stable',

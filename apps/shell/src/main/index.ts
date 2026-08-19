@@ -124,7 +124,7 @@ import {
   withoutLegacySlidePaths,
 } from './recent-files'
 import { TabManager } from './tab-manager'
-import { applyUpdateChannel, initAutoUpdater } from './updater'
+import { applyUpdateChannel, initAutoUpdater, checkAutoUpdateOnStartup } from './updater'
 import { isUpdateChannel, type UpdateChannel } from '../shared/update-api'
 import {
   readLmStudioConfig,
