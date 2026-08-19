@@ -1,6 +1,6 @@
 """Generate the BP-Office installer icons and shell lockup deterministically.
 
-Requires Pillow. The geometry is the same black rounded-square/white-N mark
+Requires Pillow. The geometry is the same black rounded-square/white-B mark
 used by the editor ``BPOfficeMark`` components.
 """
 
@@ -14,17 +14,20 @@ SHELL_DIR = BUILD_DIR.parent
 RENDERER_ASSETS = SHELL_DIR / "src" / "renderer" / "src" / "assets"
 ICON_SIZE = 1024
 SUPERSAMPLE = 4
-N_PATH = (
+B_PATH = (
     (6.5, 17),
     (6.5, 7),
-    (8.9, 7),
-    (15.1, 13.6),
-    (15.1, 7),
-    (17.5, 7),
+    (13, 7),
+    (15.5, 8),
+    (17.5, 10),
+    (17.5, 12.5),
+    (15.5, 13.5),
+    (13, 13.5),
+    (15.5, 13.5),
+    (17.5, 14.5),
     (17.5, 17),
-    (15.3, 17),
-    (8.9, 10.2),
-    (8.9, 17),
+    (13, 17),
+    (6.5, 17),
 )
 
 
@@ -42,7 +45,7 @@ def make_mark(inset: int) -> Image.Image:
     )
     points = [
         (left + x / 24 * side, top + y / 24 * side)
-        for x, y in N_PATH
+        for x, y in B_PATH
     ]
     draw.polygon(points, fill=(255, 255, 255, 255))
     return canvas.resize((ICON_SIZE, ICON_SIZE), Image.Resampling.LANCZOS)

@@ -853,7 +853,7 @@ export function BPOfficeMark({ size = 18 }: { size?: number }): React.JSX.Elemen
       aria-hidden
     >
       <rect width="24" height="24" rx="6" fill="var(--text)" />
-      <path d="M6.5 17V7h2.4l6.2 6.6V7h2.4v10h-2.2L8.9 10.2V17H6.5Z" fill="var(--surface)" />
+      <path d="M6.5 17V7h3.2c1.6 0 2.6 0.8 2.6 2v1.4c0 1.2-.8 2-2.6 2H9.7v3H6.5Zm3.2 1.2V7h3.2c1.6 0 2.6.8 2.6 2v1.4c0 1.2-.8 2-2.6 2H9.7Z" fill="var(--surface)" />
     </svg>
   )
 }
