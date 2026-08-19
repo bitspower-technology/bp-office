@@ -710,7 +710,7 @@ export function BPOfficeMark({ size = 18 }: { readonly size?: number }): ReactEl
       aria-hidden
     >
       <rect width="24" height="24" rx="6" fill="var(--text)" />
-      <path d="M6.5 17V7h3.2c1.6 0 2.6 0.8 2.6 2v1.4c0 1.2-.8 2-2.6 2H9.7v3H6.5Zm3.2 1.2V7h3.2c1.6 0 2.6.8 2.6 2v1.4c0 1.2-.8 2-2.6 2H9.7Z" fill="var(--surface)" />
+      <path d="M19.87,7H15.59L13.83,3H10.17L8.41,7H4.13L7.29,10.07L5.73,15.5L9.89,12.34L14.05,15.5L12.49,10.07L15.65,7H19.87Z" fill="var(--surface)" />
     </svg>
   )
 }

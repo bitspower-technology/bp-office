@@ -1,6 +1,6 @@
 """Generate the BP-Office installer icons and shell lockup deterministically.
 
-Requires Pillow. The geometry is the same black rounded-square/white-B mark
+Requires Pillow. The geometry is the same black rounded-square/white company logo
 used by the editor ``BPOfficeMark`` components.
 """
 
@@ -15,19 +15,19 @@ RENDERER_ASSETS = SHELL_DIR / "src" / "renderer" / "src" / "assets"
 ICON_SIZE = 1024
 SUPERSAMPLE = 4
 B_PATH = (
-    (6.5, 17),
-    (6.5, 7),
-    (13, 7),
-    (15.5, 8),
-    (17.5, 10),
-    (17.5, 12.5),
-    (15.5, 13.5),
-    (13, 13.5),
-    (15.5, 13.5),
-    (17.5, 14.5),
-    (17.5, 17),
-    (13, 17),
-    (6.5, 17),
+    (19.87, 7),
+    (15.59, 7),
+    (13.83, 3),
+    (10.17, 3),
+    (8.41, 7),
+    (4.13, 7),
+    (7.29, 10.07),
+    (5.73, 15.5),
+    (9.89, 12.34),
+    (14.05, 15.5),
+    (12.49, 10.07),
+    (15.65, 7),
+    (19.87, 7),
 )
 
 
