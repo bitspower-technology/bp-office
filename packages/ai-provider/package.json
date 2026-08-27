@@ -1,0 +1,24 @@
+{
+  "name": "@genoffice/ai-provider",
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "private": true,
+  "type": "module",
+  "description": "LM Studio-first multi-provider LLM streaming and managed ChatGPT client shared by BP-Office AI surfaces",
+  "exports": {
+    ".": "./src/index.ts",
+    "./chatgpt-main": "./src/chatgpt-main.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@genoffice/agent-core": "*"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.0"
+  }
+}

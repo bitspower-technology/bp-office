@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Generator: Adobe Illustrator 16.0.3, SVG Export Plug-In . SVG Version: 6.00 Build 0)  -->
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" width="240px"
+	 height="240px" viewBox="0 0 240 240" enable-background="new 0 0 240 240" xml:space="preserve">
+<g id="工作區域參考線">
+</g>
+<g id="圖層_1">
+	<g>
+		<path fill-rule="evenodd" clip-rule="evenodd" fill="#FFFFFF" d="M216,232.8c9.264,0,16.801-7.535,16.801-16.799v-192
+			c0-9.264-7.537-16.799-16.801-16.799H96.002c-9.264,0-16.801,7.535-16.801,16.799v192c0,9.264,7.537,16.799,16.801,16.799H216z"/>
+		<g>
+			<path fill-rule="evenodd" clip-rule="evenodd" fill="#7D55A5" d="M240,216c0,13.199-10.801,24-24,24H96
+				c-13.199,0-24-10.801-24-24V24C72,10.801,82.801,0,96,0h120c13.199,0,24,10.801,24,24V216z M96,231.8
+				c-8.711,0-15.799-7.088-15.799-15.8V24c0-8.712,7.088-15.8,15.799-15.8h120c8.713,0,15.799,7.088,15.799,15.8v192
+				c0,8.712-7.086,15.8-15.799,15.8H96z"/>
+			<g>
+				<polygon fill-rule="evenodd" clip-rule="evenodd" fill="#7D55A5" points="48.498,204.001 0,120.003 48.498,36.001 
+					145.492,36.001 193.99,120.003 145.492,204.001 				"/>
+			</g>
+		</g>
+		<g>
+			<path fill="#FFFFFF" d="M140.314,81.823l-13.213,79.003h-18.484l11.055-66.096l-31.947,66.096H77.188l-10.59-66.791
+				l-11.17,66.791H40.523l13.213-79.003h27.682l7.027,48.328l23.168-48.328H140.314z"/>
+		</g>
+		<polygon fill="#7D55A5" points="216,158.883 216,45.603 196.802,45.603 196.802,158.883 187.201,158.883 206.401,194.401 
+			225.602,158.883 		"/>
+	</g>
+</g>
+</svg>
