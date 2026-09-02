@@ -20,7 +20,7 @@ import { ToastHost } from './components/toast'
 import { TableMenu } from './components/TableMenu'
 import { FrontmatterPanel } from './components/FrontmatterPanel'
 import { AiAskPopover } from './components/AiAskPopover'
-import { NiuOfficeMark } from '@genoffice/ui'
+import { BPOfficeMark } from '@genoffice/ui'
 import { AiPanel, type AiPreset, type MarkdownAiDeps } from './ai/AiPanel'
 import { EDIT_QUEUE_MAX, selectionForAnchor, type EditQueueItem } from './ai/edit-queue'
 import { addQueueAnchor, clearQueueAnchors, removeQueueAnchors } from './editor/aiQueueAnchors'
@@ -615,7 +615,7 @@ export default function App() {
               aria-label={t('aiOpenAssistant')}
               onClick={() => setAiOpen(true)}
             >
-              <NiuOfficeMark size={22} />
+              <BPOfficeMark size={22} />
             </button>
           )}
           {/* mounted only after the file is loaded so chat history resolves against the real path */}

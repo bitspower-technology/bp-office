@@ -44,7 +44,7 @@ async function click(selector: string): Promise<void> {
   })
 }
 
-describe('NiuOffice onboarding', () => {
+describe('BP Office onboarding', () => {
   it('contains no analytics consent or telemetry copy', () => {
     renderOnboarding(vi.fn(async () => true))
     expect(host.querySelector('[role="switch"]')).toBeNull()

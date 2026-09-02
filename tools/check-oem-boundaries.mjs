@@ -76,10 +76,13 @@ requireCondition(
   product?.features?.chatgptSubscription === false,
   'branding/product.json: features.chatgptSubscription must be false',
 )
-const isNiuOfficeTemplateRepository =
+// The upstream template repository never serves distributor binaries: an OEM checkout that
+// still points at it must keep automatic updates switched off. A distributor owns its own
+// public feed (see branding/product.json repository) and enables updates there instead.
+const isUpstreamTemplateRepository =
   product?.repository?.owner === 'Niuulh' && product?.repository?.name === 'NiuOffice'
 requireCondition(
-  product?.updates?.enabled === false || !isNiuOfficeTemplateRepository,
+  product?.updates?.enabled === false || !isUpstreamTemplateRepository,
   'branding/product.json: updates must stay disabled while OEM points at Niuulh/NiuOffice',
 )
 
@@ -223,5 +226,5 @@ if (violations.length > 0) {
 }
 
 console.log(
-  `OEM boundaries verified: endpoint-only, ChatGPT/Codex disabled, NiuOffice feed protected, and main-only NiuOffice releases enforced (${manifests.length} manifests).`,
+  `OEM boundaries verified: endpoint-only, ChatGPT/Codex disabled, upstream feed protected, and main-only upstream releases enforced (${manifests.length} manifests).`,
 )

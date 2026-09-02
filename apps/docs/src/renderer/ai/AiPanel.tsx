@@ -22,7 +22,7 @@ import { DOCS_AGENT_MAX_TURNS, DOCS_CONTINUE_INSTRUCTION } from './continuation'
 import { createFilesSkill } from './files-skill'
 import { createElectronTransport } from './transport'
 import { useI18n, t as tModule, aiLangDirective, type StringKey } from '../i18n/locale'
-import { AiComposer, AiTypingIndicator, Markdown, NiuOfficeMark } from '@genoffice/ui'
+import { AiComposer, AiTypingIndicator, Markdown, BPOfficeMark } from '@genoffice/ui'
 import sendEnterOn from '../assets/send-enter-on.png'
 import sendEnterOff from '../assets/send-enter-off.png'
 import sendStop from '../assets/send-stop.png'
@@ -968,7 +968,7 @@ export function AiPanel({
         aria-label={t('appExpandAiPanel')}
         onClick={onExpand}
       >
-        <NiuOfficeMark size={22} />
+        <BPOfficeMark size={22} />
       </button>
     )
   }
@@ -999,7 +999,7 @@ export function AiPanel({
       />
       <div className="ai-panel-header">
         <span className="ai-panel-title">
-          <NiuOfficeMark size={22} />
+          <BPOfficeMark size={22} />
           {t('aiPanelTitle')}
         </span>
         <div className="ai-panel-header-actions">

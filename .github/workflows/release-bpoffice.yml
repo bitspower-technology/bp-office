@@ -1,0 +1,417 @@
+name: Release BP Office (Windows)
+
+# Distributor-owned release automation for BP Office. It builds Windows installers only
+# from the exact tip of the authorized release branch, publishes them to the public
+# bitspower-technology/bp-office Releases feed that installed clients read, and refuses
+# everything else. The upstream NiuOffice repository is never involved.
+
+on:
+  push:
+    tags:
+      - 'v*-bp.*'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing vX.Y.Z-bp.N tag to release (must point at the current main tip)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-bp-office-windows
+  cancel-in-progress: false
+
+env:
+  # BP Office is released from the exact tip of this branch and nowhere else.
+  RELEASE_BRANCH: main
+  # branding/product.json must name exactly this public repository as its update feed.
+  EXPECTED_REPOSITORY: bitspower-technology/bp-office
+
+jobs:
+  release:
+    runs-on: windows-2022
+    timeout-minutes: 90
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.release_tag || github.ref }}
+
+      - name: Validate the BP Office release identity and version
+        id: preflight
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_TAG: ${{ inputs.release_tag || github.ref_name }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+
+          $tag = $env:REQUESTED_TAG.Trim()
+          if ($tag -notmatch '^v\d+\.\d+\.\d+-bp\.\d+$') {
+            throw "Release tag must use the exact vX.Y.Z-bp.N form; received '$tag'."
+          }
+
+          $package = Get-Content -Raw -LiteralPath 'apps/shell/package.json' | ConvertFrom-Json
+          $product = Get-Content -Raw -LiteralPath 'branding/product.json' | ConvertFrom-Json
+          $version = [string]$package.version
+          $expectedTag = "v$version"
+          if ($tag -cne $expectedTag) {
+            throw "Tag $tag does not match apps/shell/package.json version $version. Expected $expectedTag."
+          }
+
+          # The shipped product is the endpoint-only OEM edition with its own identity.
+          if ($product.edition -cne 'oem') {
+            throw "Binary release refused: branding/product.json edition is '$($product.edition)', not 'oem'."
+          }
+          if ($product.features.chatgptSubscription -ne $false) {
+            throw 'Binary release refused: BP Office must ship with features.chatgptSubscription false.'
+          }
+          if ($product.updates.enabled -ne $true) {
+            throw 'Binary release refused: branding/product.json updates.enabled must be true for a published feed.'
+          }
+          if ([string]$product.artifactSlug -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$') {
+            throw 'branding/product.json contains an unsafe artifactSlug.'
+          }
+          foreach ($identityField in @('appId', 'executableName', 'desktopName', 'userDataDirectory')) {
+            if ([string]::IsNullOrWhiteSpace([string]$product.$identityField)) {
+              throw "branding/product.json $identityField must be set before a release."
+            }
+          }
+
+          $updateRepository = "$($product.repository.owner)/$($product.repository.name)"
+          if ($updateRepository -cne $env:EXPECTED_REPOSITORY) {
+            throw "Configured update repository $updateRepository is not the authorized $env:EXPECTED_REPOSITORY feed."
+          }
+          if ($updateRepository -cne $env:GITHUB_REPOSITORY) {
+            throw "Update repository $updateRepository differs from workflow repository $env:GITHUB_REPOSITORY; a repository-scoped token cannot publish that feed."
+          }
+
+          # The tag must be the exact authorized release-branch tip.
+          git fetch --no-tags --force origin "+refs/heads/${env:RELEASE_BRANCH}:refs/remotes/origin/${env:RELEASE_BRANCH}"
+          if ($LASTEXITCODE -ne 0) { throw "Unable to fetch origin/$env:RELEASE_BRANCH." }
+          $tagCommit = (git rev-parse "$tag^{commit}").Trim()
+          if ($LASTEXITCODE -ne 0) { throw "Unable to resolve release tag $tag." }
+          $branchCommit = (git rev-parse "refs/remotes/origin/$env:RELEASE_BRANCH^{commit}").Trim()
+          if ($LASTEXITCODE -ne 0) { throw "Unable to resolve origin/$env:RELEASE_BRANCH." }
+          if ($tagCommit -cne $branchCommit) {
+            throw "Release tag $tag points to $tagCommit, but origin/$env:RELEASE_BRANCH points to $branchCommit. Tag the current release-branch tip."
+          }
+
+          # Installed clients read the feed without credentials: a private repository would
+          # produce a permanently unreachable update feed.
+          $privateValue = (& gh api "repos/$updateRepository" --jq '.private' 2>&1 | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0) { throw "Unable to inspect update repository: $privateValue" }
+          if ($privateValue -cne 'false') {
+            throw "Automatic updates require a PUBLIC GitHub repository. $updateRepository is private. Never embed a token in the application."
+          }
+
+          $latestOutput = (& gh api "repos/$updateRepository/releases/latest" --jq '.tag_name' 2>&1 | Out-String).Trim()
+          $latestExit = $LASTEXITCODE
+          if ($latestExit -ne 0 -and $latestOutput -notmatch 'HTTP 404') {
+            throw "Unable to inspect the current release: $latestOutput"
+          }
+          $currentTag = if ($latestExit -eq 0) { $latestOutput } else { '' }
+          $currentArgument = if ($currentTag) { $currentTag } else { '-' }
+          $decisionJson = node -e "const u=require('./scripts/update-feed-utils.cjs'); const current=process.argv[2]==='-'?null:process.argv[2]; console.log(JSON.stringify(u.releaseUploadDecision(process.argv[1],current,{allowExisting:true})))" $version $currentArgument
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to compare release versions.' }
+          $decision = $decisionJson | ConvertFrom-Json
+          if ($decision.action -eq 'reject') { throw $decision.reason }
+
+          $updateUrl = "https://github.com/$updateRepository/releases/latest/download"
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "action=$($decision.action)"
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "release_tag=$tag"
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "version=$version"
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "artifact_slug=$($product.artifactSlug)"
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "update_repository=$updateRepository"
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "update_url=$updateUrl"
+
+      - name: Exact version is already the latest release
+        if: steps.preflight.outputs.action == 'skip'
+        shell: pwsh
+        run: Write-Host '${{ steps.preflight.outputs.release_tag }} is already published as the latest release; leaving its immutable assets unchanged.'
+
+      - name: Setup Node
+        if: steps.preflight.outputs.action == 'upload'
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Setup Rust
+        if: steps.preflight.outputs.action == 'upload'
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable branch, 2026-07
+        with:
+          toolchain: stable
+
+      - name: Cache cargo (xlsx sidecar)
+        if: steps.preflight.outputs.action == 'upload'
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: apps/sheets/native/xlsx-engine
+
+      - name: Install dependencies
+        if: steps.preflight.outputs.action == 'upload'
+        run: npm ci
+
+      - name: Run the full BP Office validation gate
+        if: steps.preflight.outputs.action == 'upload'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $gates = @(
+            'npm run check:product-boundaries',
+            'npm run check:oem-boundaries',
+            'npm run format:check',
+            'npm run check:theme-colors',
+            'npm run check:english-comments',
+            'npm run lint',
+            'npm run typecheck'
+          )
+          foreach ($gate in $gates) {
+            Invoke-Expression $gate
+            if ($LASTEXITCODE -ne 0) { throw "Release gate failed: $gate" }
+          }
+
+      - name: Test
+        if: steps.preflight.outputs.action == 'upload'
+        run: npm test
+
+      - name: Build setup and portable executables
+        if: steps.preflight.outputs.action == 'upload'
+        shell: pwsh
+        env:
+          NIUOFFICE_UPDATE_URL: ${{ steps.preflight.outputs.update_url }}
+          CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
+          # A build host must never silently pick a certificate it happens to own.
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: |
+          npm run native:build -w @genoffice/sheets
+          if ($LASTEXITCODE -ne 0) { throw 'Windows xlsx sidecar build failed.' }
+          npm run dist:win
+          if ($LASTEXITCODE -ne 0) { throw 'Windows packaging failed.' }
+
+      - name: Audit the packaged application
+        if: steps.preflight.outputs.action == 'upload'
+        id: audit
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $unpacked = Join-Path (Resolve-Path -LiteralPath 'apps/shell/release').Path 'win-unpacked'
+          if (-not (Test-Path -LiteralPath $unpacked -PathType Container)) {
+            throw "Expected an unpacked build at $unpacked to audit."
+          }
+          $resources = Join-Path $unpacked 'resources'
+
+          # Removed surfaces must not be shipped: ChatGPT/Codex runtime, Slides module,
+          # Genspark cloud resources and the AI Search workspace.
+          $forbiddenPaths = @(
+            (Join-Path $resources 'native\codex.exe'),
+            (Join-Path $resources 'native\codex-code-mode-host.exe'),
+            (Join-Path $resources 'modules\slides')
+          )
+          foreach ($path in $forbiddenPaths) {
+            if (Test-Path -LiteralPath $path) { throw "Packaged application must not contain $path" }
+          }
+          $manifest = Join-Path $unpacked 'resources\app.asar'
+          $asarList = ''
+          if (Test-Path -LiteralPath $manifest) {
+            $asarList = (npx --no-install asar list "$manifest" 2>&1 | Out-String)
+          }
+          $scanned = ((Get-ChildItem -LiteralPath $resources -Recurse -File | ForEach-Object FullName) -join "`n") + "`n" + $asarList
+          foreach ($pattern in @('genspark', 'ai-search', '@openai/codex', 'google-analytics')) {
+            if ($scanned -match $pattern) { throw "Packaged application references removed surface '$pattern'." }
+          }
+
+          # Required shipped content: four editors, the xlsx sidecar, PDF/OCR wasm and licenses.
+          $required = @(
+            (Join-Path $resources 'modules\docs'),
+            (Join-Path $resources 'modules\sheets'),
+            (Join-Path $resources 'modules\pdf'),
+            (Join-Path $resources 'modules\markdown'),
+            (Join-Path $resources 'native\xlsx-sidecar.exe'),
+            (Join-Path $resources 'wasm\pdfium.wasm'),
+            (Join-Path $resources 'wasm\hb-subset.wasm'),
+            (Join-Path $resources 'ocr\win-ocr.exe'),
+            (Join-Path $resources 'THIRD-PARTY-NOTICES.txt'),
+            (Join-Path $resources 'LICENSE'),
+            (Join-Path $resources 'NOTICE')
+          )
+          foreach ($path in $required) {
+            if (-not (Test-Path -LiteralPath $path)) { throw "Packaged application is missing $path" }
+          }
+
+      - name: Verify updater metadata and assemble release assets
+        if: steps.preflight.outputs.action == 'upload'
+        id: assets
+        shell: pwsh
+        env:
+          CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
+          RELEASE_TAG: ${{ steps.preflight.outputs.release_tag }}
+          RELEASE_VERSION: ${{ steps.preflight.outputs.version }}
+          ARTIFACT_SLUG: ${{ steps.preflight.outputs.artifact_slug }}
+          UPDATE_URL: ${{ steps.preflight.outputs.update_url }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $releaseDirectory = (Resolve-Path -LiteralPath 'apps/shell/release').Path
+          $setupName = "$env:ARTIFACT_SLUG-Setup-$env:RELEASE_VERSION.exe"
+          $portableName = "$env:ARTIFACT_SLUG-Portable-$env:RELEASE_VERSION.exe"
+          $setupPath = Join-Path $releaseDirectory $setupName
+          $portablePath = Join-Path $releaseDirectory $portableName
+          $feedPath = Join-Path $releaseDirectory 'latest.yml'
+          foreach ($required in @($setupPath, $portablePath, $feedPath)) {
+            if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
+              throw "Required release output is missing: $required"
+            }
+          }
+
+          $feed = Get-Content -Raw -LiteralPath $feedPath
+          $escapedVersion = [regex]::Escape($env:RELEASE_VERSION)
+          $escapedSetup = [regex]::Escape($setupName)
+          $escapedPortable = [regex]::Escape($portableName)
+          if ($feed -notmatch "(?m)^version:\s*$escapedVersion\s*$") {
+            throw "latest.yml does not declare version $env:RELEASE_VERSION."
+          }
+          if ($feed -notmatch "(?m)^\s*(?:-\s+url|path):\s*['`"]?$escapedSetup['`"]?\s*$") {
+            throw "latest.yml does not reference the exact setup artifact $setupName."
+          }
+          if ($feed -match $escapedPortable) {
+            throw 'latest.yml must never offer the portable executable to electron-updater.'
+          }
+
+          $setupBytes = [IO.File]::ReadAllBytes($setupPath)
+          $setupSha512 = [Convert]::ToBase64String([Security.Cryptography.SHA512]::HashData($setupBytes))
+          if ($feed -notmatch [regex]::Escape($setupSha512)) {
+            throw 'latest.yml SHA-512 does not match the setup executable.'
+          }
+
+          # The portable build must never schedule an automatic update.
+          $portableAppUpdate = @(Get-ChildItem -LiteralPath $releaseDirectory -Recurse -File -Filter 'app-update.yml')
+          if ($portableAppUpdate.Count -eq 0) {
+            throw 'The packaged application contains no app-update.yml.'
+          }
+          foreach ($file in $portableAppUpdate) {
+            $content = Get-Content -Raw -LiteralPath $file.FullName
+            if ($content -notmatch '(?m)^provider:\s*generic\s*$') {
+              throw "$($file.FullName) does not use the generic update provider."
+            }
+            if ($content -notmatch "(?m)^url:\s*$([regex]::Escape($env:UPDATE_URL))\s*$") {
+              throw "$($file.FullName) does not target $env:UPDATE_URL."
+            }
+          }
+
+          $assetDirectory = Join-Path $env:RUNNER_TEMP 'bp-office-release-assets'
+          New-Item -ItemType Directory -Force -Path $assetDirectory | Out-Null
+          Copy-Item -LiteralPath $setupPath, $portablePath, $feedPath -Destination $assetDirectory
+          $blockmapPath = "$setupPath.blockmap"
+          if (Test-Path -LiteralPath $blockmapPath -PathType Leaf) {
+            Copy-Item -LiteralPath $blockmapPath -Destination $assetDirectory
+          }
+
+          $sourceName = "$env:ARTIFACT_SLUG-$env:RELEASE_VERSION-source.zip"
+          $sourcePath = Join-Path $assetDirectory $sourceName
+          git archive --format=zip --prefix="$env:ARTIFACT_SLUG-$env:RELEASE_VERSION/" --output="$sourcePath" $env:RELEASE_TAG
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) {
+            throw 'Unable to create the source archive from the release tag.'
+          }
+
+          $hashLines = Get-ChildItem -LiteralPath $assetDirectory -File |
+            Sort-Object Name |
+            ForEach-Object {
+              $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant()
+              "$hash *$($_.Name)"
+            }
+          $checksumPath = Join-Path $assetDirectory 'SHA256SUMS.txt'
+          [IO.File]::WriteAllLines($checksumPath, $hashLines, [Text.UTF8Encoding]::new($false))
+
+          $signatures = @(
+            Get-AuthenticodeSignature -LiteralPath $setupPath
+            Get-AuthenticodeSignature -LiteralPath $portablePath
+          )
+          $signedCount = @($signatures | Where-Object { $null -ne $_.SignerCertificate }).Count
+          if ($signedCount -ne 0 -and $signedCount -ne $signatures.Count) {
+            throw 'Setup and portable executables have inconsistent Authenticode signing state.'
+          }
+          $signed = $signedCount -eq $signatures.Count
+          if (-not [string]::IsNullOrWhiteSpace($env:CSC_LINK) -and -not $signed) {
+            throw 'Signing credentials were supplied, but the setup executable is not Authenticode-signed.'
+          }
+          $signingLabel = if ($signed) { 'signed' } else { 'unsigned contributor' }
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "asset_directory=$assetDirectory"
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "signing_label=$signingLabel"
+
+      - name: Publish the GitHub release as Latest
+        if: steps.preflight.outputs.action == 'upload'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.preflight.outputs.release_tag }}
+          RELEASE_VERSION: ${{ steps.preflight.outputs.version }}
+          UPDATE_REPOSITORY: ${{ steps.preflight.outputs.update_repository }}
+          ASSET_DIRECTORY: ${{ steps.assets.outputs.asset_directory }}
+          SIGNING_LABEL: ${{ steps.assets.outputs.signing_label }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+
+          # Refuse to publish if the release branch moved during the build.
+          git fetch --no-tags --force origin "+refs/heads/${env:RELEASE_BRANCH}:refs/remotes/origin/${env:RELEASE_BRANCH}"
+          if ($LASTEXITCODE -ne 0) { throw "Unable to re-fetch origin/$env:RELEASE_BRANCH." }
+          $tagCommit = (git rev-parse "$env:RELEASE_TAG^{commit}").Trim()
+          $branchCommit = (git rev-parse "refs/remotes/origin/$env:RELEASE_BRANCH^{commit}").Trim()
+          if ($tagCommit -cne $branchCommit) {
+            throw "origin/$env:RELEASE_BRANCH moved to $branchCommit while the release was building; tag that commit instead."
+          }
+
+          # Recheck the feed after the long Windows build; this closes the race with a
+          # manually published release outside this workflow.
+          $latestOutput = (& gh api "repos/$env:UPDATE_REPOSITORY/releases/latest" --jq '.tag_name' 2>&1 | Out-String).Trim()
+          $latestExit = $LASTEXITCODE
+          if ($latestExit -ne 0 -and $latestOutput -notmatch 'HTTP 404') {
+            throw "Unable to recheck the current release: $latestOutput"
+          }
+          $currentArgument = if ($latestExit -eq 0) { $latestOutput } else { '-' }
+          $decisionJson = node -e "const u=require('./scripts/update-feed-utils.cjs'); const current=process.argv[2]==='-'?null:process.argv[2]; console.log(JSON.stringify(u.releaseUploadDecision(process.argv[1],current,{allowExisting:true})))" $env:RELEASE_VERSION $currentArgument
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to recheck release version ordering.' }
+          $decision = $decisionJson | ConvertFrom-Json
+          if ($decision.action -ne 'upload') {
+            $detail = if ($decision.reason) { $decision.reason } else { 'the same release was published while this job was building' }
+            throw "Release stopped: $detail. Published assets were not modified."
+          }
+
+          $notesPath = Join-Path $env:RUNNER_TEMP 'bp-office-release-notes.md'
+          @"
+          BP Office $env:RELEASE_VERSION for Windows.
+
+          - Setup executable with automatic updates from this public GitHub release feed
+          - Portable executable (manual updates only)
+          - Complete tagged source archive
+          - SHA-256 checksums for every uploaded asset
+
+          This is a $env:SIGNING_LABEL build.
+          "@ | Set-Content -LiteralPath $notesPath -Encoding utf8
+
+          $releaseLookup = (& gh api "repos/$env:UPDATE_REPOSITORY/releases/tags/$env:RELEASE_TAG" --jq '.draft' 2>&1 | Out-String).Trim()
+          $lookupExit = $LASTEXITCODE
+          if ($lookupExit -ne 0 -and $releaseLookup -notmatch 'HTTP 404') {
+            throw "Unable to inspect the target release: $releaseLookup"
+          }
+          if ($lookupExit -eq 0 -and $releaseLookup -cne 'true') {
+            throw "Release $env:RELEASE_TAG already exists and is not a draft; immutable published assets will not be replaced."
+          }
+          if ($lookupExit -ne 0) {
+            gh release create $env:RELEASE_TAG --repo $env:UPDATE_REPOSITORY --verify-tag --draft --title "BP Office $env:RELEASE_VERSION" --notes-file $notesPath
+            if ($LASTEXITCODE -ne 0) { throw 'Unable to create the draft GitHub release.' }
+          }
+
+          $assets = @(Get-ChildItem -LiteralPath $env:ASSET_DIRECTORY -File | ForEach-Object FullName)
+          if ($assets.Count -lt 5) { throw 'Release asset set is unexpectedly incomplete.' }
+          gh release upload $env:RELEASE_TAG @assets --repo $env:UPDATE_REPOSITORY --clobber
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to upload GitHub release assets.' }
+          gh release edit $env:RELEASE_TAG --repo $env:UPDATE_REPOSITORY --draft=false --latest --title "BP Office $env:RELEASE_VERSION" --notes-file $notesPath
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to publish the GitHub release.' }

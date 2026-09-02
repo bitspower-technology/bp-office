@@ -3,7 +3,7 @@
 ## Reporting a vulnerability
 
 Please report suspected vulnerabilities privately through
-[GitHub private vulnerability reporting](https://github.com/Niuulh/NiuOffice/security/advisories/new).
+[GitHub private vulnerability reporting](https://github.com/bitspower-technology/bp-office/security/advisories/new).
 Do not open public issues for security reports.
 
 ## Process security posture
@@ -27,11 +27,11 @@ retained compatibility identifiers, not cloud-service connections.
 
 ### OpenAI Endpoint
 
-NiuOffice sends AI traffic only to the configured server. The default is the
+BP Office sends AI traffic only to the configured server. The default is the
 loopback endpoint `http://127.0.0.1:1234/v1`; users who configure a remote URL
 are responsible for that server and transport. The default and native model
 discovery path remain compatible with LM Studio. No authorization header is
-sent until a non-empty API key has been configured because NiuOffice blocks
+sent until a non-empty API key has been configured because BP Office blocks
 the request entirely; afterward every endpoint request carries that key as a
 Bearer authorization header.
 
@@ -55,5 +55,5 @@ provide recovery for supported edits.
   executable.
 - Deliberate local-development path overrides such as `XLSX_SIDECAR_PATH`,
   which require control of the process environment.
-- Standalone source that is not built, reachable, or packaged in NiuOffice,
+- Standalone source that is not built, reachable, or packaged in BP Office,
   including the retained upstream Slides application.

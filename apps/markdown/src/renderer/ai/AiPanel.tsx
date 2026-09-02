@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent, ReactElement, ReactNode } from 'react'
 import { AgentLoop, EDITOR_AGENT_MAX_TURNS } from '@genoffice/agent-core'
 import type { AiSettings } from '@genoffice/ai-provider'
-import { AiComposer, AiTypingIndicator, Markdown, NiuOfficeMark } from '@genoffice/ui'
+import { AiComposer, AiTypingIndicator, Markdown, BPOfficeMark } from '@genoffice/ui'
 import type { Editor } from '@tiptap/core'
 import { aiLangDirective, t as tGlobal, useI18n } from '../i18n/locale'
 import sendEnterOn from '../assets/send-enter-on.png'
@@ -572,12 +572,12 @@ export function AiPanel({
         onPointerDown={startResize}
         role="separator"
         aria-orientation="vertical"
-        aria-label="NiuOffice AI"
+        aria-label="BP Office AI"
       />
       <header className="ai-panel-header">
         <span className="ai-panel-title">
-          <NiuOfficeMark size={22} />
-          NiuOffice AI
+          <BPOfficeMark size={22} />
+          BP Office AI
         </span>
         <div className="ai-panel-header-actions">
           {chat.length > 0 && (

@@ -247,7 +247,7 @@ test('PDF AI bookmark edits persist through save and reopen without a cloud docu
     await pdf.getByRole('button', { name: 'Home', exact: true }).click()
     const composer = pdf.locator('.ai-composer textarea')
     if (!(await composer.isVisible())) {
-      await pdf.locator('.rb-big.ai-entry', { hasText: 'NiuOffice AI' }).click()
+      await pdf.locator('.rb-big.ai-entry', { hasText: 'BP Office AI' }).click()
     }
     await expect(composer).toBeVisible()
     await composer.fill('Rename the existing bookmark and add another bookmark.')

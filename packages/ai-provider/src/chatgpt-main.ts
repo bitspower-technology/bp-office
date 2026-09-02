@@ -32,7 +32,7 @@ const nodeRequire = createRequire(import.meta.url)
 
 /**
  * Explicit deny list for every pinned Codex 0.147 feature that can discover,
- * expose, suggest, authorize, or execute a tool outside NiuOffice's dynamic
+ * expose, suggest, authorize, or execute a tool outside BP Office's dynamic
  * tool bridge. Keep this synchronized with `codex features list` on upgrades.
  */
 export const CHATGPT_DENIED_CODEX_FEATURES = [
@@ -94,7 +94,7 @@ const CHATGPT_RESTRICTED_CODEX_FEATURES = Object.freeze({
 /**
  * Process-wide overrides are applied before app-server initialization. This is
  * intentionally stricter than thread configuration: Codex performs plugin and
- * remote-control startup work before NiuOffice can issue `thread/start`.
+ * remote-control startup work before BP Office can issue `thread/start`.
  */
 export const CHATGPT_GLOBAL_CODEX_CONFIG_OVERRIDES = Object.freeze([
   'cli_auth_credentials_store="keyring"',
@@ -189,8 +189,8 @@ export const CHATGPT_RESTRICTED_THREAD_CONFIG = Object.freeze({
 })
 
 const RESTRICTED_BASE_INSTRUCTIONS =
-  'You are the AI assistant embedded in NiuOffice. Use only the dynamic tools supplied by ' +
-  'NiuOffice for this thread. Do not use a shell, filesystem tools, web search, apps, plugins, ' +
+  'You are the AI assistant embedded in BP Office. Use only the dynamic tools supplied by ' +
+  'BP Office for this thread. Do not use a shell, filesystem tools, web search, apps, plugins, ' +
   'connectors, computer use, image generation, or subagents. The exec JavaScript wrapper may ' +
   'only orchestrate the supplied dynamic editor tools; it is not a system shell. The isolated working ' +
   'directory is not the user document. Answer and edit only through the supplied dynamic tools.'
@@ -630,7 +630,7 @@ export class ChatGptAppServerClient {
       {
         clientInfo: this.options.clientInfo ?? {
           name: 'niuoffice',
-          title: 'NiuOffice',
+          title: 'BP Office',
           version: '0.1.0',
         },
         capabilities: { experimentalApi: true },
@@ -1149,7 +1149,7 @@ export function requireChatGptCodeModeHost(
   if (!fileExists(helper)) {
     throw new ChatGptUnavailableError(
       'The ChatGPT local document-tool runtime is incomplete (codex-code-mode-host is missing). ' +
-        'Install the complete NiuOffice installer or portable build, then retry. ' +
+        'Install the complete BP Office installer or portable build, then retry. ' +
         'This is a local installation problem, not an account sign-in failure.',
     )
   }

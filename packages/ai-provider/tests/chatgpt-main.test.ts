@@ -90,7 +90,7 @@ function fixtureOptions(
     codexHome: 'C:\\safe-user-data\\chatgpt-codex',
     workingDirectory: 'C:\\safe-user-data\\chatgpt-empty-workspace',
     executablePath: 'C:\\app\\resources\\native\\codex.exe',
-    clientInfo: { name: 'niuoffice', title: 'NiuOffice', version: '0.6.0' },
+    clientInfo: { name: 'bpoffice', title: 'BP Office', version: '0.6.0' },
     spawnProcess,
     runtimeFileExists: () => true,
     requestTimeoutMs: 1_000,

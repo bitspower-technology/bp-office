@@ -1,6 +1,6 @@
 /**
  * Fails when a removed cloud/search/Slides surface is reintroduced into a
- * shipped NiuOffice source tree or packaging configuration.
+ * shipped BP Office source tree or packaging configuration.
  */
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { extname, join, relative } from 'node:path'
@@ -176,9 +176,9 @@ if (existsSync(join(ROOT, 'packages/pdf2docx/tests/rebuild-pptx.test.ts'))) {
 }
 
 if (violations.length > 0) {
-  console.error('NiuOffice product-boundary violations:')
+  console.error('BP Office product-boundary violations:')
   for (const violation of violations) console.error(`  ${violation}`)
   process.exit(1)
 }
 
-console.log(`NiuOffice product boundaries verified across ${files.length} shipped files.`)
+console.log(`BP Office product boundaries verified across ${files.length} shipped files.`)

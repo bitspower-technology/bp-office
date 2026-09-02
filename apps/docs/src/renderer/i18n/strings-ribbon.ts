@@ -3,9 +3,9 @@ import { defineStrings } from '@genoffice/i18n'
 /** Strings for Ribbon / ribbon-tabs / icons */
 export const ribbonStrings = defineStrings({
   zh: {
-    ribbonAiProviderNote: '使用 NiuOffice AI',
+    ribbonAiProviderNote: '使用 BP Office AI',
     ribbonAiRewriteConfirm:
-      '此操作将使用 NiuOffice AI，并可能改写整篇内容。是否继续？（确认后不再提示）',
+      '此操作将使用 BP Office AI，并可能改写整篇内容。是否继续？（确认后不再提示）',
     // Tabs
     ribbonTabFile: '文件',
     ribbonTabHome: '开始',
@@ -143,7 +143,7 @@ export const ribbonStrings = defineStrings({
     ribbonMoreStyles: '更多样式',
     ribbonGroupStyles: '样式',
     // Home · AI
-    ribbonAiAssistant: 'NiuOffice AI',
+    ribbonAiAssistant: 'BP Office AI',
     ribbonAiAssistantTip: '打开 AI 助手',
     // Table Design
     ribbonRemoveTableStyleTip: '移除表格样式',
@@ -707,9 +707,9 @@ export const ribbonStrings = defineStrings({
     ribbonGroupClear: '清除',
   },
   en: {
-    ribbonAiProviderNote: 'Uses NiuOffice AI',
+    ribbonAiProviderNote: 'Uses BP Office AI',
     ribbonAiRewriteConfirm:
-      'This action uses NiuOffice AI and may rewrite the entire content. Continue? (You will not be asked again.)',
+      'This action uses BP Office AI and may rewrite the entire content. Continue? (You will not be asked again.)',
     ribbonTabFile: 'File',
     ribbonTabHome: 'Home',
     ribbonTabInsert: 'Insert',
@@ -842,7 +842,7 @@ export const ribbonStrings = defineStrings({
       'Styles pane: browse all styles, create or update styles from the selection',
     ribbonMoreStyles: 'More styles',
     ribbonGroupStyles: 'Styles',
-    ribbonAiAssistant: 'NiuOffice AI',
+    ribbonAiAssistant: 'BP Office AI',
     ribbonAiAssistantTip: 'Open the AI assistant',
     ribbonRemoveTableStyleTip: 'Remove table style',
     ribbonNoStyle: 'No Style',
@@ -1406,9 +1406,9 @@ export const ribbonStrings = defineStrings({
     ribbonGroupClear: 'Clear',
   },
   ja: {
-    ribbonAiProviderNote: 'NiuOffice AI を使用します',
+    ribbonAiProviderNote: 'BP Office AI を使用します',
     ribbonAiRewriteConfirm:
-      'この操作は NiuOffice AI を使用し、内容全体が書き換えられる可能性があります。続行しますか？（確認後は再表示されません）',
+      'この操作は BP Office AI を使用し、内容全体が書き換えられる可能性があります。続行しますか？（確認後は再表示されません）',
     // Tabs
     ribbonTabFile: 'ファイル',
     ribbonTabHome: 'ホーム',
@@ -1548,7 +1548,7 @@ export const ribbonStrings = defineStrings({
     ribbonMoreStyles: 'その他のスタイル',
     ribbonGroupStyles: 'スタイル',
     // Home · AI
-    ribbonAiAssistant: 'NiuOffice AI',
+    ribbonAiAssistant: 'BP Office AI',
     ribbonAiAssistantTip: 'AI アシスタントを開く',
     // Table Design
     ribbonRemoveTableStyleTip: '表のスタイルを削除',
@@ -2124,9 +2124,9 @@ export const ribbonStrings = defineStrings({
     ribbonGroupClear: 'クリア',
   },
   ko: {
-    ribbonAiProviderNote: 'NiuOffice AI를 사용합니다',
+    ribbonAiProviderNote: 'BP Office AI를 사용합니다',
     ribbonAiRewriteConfirm:
-      '이 작업은 NiuOffice AI를 사용하며 전체 내용이 다시 작성될 수 있습니다. 계속하시겠습니까? (확인 후 다시 묻지 않습니다)',
+      '이 작업은 BP Office AI를 사용하며 전체 내용이 다시 작성될 수 있습니다. 계속하시겠습니까? (확인 후 다시 묻지 않습니다)',
     // Tabs
     ribbonTabFile: '파일',
     ribbonTabHome: '홈',
@@ -2266,7 +2266,7 @@ export const ribbonStrings = defineStrings({
     ribbonMoreStyles: '스타일 더 보기',
     ribbonGroupStyles: '스타일',
     // Home · AI
-    ribbonAiAssistant: 'NiuOffice AI',
+    ribbonAiAssistant: 'BP Office AI',
     ribbonAiAssistantTip: 'AI 도우미 열기',
     // Table Design
     ribbonRemoveTableStyleTip: '표 스타일 제거',
@@ -2840,9 +2840,9 @@ export const ribbonStrings = defineStrings({
     ribbonGroupClear: '지우기',
   },
   fr: {
-    ribbonAiProviderNote: 'Utilise NiuOffice AI',
+    ribbonAiProviderNote: 'Utilise BP Office AI',
     ribbonAiRewriteConfirm:
-      'Cette action utilise NiuOffice AI et peut réécrire tout le contenu. Continuer ? (Vous ne serez plus averti.)',
+      'Cette action utilise BP Office AI et peut réécrire tout le contenu. Continuer ? (Vous ne serez plus averti.)',
     ribbonTabFile: 'Fichier',
     ribbonTabHome: 'Accueil',
     ribbonTabInsert: 'Insertion',
@@ -2976,7 +2976,7 @@ export const ribbonStrings = defineStrings({
       'Volet Styles : parcourir tous les styles, créer ou mettre à jour un style à partir de la sélection',
     ribbonMoreStyles: 'Autres styles',
     ribbonGroupStyles: 'Styles',
-    ribbonAiAssistant: 'NiuOffice AI',
+    ribbonAiAssistant: 'BP Office AI',
     ribbonAiAssistantTip: "Ouvrir l'assistant IA",
     ribbonRemoveTableStyleTip: 'Supprimer le style de tableau',
     ribbonNoStyle: 'Aucun style',
@@ -3550,9 +3550,9 @@ export const ribbonStrings = defineStrings({
     ribbonGroupClear: 'Effacer',
   },
   de: {
-    ribbonAiProviderNote: 'Verwendet NiuOffice AI',
+    ribbonAiProviderNote: 'Verwendet BP Office AI',
     ribbonAiRewriteConfirm:
-      'Diese Aktion verwendet NiuOffice AI und kann den gesamten Inhalt umschreiben. Fortfahren? (Sie werden nicht erneut gefragt.)',
+      'Diese Aktion verwendet BP Office AI und kann den gesamten Inhalt umschreiben. Fortfahren? (Sie werden nicht erneut gefragt.)',
     ribbonTabFile: 'Datei',
     ribbonTabHome: 'Start',
     ribbonTabInsert: 'Einfügen',
@@ -3686,7 +3686,7 @@ export const ribbonStrings = defineStrings({
       'Formatvorlagenbereich: alle Formatvorlagen anzeigen, aus der Auswahl neue erstellen oder aktualisieren',
     ribbonMoreStyles: 'Weitere Formatvorlagen',
     ribbonGroupStyles: 'Formatvorlagen',
-    ribbonAiAssistant: 'NiuOffice AI',
+    ribbonAiAssistant: 'BP Office AI',
     ribbonAiAssistantTip: 'KI-Assistenten öffnen',
     ribbonRemoveTableStyleTip: 'Tabellenformatvorlage entfernen',
     ribbonNoStyle: 'Keine Formatvorlage',
@@ -4260,9 +4260,9 @@ export const ribbonStrings = defineStrings({
     ribbonGroupClear: 'Löschen',
   },
   es: {
-    ribbonAiProviderNote: 'Usa NiuOffice AI',
+    ribbonAiProviderNote: 'Usa BP Office AI',
     ribbonAiRewriteConfirm:
-      'Esta acción usa NiuOffice AI y puede reescribir todo el contenido. ¿Continuar? (No se volverá a preguntar.)',
+      'Esta acción usa BP Office AI y puede reescribir todo el contenido. ¿Continuar? (No se volverá a preguntar.)',
     ribbonTabFile: 'Archivo',
     ribbonTabHome: 'Inicio',
     ribbonTabInsert: 'Insertar',
@@ -4397,7 +4397,7 @@ export const ribbonStrings = defineStrings({
       'Panel de estilos: ver todos los estilos y crear o actualizar estilos a partir de la selección',
     ribbonMoreStyles: 'Más estilos',
     ribbonGroupStyles: 'Estilos',
-    ribbonAiAssistant: 'NiuOffice AI',
+    ribbonAiAssistant: 'BP Office AI',
     ribbonAiAssistantTip: 'Abrir el asistente de IA',
     ribbonRemoveTableStyleTip: 'Quitar el estilo de tabla',
     ribbonNoStyle: 'Sin estilo',
@@ -4973,9 +4973,9 @@ export const ribbonStrings = defineStrings({
     ribbonGroupClear: 'Borrar',
   },
   th: {
-    ribbonAiProviderNote: 'ใช้ NiuOffice AI',
+    ribbonAiProviderNote: 'ใช้ BP Office AI',
     ribbonAiRewriteConfirm:
-      'การดำเนินการนี้ใช้ NiuOffice AI และอาจเขียนเนื้อหาทั้งหมดใหม่ ดำเนินการต่อหรือไม่ (จะไม่ถามอีก)',
+      'การดำเนินการนี้ใช้ BP Office AI และอาจเขียนเนื้อหาทั้งหมดใหม่ ดำเนินการต่อหรือไม่ (จะไม่ถามอีก)',
     ribbonTabFile: 'ไฟล์',
     ribbonTabHome: 'หน้าแรก',
     ribbonTabInsert: 'แทรก',
@@ -5106,7 +5106,7 @@ export const ribbonStrings = defineStrings({
     ribbonStylePaneTip: 'บานหน้าต่างสไตล์: ดูสไตล์ทั้งหมด สร้างหรืออัปเดตสไตล์จากส่วนที่เลือก',
     ribbonMoreStyles: 'สไตล์เพิ่มเติม',
     ribbonGroupStyles: 'สไตล์',
-    ribbonAiAssistant: 'NiuOffice AI',
+    ribbonAiAssistant: 'BP Office AI',
     ribbonAiAssistantTip: 'เปิดผู้ช่วย AI',
     ribbonRemoveTableStyleTip: 'เอาสไตล์ตารางออก',
     ribbonNoStyle: 'ไม่มีสไตล์',
@@ -5664,9 +5664,9 @@ export const ribbonStrings = defineStrings({
     ribbonGroupClear: 'ล้าง',
   },
   id: {
-    ribbonAiProviderNote: 'Menggunakan NiuOffice AI',
+    ribbonAiProviderNote: 'Menggunakan BP Office AI',
     ribbonAiRewriteConfirm:
-      'Tindakan ini menggunakan NiuOffice AI dan dapat menulis ulang seluruh konten. Lanjutkan? (Tidak akan ditanya lagi.)',
+      'Tindakan ini menggunakan BP Office AI dan dapat menulis ulang seluruh konten. Lanjutkan? (Tidak akan ditanya lagi.)',
     ribbonTabFile: 'File',
     ribbonTabHome: 'Beranda',
     ribbonTabInsert: 'Sisipkan',
@@ -5799,7 +5799,7 @@ export const ribbonStrings = defineStrings({
     ribbonStylePaneTip: 'Panel Gaya: telusuri semua gaya, buat atau perbarui gaya dari pilihan',
     ribbonMoreStyles: 'Gaya lainnya',
     ribbonGroupStyles: 'Gaya',
-    ribbonAiAssistant: 'NiuOffice AI',
+    ribbonAiAssistant: 'BP Office AI',
     ribbonAiAssistantTip: 'Buka asisten AI',
     ribbonRemoveTableStyleTip: 'Hapus gaya tabel',
     ribbonNoStyle: 'Tanpa Gaya',
@@ -6367,9 +6367,9 @@ export const ribbonStrings = defineStrings({
     ribbonGroupClear: 'Hapus',
   },
   ru: {
-    ribbonAiProviderNote: 'Использует NiuOffice AI',
+    ribbonAiProviderNote: 'Использует BP Office AI',
     ribbonAiRewriteConfirm:
-      'Это действие использует NiuOffice AI и может переписать всё содержимое. Продолжить? (Вопрос больше не появится.)',
+      'Это действие использует BP Office AI и может переписать всё содержимое. Продолжить? (Вопрос больше не появится.)',
     ribbonTabFile: 'Файл',
     ribbonTabHome: 'Главная',
     ribbonTabInsert: 'Вставка',
@@ -6502,7 +6502,7 @@ export const ribbonStrings = defineStrings({
       'Область стилей: просмотр всех стилей, создание и обновление стилей по выделенному фрагменту',
     ribbonMoreStyles: 'Другие стили',
     ribbonGroupStyles: 'Стили',
-    ribbonAiAssistant: 'NiuOffice AI',
+    ribbonAiAssistant: 'BP Office AI',
     ribbonAiAssistantTip: 'Открыть помощника ИИ',
     ribbonRemoveTableStyleTip: 'Удалить стиль таблицы',
     ribbonNoStyle: 'Без стиля',
@@ -7071,9 +7071,9 @@ export const ribbonStrings = defineStrings({
     ribbonGroupClear: 'Очистка',
   },
   ar: {
-    ribbonAiProviderNote: 'يستخدم NiuOffice AI',
+    ribbonAiProviderNote: 'يستخدم BP Office AI',
     ribbonAiRewriteConfirm:
-      'يستخدم هذا الإجراء NiuOffice AI وقد يعيد كتابة المحتوى بالكامل. هل تريد المتابعة؟ (لن يتم السؤال مرة أخرى.)',
+      'يستخدم هذا الإجراء BP Office AI وقد يعيد كتابة المحتوى بالكامل. هل تريد المتابعة؟ (لن يتم السؤال مرة أخرى.)',
     ribbonTabFile: 'ملف',
     ribbonTabHome: 'الشريط الرئيسي',
     ribbonTabInsert: 'إدراج',
@@ -7203,7 +7203,7 @@ export const ribbonStrings = defineStrings({
     ribbonStylePaneTip: 'جزء الأنماط: استعراض كافة الأنماط، وإنشاء الأنماط أو تحديثها من التحديد',
     ribbonMoreStyles: 'المزيد من الأنماط',
     ribbonGroupStyles: 'أنماط',
-    ribbonAiAssistant: 'NiuOffice AI',
+    ribbonAiAssistant: 'BP Office AI',
     ribbonAiAssistantTip: 'فتح مساعد الذكاء الاصطناعي',
     ribbonRemoveTableStyleTip: 'إزالة نمط الجدول',
     ribbonNoStyle: 'بلا نمط',
@@ -7763,9 +7763,9 @@ export const ribbonStrings = defineStrings({
     ribbonGroupClear: 'مسح',
   },
   pt: {
-    ribbonAiProviderNote: 'Usa o NiuOffice AI',
+    ribbonAiProviderNote: 'Usa o BP Office AI',
     ribbonAiRewriteConfirm:
-      'Esta ação usa o NiuOffice AI e pode reescrever todo o conteúdo. Continuar? (Não será perguntado novamente.)',
+      'Esta ação usa o BP Office AI e pode reescrever todo o conteúdo. Continuar? (Não será perguntado novamente.)',
     ribbonTabFile: 'Arquivo',
     ribbonTabHome: 'Página Inicial',
     ribbonTabInsert: 'Inserir',
@@ -7898,7 +7898,7 @@ export const ribbonStrings = defineStrings({
       'Painel de estilos: veja todos os estilos, crie ou atualize estilos a partir da seleção',
     ribbonMoreStyles: 'Mais estilos',
     ribbonGroupStyles: 'Estilos',
-    ribbonAiAssistant: 'NiuOffice AI',
+    ribbonAiAssistant: 'BP Office AI',
     ribbonAiAssistantTip: 'Abrir o assistente de IA',
     ribbonRemoveTableStyleTip: 'Remover estilo da tabela',
     ribbonNoStyle: 'Sem Estilo',
@@ -8466,9 +8466,9 @@ export const ribbonStrings = defineStrings({
     ribbonGroupClear: 'Limpar',
   },
   it: {
-    ribbonAiProviderNote: 'Usa NiuOffice AI',
+    ribbonAiProviderNote: 'Usa BP Office AI',
     ribbonAiRewriteConfirm:
-      "Questa azione usa NiuOffice AI e può riscrivere l'intero contenuto. Continuare? (Non verrà più chiesto.)",
+      "Questa azione usa BP Office AI e può riscrivere l'intero contenuto. Continuare? (Non verrà più chiesto.)",
     ribbonTabFile: 'File',
     ribbonTabHome: 'Home',
     ribbonTabInsert: 'Inserisci',
@@ -8602,7 +8602,7 @@ export const ribbonStrings = defineStrings({
       'Riquadro stili: sfoglia tutti gli stili, crea o aggiorna stili dalla selezione',
     ribbonMoreStyles: 'Altri stili',
     ribbonGroupStyles: 'Stili',
-    ribbonAiAssistant: 'NiuOffice AI',
+    ribbonAiAssistant: 'BP Office AI',
     ribbonAiAssistantTip: "Apri l'assistente IA",
     ribbonRemoveTableStyleTip: 'Rimuovi stile tabella',
     ribbonNoStyle: 'Nessuno stile',
@@ -9175,9 +9175,9 @@ export const ribbonStrings = defineStrings({
     ribbonGroupClear: 'Cancella',
   },
   pl: {
-    ribbonAiProviderNote: 'Korzysta z NiuOffice AI',
+    ribbonAiProviderNote: 'Korzysta z BP Office AI',
     ribbonAiRewriteConfirm:
-      'Ta akcja korzysta z NiuOffice AI i może przepisać całą treść. Kontynuować? (Nie zapytamy ponownie.)',
+      'Ta akcja korzysta z BP Office AI i może przepisać całą treść. Kontynuować? (Nie zapytamy ponownie.)',
     ribbonTabFile: 'Plik',
     ribbonTabHome: 'Narzędzia główne',
     ribbonTabInsert: 'Wstawianie',
@@ -9310,7 +9310,7 @@ export const ribbonStrings = defineStrings({
       'Okienko stylów: przeglądaj wszystkie style, twórz lub aktualizuj style na podstawie zaznaczenia',
     ribbonMoreStyles: 'Więcej stylów',
     ribbonGroupStyles: 'Style',
-    ribbonAiAssistant: 'NiuOffice AI',
+    ribbonAiAssistant: 'BP Office AI',
     ribbonAiAssistantTip: 'Otwórz asystenta AI',
     ribbonRemoveTableStyleTip: 'Usuń styl tabeli',
     ribbonNoStyle: 'Brak stylu',
@@ -9879,9 +9879,9 @@ export const ribbonStrings = defineStrings({
     ribbonGroupClear: 'Czyszczenie',
   },
   nl: {
-    ribbonAiProviderNote: 'Gebruikt NiuOffice AI',
+    ribbonAiProviderNote: 'Gebruikt BP Office AI',
     ribbonAiRewriteConfirm:
-      'Deze actie gebruikt NiuOffice AI en kan de volledige inhoud herschrijven. Doorgaan? (U wordt niet opnieuw gevraagd.)',
+      'Deze actie gebruikt BP Office AI en kan de volledige inhoud herschrijven. Doorgaan? (U wordt niet opnieuw gevraagd.)',
     ribbonTabFile: 'Bestand',
     ribbonTabHome: 'Start',
     ribbonTabInsert: 'Invoegen',
@@ -10016,7 +10016,7 @@ export const ribbonStrings = defineStrings({
       'Deelvenster Stijlen: blader door alle stijlen, maak of werk stijlen bij op basis van de selectie',
     ribbonMoreStyles: 'Meer stijlen',
     ribbonGroupStyles: 'Stijlen',
-    ribbonAiAssistant: 'NiuOffice AI',
+    ribbonAiAssistant: 'BP Office AI',
     ribbonAiAssistantTip: 'De AI-assistent openen',
     ribbonRemoveTableStyleTip: 'Tabelstijl verwijderen',
     ribbonNoStyle: 'Geen stijl',
@@ -10587,9 +10587,9 @@ export const ribbonStrings = defineStrings({
     ribbonGroupClear: 'Wissen',
   },
   ms: {
-    ribbonAiProviderNote: 'Menggunakan NiuOffice AI',
+    ribbonAiProviderNote: 'Menggunakan BP Office AI',
     ribbonAiRewriteConfirm:
-      'Tindakan ini menggunakan NiuOffice AI dan mungkin menulis semula keseluruhan kandungan. Teruskan? (Tidak akan ditanya lagi.)',
+      'Tindakan ini menggunakan BP Office AI dan mungkin menulis semula keseluruhan kandungan. Teruskan? (Tidak akan ditanya lagi.)',
     ribbonTabFile: 'Fail',
     ribbonTabHome: 'Laman Utama',
     ribbonTabInsert: 'Sisip',
@@ -10722,7 +10722,7 @@ export const ribbonStrings = defineStrings({
       'Anak tetingkap gaya: lihat semua gaya, cipta atau kemas kini gaya daripada pilihan',
     ribbonMoreStyles: 'Lebih banyak gaya',
     ribbonGroupStyles: 'Gaya',
-    ribbonAiAssistant: 'NiuOffice AI',
+    ribbonAiAssistant: 'BP Office AI',
     ribbonAiAssistantTip: 'Buka pembantu AI',
     ribbonRemoveTableStyleTip: 'Alih keluar gaya jadual',
     ribbonNoStyle: 'Tiada Gaya',
@@ -11291,9 +11291,9 @@ export const ribbonStrings = defineStrings({
     ribbonGroupClear: 'Kosongkan',
   },
   he: {
-    ribbonAiProviderNote: 'משתמש ב-NiuOffice AI',
+    ribbonAiProviderNote: 'משתמש ב-BP Office AI',
     ribbonAiRewriteConfirm:
-      'פעולה זו משתמשת ב-NiuOffice AI ועשויה לשכתב את כל התוכן. להמשיך? (לא תישאל שוב.)',
+      'פעולה זו משתמשת ב-BP Office AI ועשויה לשכתב את כל התוכן. להמשיך? (לא תישאל שוב.)',
     ribbonTabFile: 'קובץ',
     ribbonTabHome: 'בית',
     ribbonTabInsert: 'הוספה',
@@ -11423,7 +11423,7 @@ export const ribbonStrings = defineStrings({
     ribbonStylePaneTip: 'חלונית סגנונות: עיין בכל הסגנונות, צור או עדכן סגנונות מהקטע הנבחר',
     ribbonMoreStyles: 'סגנונות נוספים',
     ribbonGroupStyles: 'סגנונות',
-    ribbonAiAssistant: 'NiuOffice AI',
+    ribbonAiAssistant: 'BP Office AI',
     ribbonAiAssistantTip: 'פתח את עוזר ה-AI',
     ribbonRemoveTableStyleTip: 'הסר סגנון טבלה',
     ribbonNoStyle: 'ללא סגנון',
@@ -11978,9 +11978,9 @@ export const ribbonStrings = defineStrings({
     ribbonGroupClear: 'ניקוי',
   },
   hi: {
-    ribbonAiProviderNote: 'NiuOffice AI का उपयोग करता है',
+    ribbonAiProviderNote: 'BP Office AI का उपयोग करता है',
     ribbonAiRewriteConfirm:
-      'यह क्रिया NiuOffice AI का उपयोग करती है और पूरी सामग्री फिर से लिखी जा सकती है। जारी रखें? (दोबारा नहीं पूछा जाएगा।)',
+      'यह क्रिया BP Office AI का उपयोग करती है और पूरी सामग्री फिर से लिखी जा सकती है। जारी रखें? (दोबारा नहीं पूछा जाएगा।)',
     ribbonTabFile: 'फ़ाइल',
     ribbonTabHome: 'होम',
     ribbonTabInsert: 'सम्मिलित करें',
@@ -12113,7 +12113,7 @@ export const ribbonStrings = defineStrings({
     ribbonStylePaneTip: 'शैलियाँ फलक: सभी शैलियाँ देखें, चयन से नई शैली बनाएँ या अद्यतन करें',
     ribbonMoreStyles: 'और शैलियाँ',
     ribbonGroupStyles: 'शैलियाँ',
-    ribbonAiAssistant: 'NiuOffice AI',
+    ribbonAiAssistant: 'BP Office AI',
     ribbonAiAssistantTip: 'AI सहायक खोलें',
     ribbonRemoveTableStyleTip: 'तालिका शैली हटाएँ',
     ribbonNoStyle: 'कोई शैली नहीं',
@@ -12682,9 +12682,9 @@ export const ribbonStrings = defineStrings({
     ribbonGroupClear: 'साफ़ करें',
   },
   'zh-TW': {
-    ribbonAiProviderNote: '使用 NiuOffice AI',
+    ribbonAiProviderNote: '使用 BP Office AI',
     ribbonAiRewriteConfirm:
-      '此操作將使用 NiuOffice AI，並可能改寫整篇內容。是否繼續？（確認後不再提示）',
+      '此操作將使用 BP Office AI，並可能改寫整篇內容。是否繼續？（確認後不再提示）',
     ribbonTabFile: '檔案',
     ribbonTabHome: '常用',
     ribbonTabInsert: '插入',
@@ -12813,7 +12813,7 @@ export const ribbonStrings = defineStrings({
     ribbonStylePaneTip: '樣式窗格：檢視全部樣式，從選取範圍新增/更新樣式',
     ribbonMoreStyles: '更多樣式',
     ribbonGroupStyles: '樣式',
-    ribbonAiAssistant: 'NiuOffice AI',
+    ribbonAiAssistant: 'BP Office AI',
     ribbonAiAssistantTip: '開啟 AI 助理',
     ribbonRemoveTableStyleTip: '移除表格樣式',
     ribbonNoStyle: '無樣式',

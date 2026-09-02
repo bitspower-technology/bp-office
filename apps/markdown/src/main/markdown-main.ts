@@ -298,7 +298,7 @@ interface RuntimePaths {
   preloadPath: string
   rendererUrl?: string
   rendererFile?: string
-  /** Shell router used to open exported PDFs in a new NiuOffice tab. */
+  /** Shell router used to open exported PDFs in a new BP Office tab. */
   openGeneratedPath?: (path: string) => boolean
 }
 

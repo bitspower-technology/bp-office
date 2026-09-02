@@ -1277,7 +1277,7 @@ interface SheetsRuntimeConfig {
   rendererFile: string
   /** absolute path to the Rust xlsx-sidecar binary */
   sidecarPath?: string | undefined
-  /** Shell router used to open exported PDFs in a new NiuOffice tab. */
+  /** Shell router used to open exported PDFs in a new BP Office tab. */
   openGeneratedPath?: (path: string) => boolean
 }
 
@@ -1497,7 +1497,7 @@ function sheetsChatGptProvider() {
     ...(app.isPackaged
       ? { executablePath: join(process.resourcesPath, 'native', executable) }
       : {}),
-    clientInfo: { name: 'niuoffice', title: 'NiuOffice', version: app.getVersion() },
+    clientInfo: { name: 'bpoffice', title: 'BP Office', version: app.getVersion() },
   })
 }
 
@@ -1729,7 +1729,7 @@ export async function createSheetsWindow(
     minWidth: 1024,
     minHeight: 680,
     show: false,
-    title: 'NiuOffice Sheets',
+    title: 'BP Office Sheets',
     // Traffic lights sit inside the toolbar row.
     ...(process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset' as const } : {}),
     webPreferences: {

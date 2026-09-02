@@ -510,17 +510,17 @@ const config = {
   // sidecar was actually built for. Packaging arm64 on an x64 host, or the
   // reverse, needs a matching `cargo build --target` first.
   linux: {
-    // Downloaded artifacts carry NiuOffice branding while package/executable
-    // identity remains on the historical GenOffice upgrade lineage.
+    // BP Office is an independent distribution: package names, executable name and
+    // desktop id all derive from product.json so nothing collides with the upstream
+    // NiuOffice/GenOffice packages a machine may already have installed.
     target: [
       { target: 'AppImage', arch: ['x64'] },
       { target: 'deb', arch: ['x64'] },
       { target: 'rpm', arch: ['x64'] },
     ],
-    // deb control metadata; values match the manually published 0.5.149 deb
-    // so apt sees the new packages as the same lineage. Homepage comes from
-    // package.json "homepage"; the Package field is pinned in the deb block
-    // below (packageName is a per-target option, rejected here by the schema).
+    // deb control metadata. Homepage comes from package.json "homepage"; the Package
+    // field is pinned in the deb block below (packageName is a per-target option,
+    // rejected here by the schema).
     maintainer: productConfig.vendor,
     vendor: productConfig.vendor,
     category: 'Office',
@@ -534,15 +534,15 @@ const config = {
     // mac and win name the binary from productName; linux instead derives it
     // from package.json "name", and "@genoffice/shell" sanitizes to the
     // invalid "@genofficeshell". Setting it explicitly also makes the
-    // generated genoffice.desktop match the WM_CLASS Electron reports (it
+    // generated bpoffice.desktop match the WM_CLASS Electron reports (it
     // takes that from the executable basename), so the running window links
     // back to its launcher entry.
     executableName: productConfig.executableName,
     // Electron takes its X11 app_id from package.json "desktopName"
-    // (genoffice.desktop); syncDesktopName makes electron-builder name the
+    // (bpoffice.desktop); syncDesktopName makes electron-builder name the
     // .desktop file and its StartupWMClass from the same value. Without it
-    // StartupWMClass falls back to productName ("NiuOffice"), which does not
-    // match the "genoffice" WM_CLASS the window actually reports — and X11
+    // StartupWMClass falls back to productName ("BP Office"), which does not
+    // match the "bpoffice" WM_CLASS the window actually reports — and X11
     // compares case-sensitively, so the taskbar shows an unlinked window.
     syncDesktopName: true,
     extraResources: [
@@ -561,8 +561,8 @@ const config = {
   // install, breaking upgrades. Without it, fpm receives productName
   // "GenOffice" and only happens to downcase it to the right value.
   deb: {
-    artifactName: 'niuoffice_${version}_${arch}.deb',
-    packageName: 'genoffice',
+    artifactName: 'bpoffice_${version}_${arch}.deb',
+    packageName: 'bpoffice',
   },
   // Same "@genoffice/shell" naming problem as deb: spell the artifact name
   // out (${arch} expands to the rpm arch string, x86_64) and pin the rpm
@@ -576,8 +576,8 @@ const config = {
   // latest-linux.yml keeps listing exactly what the CDN pipeline uploads
   // (AppImage + deb) and the promote workflow needs no rpm alias.
   rpm: {
-    artifactName: 'niuoffice-${version}.${arch}.rpm',
-    packageName: 'genoffice',
+    artifactName: 'bpoffice-${version}.${arch}.rpm',
+    packageName: 'bpoffice',
     publish: null,
   },
   nsis: {
@@ -609,6 +609,11 @@ if (updateUrl) {
       provider: 'generic',
       url: updateUrl,
       channel: 'latest',
+      // Baked into app-update.yml. Without it electron-builder derives the updater cache
+      // directory from the internal "@genoffice/shell" workspace name, which would make
+      // BP Office share <LocalAppData>/@genofficeshell-updater with an upstream
+      // NiuOffice/GenOffice install on the same machine.
+      updaterCacheDirName: `${productConfig.executableName}-updater`,
     },
   ]
 }

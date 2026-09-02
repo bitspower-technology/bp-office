@@ -1,79 +1,79 @@
-# NiuOffice release tracks
+# BP Office branches and release discipline
 
-This repository maintains exactly two active product branches: `main` and
-`OEM`. They share the editor codebase but intentionally have different AI and
-release contracts. Historical branches may remain available for reference;
-they are not maintained release tracks.
+This repository maintains exactly one active product branch: `main`. It is both the
+development branch and the authorized release branch — the only commit allowed to
+produce client binaries is the current tip of `main`.
 
-## `main`: personal edition
+## `main`: BP Office
 
-`main` is the canonical development branch and contains both supported AI
-connections:
+`main` ships the endpoint-only OEM edition: OpenAI Endpoint is the single selectable
+AI connection, and ChatGPT selection, authentication, IPC, and Codex runtime packaging
+stay absent or disabled by the boundary gates in `tools/check-oem-boundaries.mjs` and
+`tools/check-niuoffice-boundaries.mjs`.
 
-- OpenAI Endpoint, including local LM Studio-compatible servers.
-- ChatGPT subscription through the pinned, isolated Codex app-server runtime.
+Only `main` produces BP Office Windows binaries. A release tag must equal
+`v<apps/shell/package.json version>` (for example `v1.0.0-bp.1`) and point at the
+current `main` commit. [`.github/workflows/release-bpoffice.yml`](.github/workflows/release-bpoffice.yml)
+verifies that relationship before publishing, then uploads:
 
-Only `main` produces official NiuOffice Windows binaries. A release tag must
-match the version in `apps/shell/package.json` and point at the current `main`
-commit. The release workflow verifies that relationship before publishing:
-
-- `NiuOffice-Setup-<version>.exe`
-- `NiuOffice-Portable-<version>.exe`
-- `latest.yml` and any updater sidecar metadata
+- `BPOffice-Setup-<version>.exe` (the only asset `latest.yml` may reference)
+- `BPOffice-Portable-<version>.exe` (manual updates only)
+- `latest.yml`
 - `SHA256SUMS.txt`
-- the complete source archive
+- `BPOffice-<version>-source.zip`
 
-The installed setup build uses the configured public GitHub Releases endpoint
-as its update feed. Portable builds do not run the automatic updater and must
-be replaced manually.
+The installed setup build uses this repository's public GitHub Releases endpoint as its
+update feed. Portable builds never run the automatic updater and must be replaced
+manually.
 
-An updater feed must be anonymously readable. Do not put a GitHub token,
-personal access token, or other repository credential in the application. If
-the source repository is private, configure a separate public repository for
-release assets before producing the first updater-enabled build.
+An updater feed must be anonymously readable. Never put a GitHub token, personal access
+token, or other repository credential in `branding/product.json`, an environment
+override, the application source, or a packaged executable. If this repository were ever
+made private, release assets would have to move to a separate public update repository
+before the next updater-enabled build.
 
-The already-published `0.8.667-niu.3` build contains no updater feed metadata.
-Existing users must install the first updater-enabled setup build manually;
-automatic updates can work for subsequent releases.
+Versioning starts at `1.0.0-bp.1` with the first BP Office release; there is no legacy
+BP Office install base to migrate, and upstream BP Office/GenOffice releases are a
+different product line with their own tags and user-data directories.
 
-## `OEM`: endpoint-only source edition
+## Signing
 
-`OEM` is the distributable source template. It exposes only OpenAI Endpoint;
-ChatGPT selection, authentication, IPC, runtime packaging, and editor routing
-must remain absent or disabled by the OEM gates. The branch contains
-`OEM_CUSTOMIZATION.md`, which is the authoritative runbook for an AI agent
-that applies a distributor's branding, identity, public update repository,
-and signing configuration.
+Releases are unsigned until Bitspower Technology provisions its own Windows code signing
+certificate as `WINDOWS_CSC_LINK` / `WINDOWS_CSC_KEY_PASSWORD`. `CSC_IDENTITY_AUTO_DISCOVERY`
+stays `false` so a build host can never silently pick a different identity, and the job
+fails when credentials were supplied but the executables are unsigned. Unsigned builds are
+described as `unsigned contributor build` in their release notes; never imply that an
+unsigned binary is production-signed.
 
-The NiuOffice repository pushes source changes to `OEM` but never builds,
-tags, releases, or uploads OEM executables. Each distributor owns its distinct
-application identity and release feed and builds the branded artifacts in its
-own repository.
+## Integrating upstream changes
 
-## Integrating changes
+Upstream work flows one way: shared changes land in the upstream BP Office `main`, are
+integrated into its source-only `OEM` template branch, and are then merged or cherry-picked
+into this repository.
 
-For a change that applies to both editions:
+1. Fetch the upstream template branch and merge it into a feature branch of `main`.
+2. Resolve conflicts while preserving the BP Office identity in `branding/product.json`,
+   the endpoint-only feature gates, and the distributor branding under `branding/`.
+3. Re-run the shared CI suite plus both boundary checks (`npm run check:product-boundaries`
+   and `npm run check:oem-boundaries`) before merging to `main`.
+4. Regenerate brand assets only when master art changes, and regenerate third-party notices
+   whenever dependencies change.
 
-1. Implement and validate it on `main`.
-2. Merge `main` into `OEM`; do not rewrite or rebase the published branch.
-3. Resolve the merge while preserving the OEM endpoint-only feature gates,
-   identity configuration, and customization guide.
-4. Run the shared CI suite plus the OEM negative checks before pushing `OEM`.
-
-Changes that depend on ChatGPT or the NiuOffice release service stay on
-`main` unless an explicit OEM-safe implementation is designed. Do not merge
-`OEM` wholesale back into `main`; promote individual OEM fixes through a
-reviewed `main` change instead.
+Never merge this repository back into the upstream template, and never publish BP Office
+binaries or tags to an upstream repository.
 
 ## Release discipline
 
-- A Git branch is not an update feed. Updaters consume release metadata and
-  versioned assets from GitHub Releases.
-- Publish NiuOffice release tags only from the current `main` commit. `OEM`
-  must never publish to the NiuOffice feed.
-- Keep artifact names stable and URL-safe. `latest.yml` must name the exact
-  installer asset uploaded by the same release job.
-- Run formatting, linting, typechecking, tests, builds, archive audits, and
-  checksum generation before publishing.
-- Unsigned contributor builds must be identified as unsigned in their release
-  notes. Never imply that an OEM distributor's build is signed by NiuOffice.
+- A Git branch is not an update feed. Updaters consume release metadata and versioned
+  assets from GitHub Releases.
+- Publish release tags only from the current `main` commit, and only after CI is green.
+- Keep artifact names stable and URL-safe. `latest.yml` must name the exact installer asset
+  uploaded by the same release job, with a matching SHA-512.
+- Never overwrite or delete the assets of an already published release; publish a new
+  version instead.
+- Run formatting, linting, typechecking, tests, builds, archive audits, and checksum
+  generation before publishing.
+- Before declaring auto-update ready, run the two-version smoke test described in
+  [OEM_CUSTOMIZATION.md](OEM_CUSTOMIZATION.md): install version A, publish strictly newer
+  version B from the next `main` tip tag, confirm the upgrade, the surviving per-client
+  endpoint configuration, and that portable builds stay manual.

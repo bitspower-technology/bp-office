@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import niuOfficeLogo from './assets/niuoffice-logo.svg'
+import bpOfficeLogo from './assets/bpoffice-logo.svg'
 import iconDocx from './assets/file-docx.svg'
 import iconXlsx from './assets/file-xlsx.svg'
 import iconPdf from './assets/file-pdf.svg'
@@ -1521,7 +1521,7 @@ export function Home() {
     <div className="home">
       <aside className="sidebar">
         <div className="sidebar-logo">
-          <img className="logo-lockup" src={niuOfficeLogo} alt="NiuOffice" />
+          <img className="logo-lockup" src={bpOfficeLogo} alt="BP Office" />
         </div>
 
         <nav className="sidebar-nav">

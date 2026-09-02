@@ -172,7 +172,7 @@ import {
 } from './lmstudio-settings'
 
 /**
- * NiuOffice unified shell: ONE Electron app, ONE BrowserWindow, hosting the
+ * BP Office unified shell: ONE Electron app, ONE BrowserWindow, hosting the
  * docs and sheets modules as WebContentsView tabs behind a WPS-style tab
  * strip. The shell owns the lifecycle — single-instance lock, file-
  * association routing by extension, and per-active-tab menu switching.
@@ -285,7 +285,7 @@ function currentTheme(): UiTheme {
 }
 
 // ---- first-run onboarding ----
-// NiuOffice community page opened from the onboarding's second slide.
+// BP Office community page opened from the onboarding's second slide.
 const readStarPrompt = () =>
   asStarPromptState(readAppSettings(APP_SETTINGS_PATH())[STAR_PROMPT_KEY])
 const writeStarPrompt = (state: ReturnType<typeof readStarPrompt>) =>
@@ -1447,7 +1447,7 @@ function chatGptProvider() {
     ...(app.isPackaged
       ? { executablePath: join(process.resourcesPath, 'native', executable) }
       : {}),
-    clientInfo: { name: 'niuoffice', title: 'NiuOffice', version: app.getVersion() },
+    clientInfo: { name: 'bpoffice', title: 'BP Office', version: app.getVersion() },
   })
 }
 

@@ -10,7 +10,7 @@ export interface ExecutedToolCall {
 /**
  * A skill packages one capability domain for the agent loop: its system
  * prompt section, its tools, per-turn context, and the tool executor.
- * NiuOffice editors plug their document-specific skills into the same loop.
+ * BP Office editors plug their document-specific skills into the same loop.
  */
 export interface AgentSkill {
   id: string

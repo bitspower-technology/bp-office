@@ -32,7 +32,7 @@ describe.runIf(enabled)('official Codex app-server smoke', () => {
       executablePath,
       requestTimeoutMs: 30_000,
       startTimeoutMs: 30_000,
-      clientInfo: { name: 'niuoffice-smoke', title: 'NiuOffice Smoke Test', version: '0.0.0' },
+      clientInfo: { name: 'bpoffice-smoke', title: 'BP Office Smoke Test', version: '0.0.0' },
     })
     try {
       await expect(client.readAccount()).resolves.toBeNull()

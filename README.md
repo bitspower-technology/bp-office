@@ -1,23 +1,24 @@
-# NiuOffice
+# BP Office
 
-![NiuOffice gradient-outline logo](branding/niuoffice-gradient-outline.svg)
+<img src="branding/source/icon.png" alt="BP Office" width="96" height="96" />
 
-NiuOffice is a free, open-source desktop office suite with local-first editing
-and optional AI assistance. It works with Word (`.docx`), Excel (`.xlsx`,
-`.xlsm`, `.xls`, `.csv`), PDF, and Markdown files and keeps those editors
-together in one tabbed application.
+BP Office is a free, open-source desktop office suite from Bitspower Technology
+with local-first editing and optional AI assistance. It works with Word
+(`.docx`), Excel (`.xlsx`, `.xlsm`, `.xls`, `.csv`), PDF, and Markdown files and
+keeps those editors together in one tabbed application.
 
-> **OEM branch:** this branch is the source-only distributor template. It
-> exposes OpenAI Endpoint only, does not package the ChatGPT subscription
-> runtime, and does not publish NiuOffice-branded executables. See
-> [OEM_CUSTOMIZATION.md](OEM_CUSTOMIZATION.md) before creating a branded build.
-> The personal NiuOffice edition is maintained on [`main`](../../tree/main).
+> **Distributor build:** BP Office is the endpoint-only OEM edition. It exposes
+> OpenAI Endpoint only, never packages the ChatGPT subscription runtime, ships no
+> Slides editor, cloud integration, network AI Search, or telemetry, and updates
+> from this repository's public GitHub Releases feed. See
+> [OEM_CUSTOMIZATION.md](OEM_CUSTOMIZATION.md) for the rebranding and update rules
+> this repository follows.
 
-[![License: Apache-2.0](https://img.shields.io/github/license/Niuulh/NiuOffice)](LICENSE)
-[![Latest release](https://img.shields.io/github/v/release/Niuulh/NiuOffice)](https://github.com/Niuulh/NiuOffice/releases/latest)
-[![Downloads](https://img.shields.io/github/downloads/Niuulh/NiuOffice/total)](https://github.com/Niuulh/NiuOffice/releases)
+[![License: Apache-2.0](https://img.shields.io/github/license/bitspower-technology/bp-office)](LICENSE)
+[![Latest release](https://img.shields.io/github/v/release/bitspower-technology/bp-office)](https://github.com/bitspower-technology/bp-office/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/bitspower-technology/bp-office/total)](https://github.com/bitspower-technology/bp-office/releases)
 
-[Download](https://github.com/Niuulh/NiuOffice/releases/latest) ·
+[Download](https://github.com/bitspower-technology/bp-office/releases/latest) ·
 [Privacy](PRIVACY.md) · [Security](SECURITY.md)
 
 ## Highlights
@@ -37,147 +38,189 @@ together in one tabbed application.
 - No Slides editor, Genspark account/cloud integration, network AI Search, or
   usage telemetry.
 
-## Editions and maintained branches
+## Branches and releases
 
-NiuOffice has two maintained release tracks:
+BP Office keeps one trunk:
 
-- [`main`](https://github.com/Niuulh/NiuOffice/tree/main) is the personal
-  edition. It includes OpenAI Endpoint and the optional ChatGPT subscription
-  connection. Tagged `main` releases publish the Windows installer and
-  portable executable.
-- [`OEM`](https://github.com/Niuulh/NiuOffice/tree/OEM) is the distributable
-  source edition. It exposes only OpenAI Endpoint and contains an OEM
-  rebranding/update configuration guide. NiuOffice does not publish binaries
-  from this branch.
+- `main` is both the development branch and the authorized release branch. A
+  Windows binary may only be produced from a tag whose commit is the exact tip
+  of `main`, by [`.github/workflows/release-bpoffice.yml`](.github/workflows/release-bpoffice.yml).
+- Release tags use `v<apps/shell/package.json version>` — for example
+  `v1.0.0-bp.1` — and every published release is public, non-prerelease, and
+  marked Latest so the updater feed resolves anonymously.
 
-Shared development starts on `main` and is then integrated into `OEM` with the
-OEM provider and packaging gates kept intact. Historical branches such as
-`GPT` and `feat/lmstudio-provider` are retained but are not active release
-tracks. See [BRANCHES.md](BRANCHES.md) for the maintenance and release rules.
+Upstream work flows in one direction: shared changes land in the upstream BP Office
+`main`, are integrated into its `OEM` template branch, and are then merged into this
+repository. The OEM provider, boundary, and packaging gates must stay green after
+every merge.
 
 ## AI provider
 
-The OEM edition exposes one AI connection under **Settings → AI Provider**.
+BP Office exposes one AI connection under **Settings → AI Provider**.
 
 ### OpenAI Endpoint
 
-OpenAI Endpoint is the default. NiuOffice connects to the configured
-OpenAI-compatible endpoint, discovers available LLMs, and prefers a loaded
-model with tool support. The default URL, `http://127.0.0.1:1234/v1`, matches
-LM Studio's local server. The server URL, API key, and automatic or manual
-model choice are configurable. The API key is required and every discovery,
-status, chat, vision, and tool-call request sends it as
-`Authorization: Bearer <api-key>`. This also supports authenticated hosted
-endpoints such as Unsloth and lets the server identify each assigned client
-key.
+OpenAI Endpoint is the only selectable provider (the internal provider ID stays
+`lmstudio` for settings compatibility). BP Office connects to the configured
+OpenAI-compatible endpoint, discovers available LLMs, and prefers a loaded model
+with tool support. The default URL, `http://127.0.0.1:1234/v1`, matches LM
+Studio's local server; point it at your own OpenAI-compatible service in
+`packages/ai-provider/src/lmstudio.ts` (`LM_STUDIO_DEFAULT_BASE_URL`) or let each
+user set it in Settings. Hosted endpoints must use HTTPS.
+
+An API key is mandatory: blank keys are rejected before any network access, and
+every discovery, status, chat, streaming, vision, and tool-call request sends
+`Authorization: Bearer <api-key>`. Each customer receives a distinct
+server-issued key — there is no vendor-wide fallback key, and no key is ever
+committed, packaged, or logged. The key is stored in `<userData>/ai-settings.json`
+in plain text; treat that file as sensitive.
 
 The status row in the bottom-left corner reports whether OpenAI Endpoint is
 connected, has no models, requires authentication, or is unreachable. ChatGPT
 subscription selection, OAuth IPC, and the Codex runtime are disabled and not
-packaged in this edition. NiuOffice permits up to 200 tool turns per run,
-restores up to 512 messages, and maintains a 1 MiB conversation budget
-(approximately 256K tokens) with compaction retaining the newest 384 KiB. The
-selected endpoint model's own context limit still applies.
+packaged. BP Office permits up to 200 tool turns per run, restores up to 512
+messages, and maintains a 1 MiB conversation budget (approximately 256K tokens)
+with compaction retaining the newest 384 KiB. The selected endpoint model's own
+context limit still applies.
 
-NiuOffice has no network search tool. Ordinary Ctrl+F, PDF/document search,
-Sheets find/replace, workbook inspection, and the local agent `search_text`
-tool remain available.
+BP Office has no network search tool. Ordinary Ctrl+F, PDF/document search,
+Sheets find/replace, workbook inspection, and the local agent `search_text` tool
+remain available.
 
-## Distribution
+## Distribution and automatic updates
 
-The NiuOffice repository publishes no executable from `OEM`. A distributor
-must first apply a unique identity and branding, configure its own public
-GitHub Releases feed, and build in its own repository by following
-[OEM_CUSTOMIZATION.md](OEM_CUSTOMIZATION.md).
+Installed BP Office builds update from this repository's public generic feed:
 
-The personal `main` edition publishes these NiuOffice artifacts when its public
-update feed is configured:
+```text
+https://github.com/bitspower-technology/bp-office/releases/latest/download
+```
 
-| Build                   | Artifact                           |
-| ----------------------- | ---------------------------------- |
-| Windows installer (x64) | `NiuOffice-Setup-<version>.exe`    |
-| Windows portable (x64)  | `NiuOffice-Portable-<version>.exe` |
-| Complete source archive | `NiuOffice-<version>-source.zip`   |
-| Update metadata         | `latest.yml`                       |
-| SHA-256 checksums       | `SHA256SUMS.txt`                   |
+`apps/shell/electron-builder.cjs` derives that URL from
+[`branding/product.json`](branding/product.json) (`repository.owner`,
+`repository.name`) and bakes it into `app-update.yml`; the same values drive the
+in-app repository and manual-download links. `updates.enabled` is therefore only
+true here because this repository publishes the matching public releases.
 
-Unless a release explicitly says otherwise, contributor Windows executables
-are unsigned.
+| Build                   | Artifact                          |
+| ----------------------- | --------------------------------- |
+| Windows installer (x64) | `BPOffice-Setup-<version>.exe`    |
+| Windows portable (x64)  | `BPOffice-Portable-<version>.exe` |
+| Complete source archive | `BPOffice-<version>-source.zip`   |
+| Update metadata         | `latest.yml`                      |
+| SHA-256 checksums       | `SHA256SUMS.txt`                  |
 
-Installed personal-edition builds check the configured public GitHub Releases feed and
-offer newer installer releases in the app. Releases are repository-wide, so
-the release workflow accepts only a tag whose commit is the current `main`
-commit. The feed and its assets must be readable without authentication; an
-access token is never embedded in NiuOffice. A private source repository must
-therefore publish updater assets in a separate public update repository.
+The feed must stay readable without authentication; an access token is never
+embedded in BP Office. Releases are repository-wide, so the release workflow
+accepts only a tag whose commit is the current `main` commit, and it never
+overwrites the assets of an already published release. `latest.yml` references
+only the setup executable — portable builds stay deliberately manual-update-only.
 
-Portable builds are deliberately manual-update-only. The existing
-`0.8.667-niu.3` installer also predates the updater feed metadata, so it cannot
-discover a later version: install the first updater-enabled setup executable
-manually once to enter the automatic-update track.
+Releases are unsigned until Bitspower Technology configures its own Windows code
+signing certificate as `WINDOWS_CSC_LINK` / `WINDOWS_CSC_KEY_PASSWORD` in this
+repository's Actions secrets. Unsigned builds are labelled `unsigned contributor
+build` in the release notes and trigger SmartScreen reputation warnings on first
+launch.
 
 ## Shipped editors
 
 | Source          | Product            | Formats                          |
 | --------------- | ------------------ | -------------------------------- |
-| `apps/docs`     | NiuOffice Docs     | `.docx`                          |
-| `apps/sheets`   | NiuOffice Sheets   | `.xlsx`, `.xlsm`, `.xls`, `.csv` |
-| `apps/pdf`      | NiuOffice PDF      | `.pdf`                           |
-| `apps/markdown` | NiuOffice Markdown | `.md`, `.markdown`               |
-| `apps/shell`    | NiuOffice          | Tabbed desktop shell             |
+| `apps/docs`     | BP Office Docs     | `.docx`                          |
+| `apps/sheets`   | BP Office Sheets   | `.xlsx`, `.xlsm`, `.xls`, `.csv` |
+| `apps/pdf`      | BP Office PDF      | `.pdf`                           |
+| `apps/markdown` | BP Office Markdown | `.md`, `.markdown`               |
+| `apps/shell`    | BP Office          | Tabbed desktop shell             |
 
-Standalone upstream Slides source and presentation-engine packages may remain
-in the repository for shared rendering or historical development, but the
-Slides application, `.pptx` opening paths, and Slides resources are not built
-or packaged.
+Upstream Slides source and presentation-engine packages may remain in the tree
+for shared rendering or historical development, but the Slides application,
+`.pptx` opening paths, and Slides resources are not built or packaged.
+
+## Application identity
+
+| Field               | Value                       |
+| ------------------- | --------------------------- |
+| Product name        | `BP Office`                 |
+| AI name             | `BP Office AI`              |
+| Vendor              | `Bitspower Technology`      |
+| Windows app id      | `com.bitspower.bpoffice`    |
+| Executable          | `bpoffice`                  |
+| Linux desktop id    | `bpoffice.desktop`          |
+| User-data directory | `BPOffice` (`BPOffice Dev`) |
+| Update feed         | this repository's Releases  |
+
+Those values are chosen once and must not change between releases: changing them
+strands settings, creates a second installation, or breaks upgrade/uninstall
+behavior. They intentionally share nothing with the upstream BP Office/GenOffice
+identities, so both products can coexist on one machine.
+
+## Branding assets
+
+- `branding/source/` holds the distributor-supplied master art (1024px icon and
+  the vector wordmark). It is the input, never edited by hand.
+- `tools/trace-brand-mark.py` traces the monochrome mark once into
+  `branding/bpoffice-mark.svg` plus the shared React icon constant in
+  `packages/ui/src/brand-mark.ts`.
+- `apps/shell/build/generate-brand-assets.py` derives every shell asset (ICO,
+  ICNS, PNG sets, transparent mark, Home lockup) from those two committed inputs.
+
+```bash
+python apps/shell/build/generate-brand-assets.py
+```
 
 ## Development
 
-NiuOffice is based on GenOffice v0.8.667 and preserves the internal
-`@genoffice/*` workspace names, `com.genoffice.app` bundle identifier, and
-`GenOffice` user-data directory for compatibility.
+BP Office keeps the internal `@genoffice/*` workspace package names and imports:
+they are dependency identities inside the repository, not shipped branding. The
+shipped identity is BP Office (see the table above).
+
+Requires Node.js >= 22.12 with npm (the committed `package-lock.json` is npm v3),
+Python 3 with Pillow for brand asset generation, and a Rust toolchain (`cargo` on
+`PATH`) for the Sheets native xlsx sidecar.
 
 ```bash
 npm ci
-npm test
+npm run format:check
+npm run check:theme-colors
+npm run check:english-comments
+npm run check:product-boundaries
+npm run check:oem-boundaries
+npm run lint
 npm run typecheck
+npm test
+npm run notices
 npm run build:all
 npm run dist:win
 ```
 
-The Sheets application also needs a Rust toolchain (`cargo` on `PATH`) to
-build its native xlsx sidecar.
-
 Core packages include `docx-engine`, `pdf2docx`, `file-parse`, `agent-core`,
-`ai-provider`, `project-store`, `electron-utils`, `i18n`, and `ui`. The
-presentation engines remain because non-Slides rendering paths still depend on
-them. The removed `ai-search` workspace is intentionally absent.
+`ai-provider`, `project-store`, `electron-utils`, `i18n`, and `ui`. The removed
+`ai-search` workspace is intentionally absent.
 
 ## Migration from older builds
 
-Stored `genspark`, ChatGPT, retained-adapter, or unknown active providers
-migrate to OpenAI Endpoint in the OEM edition (the internal provider ID remains
-`lmstudio` for settings compatibility). Their saved configuration records are
-not deleted, but they cannot become active. NiuOffice stops reading legacy
-Genspark authentication and cloud-project files and does not delete them. If
-they are no longer needed, they may be removed manually from the legacy
-`GenOffice` application-data directory after making any desired backup.
+Stored `genspark`, ChatGPT, retained-adapter, or unknown active providers migrate
+to OpenAI Endpoint (the internal provider ID remains `lmstudio` for settings
+compatibility). Their saved configuration records are not deleted, but they cannot
+become active. Legacy Genspark authentication and cloud-project files are no longer
+read; because BP Office uses its own `BPOffice` user-data directory, an existing
+upstream installation is left untouched.
 
 ## Privacy and security
 
 Document editing is local. OpenAI Endpoint requests go only to the configured
-server and always carry the configured Bearer API key. The OEM edition has no
-ChatGPT subscription connection. NiuOffice does not include the upstream analytics pipeline. See
+server and always carry the configured Bearer API key. BP Office has no ChatGPT
+subscription connection and does not include the upstream analytics pipeline. See
 [PRIVACY.md](PRIVACY.md) and [SECURITY.md](SECURITY.md).
 
 ## Attribution and license
 
-NiuOffice is a fork of [GenOffice](https://github.com/genspark-ai/genoffice)
-and retains its copyright notices and legal history. GenOffice and Genspark
-names and logos are trademarks of Mainfunc, Inc.; NiuOffice uses independent
+BP Office is a downstream distribution of the BP Office edition, which is
+itself a fork of GenOffice. All upstream copyright notices and legal history are
+preserved in [LICENSE](LICENSE), [NOTICE](NOTICE), and
+[LICENSE-UNICODE.txt](LICENSE-UNICODE.txt). GenOffice, Genspark, and BP Office names
+and logos are trademarks of their respective owners; BP Office uses independent
 branding. The Apache-2.0 license does not grant trademark rights.
 
-The Apache-2.0 source is covered by [LICENSE](LICENSE). The existing `ee/`
-directory remains governed by its historical
+The `ee/` directory remains governed by its historical
 [GenOffice Enterprise License](ee/LICENSE). Third-party terms are generated by
 `npm run notices` and bundled with releases.

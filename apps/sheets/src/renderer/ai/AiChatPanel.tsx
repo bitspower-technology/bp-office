@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react'
-import { AiComposer, AiTypingIndicator, NiuOfficeMark } from '@genoffice/ui'
+import { AiComposer, AiTypingIndicator, BPOfficeMark } from '@genoffice/ui'
 import type { ChangePlan } from '../../domain/workbook.types'
 import { ATTACHMENT_IMAGE_EXTS, type AttachmentMeta } from '../../shared/desktop-api'
 import { useI18n, type TFunc } from '../i18n/locale'
@@ -422,7 +422,7 @@ export function AiChatPanel({
           data-tip={t('aiOpenAssistant')}
           aria-label={t('aiOpenAssistant')}
         >
-          <NiuOfficeMark size={22} />
+          <BPOfficeMark size={22} />
         </button>
       </aside>
     )
@@ -493,12 +493,12 @@ export function AiChatPanel({
         onPointerDown={startResize}
         role="separator"
         aria-orientation="vertical"
-        aria-label="NiuOffice AI"
+        aria-label="BP Office AI"
       />
       <header className="ai-panel-header">
         <span className="ai-panel-title">
-          <NiuOfficeMark size={22} />
-          NiuOffice AI
+          <BPOfficeMark size={22} />
+          BP Office AI
         </span>
         <div className="ai-panel-header-actions">
           {(chat.length > 0 || historicChat.length > 0) && (

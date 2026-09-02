@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { platformShortcuts } from '@genoffice/i18n'
 import {
   Dropdown,
-  NiuOfficeMark,
+  BPOfficeMark,
   SHAPE_GALLERY_GROUPS,
   ShapePreview,
   useDismissablePopover,
@@ -2477,10 +2477,10 @@ function Ribbon({
           onClick={onAiToggle}
         >
           <span className="tool-icon-row">
-            <NiuOfficeMark size={26} />
+            <BPOfficeMark size={26} />
           </span>
           <span>
-            <strong>NiuOffice AI</strong>
+            <strong>BP Office AI</strong>
           </span>
         </button>
         <button

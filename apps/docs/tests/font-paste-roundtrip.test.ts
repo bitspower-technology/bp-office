@@ -81,7 +81,7 @@ describe('fontAttrsFromFamilyChain', () => {
     })
   })
 
-  it('skips internal NiuOffice aliases even at the chain head', () => {
+  it('skips internal BP Office aliases even at the chain head', () => {
     expect(
       fontAttrsFromFamilyChain("'NiuOffice Songti SC','STSong','SimSun','Noto Serif CJK SC',serif"),
     ).toEqual({ font: 'STSong' })

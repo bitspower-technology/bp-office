@@ -1,10 +1,10 @@
 {
   "name": "@genoffice/docs",
-  "productName": "NiuOffice Docs",
+  "productName": "BP Office Docs",
   "version": "0.1.0",
   "license": "Apache-2.0",
   "private": true,
-  "description": "NiuOffice AI document editor with paragraph-patch save",
+  "description": "BP Office AI document editor with paragraph-patch save",
   "main": "out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
@@ -46,12 +46,12 @@
     "vite": "^7.3.1",
     "vitest": "^4.1.0"
   },
-  "author": "NiuOffice Contributors",
+  "author": "BP Office Contributors",
   "build": {
     "appId": "com.genoffice.docs",
-    "productName": "NiuOffice Docs",
+    "productName": "BP Office Docs",
     "electronVersion": "43.3.0",
-    "artifactName": "NiuOffice-Docs-${version}-${arch}.${ext}",
+    "artifactName": "BP Office-Docs-${version}-${arch}.${ext}",
     "directories": {
       "output": "release"
     },

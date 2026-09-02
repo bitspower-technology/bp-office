@@ -10,7 +10,7 @@ test.describe('first-run onboarding', () => {
     try {
       const overlay = page.locator('.onb-overlay')
       await expect(overlay).toBeVisible()
-      await expect(page.locator('.onb-slide.active .onb-title')).toHaveText('Welcome to NiuOffice')
+      await expect(page.locator('.onb-slide.active .onb-title')).toHaveText('Welcome to BP Office')
       await page.screenshot({ path: screenshotPath('onboarding-slide-1') })
 
       await page.locator('.onb-next').click()
@@ -18,7 +18,7 @@ test.describe('first-run onboarding', () => {
         'This is just the beginning',
       )
       await expect(page.locator('.onb-slide.active .onb-local-ai-panel')).toBeVisible()
-      await expect(page.getByRole('button', { name: 'View NiuOffice on GitHub' })).toBeVisible()
+      await expect(page.getByRole('button', { name: 'View BP Office on GitHub' })).toBeVisible()
       await page.screenshot({ path: screenshotPath('onboarding-slide-2') })
 
       await page.locator('.onb-next').click()

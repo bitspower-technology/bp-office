@@ -133,7 +133,7 @@ export interface HomeApi {
   startChatGptLogin(): Promise<ChatGptLoginSession>
   /** cancel an in-progress managed ChatGPT browser login */
   cancelChatGptLogin(loginId: string): Promise<void>
-  /** remove the ChatGPT credentials owned by NiuOffice */
+  /** remove the ChatGPT credentials owned by BP Office */
   chatGptLogout(): Promise<void>
   /** receive completion or failure for a managed browser login */
   onChatGptLoginCompleted(handler: (result: ChatGptLoginCompleted) => void): () => void
@@ -151,17 +151,17 @@ export interface HomeApi {
   getTheme(): Promise<UiTheme>
   /** switch + persist the UI theme; broadcasts 'app:theme-changed' to all web contents */
   setTheme(theme: UiTheme): Promise<void>
-  /** effective default save folder for new/untitled files (configured in userData/app-settings.json, falls back to <Documents>/NiuOffice) */
+  /** effective default save folder for new/untitled files (configured in userData/app-settings.json, falls back to <Documents>/BP Office) */
   getDefaultSaveDir(): Promise<string>
   /** directory picker to change the default save folder; resolves to the new folder, or null when canceled or the pick was unusable */
   pickDefaultSaveDir(): Promise<string | null>
   /** theme switched anywhere (broadcast from the main process) */
   onThemeChanged(handler: (theme: UiTheme) => void): () => void
-  /** open the NiuOffice community page in the default browser */
+  /** open the BP Office community page in the default browser */
   openGenTeam(): Promise<void>
-  /** open the NiuOffice fork in the default browser */
+  /** open the BP Office fork in the default browser */
   openGitHubRepo(): Promise<void>
-  /** decide whether the value-gated NiuOffice star invitation should appear */
+  /** decide whether the value-gated BP Office star invitation should appear */
   starPromptShouldShow(): Promise<StarPromptShow>
   /** persist the user's response to the star invitation */
   starPromptAction(action: StarPromptAction): Promise<void>

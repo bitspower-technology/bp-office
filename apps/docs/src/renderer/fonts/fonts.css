@@ -174,7 +174,7 @@
  * at a 1em advance and would swallow Latin punctuation ahead of the generic
  * face, shifting every wrap. CJK-named unknown fonts keep the full subsets
  * (fullwidth quotes are correct inside CJK body text). Same ranges as the
- * 'NiuOffice Hiragino/Batang…' local() aliases below. */
+ * 'BP Office Hiragino/Batang…' local() aliases below. */
 @font-face {
   font-family: 'Noto Sans CJK GO';
   src: url('./NotoSansCJKsc-Regular-subset.woff2') format('woff2');
@@ -246,7 +246,7 @@
  * Sans KR outlines reshaped to DotumChe ink boxes); hangul falls through to
  * the KR chains. */
 @font-face {
-  font-family: 'NiuOffice Che Latin KR';
+  font-family: 'BP Office Che Latin KR';
   src: url('./NiuOfficeCheLatinKR.woff2') format('woff2');
   unicode-range: U+0020-007E;
   font-weight: normal;
@@ -476,7 +476,7 @@
  * proportional faces. Registered weight-normal (bold synthesized, like
  * 'NiuOffice Songti SC') except Hiragino, which has real W6 faces. */
 @font-face {
-  font-family: 'NiuOffice Hiragino Sans';
+  font-family: 'BP Office Hiragino Sans';
   src: local('Hiragino Sans'), local('HiraginoSans-W3'), local('MS Gothic');
   unicode-range:
     U+2E80-303F, U+3041-33FF, U+3400-4DBF, U+4E00-9FFF, U+AC00-D7A3, U+F900-FAFF, U+FE30-FE4F,
@@ -485,7 +485,7 @@
   font-style: normal;
 }
 @font-face {
-  font-family: 'NiuOffice Hiragino Sans';
+  font-family: 'BP Office Hiragino Sans';
   src: local('HiraginoSans-W6'), local('Hiragino Sans W6');
   unicode-range:
     U+2E80-303F, U+3041-33FF, U+3400-4DBF, U+4E00-9FFF, U+AC00-D7A3, U+F900-FAFF, U+FE30-FE4F,
@@ -494,7 +494,7 @@
   font-style: normal;
 }
 @font-face {
-  font-family: 'NiuOffice Hiragino Mincho';
+  font-family: 'BP Office Hiragino Mincho';
   src: local('Hiragino Mincho ProN'), local('HiraMinProN-W3');
   unicode-range:
     U+2E80-303F, U+3041-33FF, U+3400-4DBF, U+4E00-9FFF, U+AC00-D7A3, U+F900-FAFF, U+FE30-FE4F,
@@ -503,7 +503,7 @@
   font-style: normal;
 }
 @font-face {
-  font-family: 'NiuOffice Hiragino Mincho';
+  font-family: 'BP Office Hiragino Mincho';
   src: local('HiraMinProN-W6'), local('Hiragino Mincho ProN W6');
   unicode-range:
     U+2E80-303F, U+3041-33FF, U+3400-4DBF, U+4E00-9FFF, U+AC00-D7A3, U+F900-FAFF, U+FE30-FE4F,
@@ -512,7 +512,7 @@
   font-style: normal;
 }
 @font-face {
-  font-family: 'NiuOffice MS Mincho';
+  font-family: 'BP Office MS Mincho';
   src: local('MS Mincho'), local('MS PMincho');
   unicode-range:
     U+2E80-303F, U+3041-33FF, U+3400-4DBF, U+4E00-9FFF, U+AC00-D7A3, U+F900-FAFF, U+FE30-FE4F,
@@ -521,7 +521,7 @@
   font-style: normal;
 }
 @font-face {
-  font-family: 'NiuOffice Batang';
+  font-family: 'BP Office Batang';
   src: local('Batang'), local('BatangChe');
   unicode-range:
     U+2E80-303F, U+3041-33FF, U+3400-4DBF, U+4E00-9FFF, U+AC00-D7A3, U+F900-FAFF, U+FE30-FE4F,
@@ -530,7 +530,7 @@
   font-style: normal;
 }
 @font-face {
-  font-family: 'NiuOffice Myungjo';
+  font-family: 'BP Office Myungjo';
   src: local('AppleMyungjo');
   unicode-range:
     U+2E80-303F, U+3041-33FF, U+3400-4DBF, U+4E00-9FFF, U+AC00-D7A3, U+F900-FAFF, U+FE30-FE4F,
@@ -539,7 +539,7 @@
   font-style: normal;
 }
 @font-face {
-  font-family: 'NiuOffice Heiti TC';
+  font-family: 'BP Office Heiti TC';
   src: local('Heiti TC'), local('Heiti TC Light'), local('STHeitiTC-Light');
   unicode-range:
     U+2E80-303F, U+3041-33FF, U+3400-4DBF, U+4E00-9FFF, U+AC00-D7A3, U+F900-FAFF, U+FE30-FE4F,
@@ -548,7 +548,7 @@
   font-style: normal;
 }
 @font-face {
-  font-family: 'NiuOffice MingLiU';
+  font-family: 'BP Office MingLiU';
   src: local('PMingLiU'), local('MingLiU');
   unicode-range:
     U+2E80-303F, U+3041-33FF, U+3400-4DBF, U+4E00-9FFF, U+AC00-D7A3, U+F900-FAFF, U+FE30-FE4F,
@@ -562,7 +562,7 @@
  * face is declared, so no unicode-range needed; on Windows the declared name
  * itself resolves ahead of this alias. */
 @font-face {
-  font-family: 'NiuOffice Ethiopic';
+  font-family: 'BP Office Ethiopic';
   /* Chromium local() matches PostScript/full names, not family names */
   src: local('Kefa-Regular'), local('Kefa Regular'), local('Kefa');
   /* verified on regression sample 39: line breaks match Word at 72%; the

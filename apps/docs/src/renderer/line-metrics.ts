@@ -620,18 +620,18 @@ export function cssFontFamily(font: string, followAltName = true): string {
   // Japanese/Korean/Traditional Chinese: fall back within the same script (win/mac family names as mutual backups) so Han glyphs don't render with Simplified forms.
   // 'NiuOffice *' entries are CJK-only local() aliases (fonts.css): the underlying
   // system faces draw Cyrillic/Greek fullwidth, so those scripts must pass through
-  const JA_SANS = ['Yu Gothic', 'NiuOffice Hiragino Sans', 'Meiryo', 'Noto Sans JP']
+  const JA_SANS = ['Yu Gothic', 'BP Office Hiragino Sans', 'Meiryo', 'Noto Sans JP']
   const JA_SERIF = [
     'Yu Mincho',
-    'NiuOffice Hiragino Mincho',
-    'NiuOffice MS Mincho',
+    'BP Office Hiragino Mincho',
+    'BP Office MS Mincho',
     'Noto Serif JP',
   ]
   const KO_SANS = ['Malgun Gothic', 'NiuOffice Sans KR', 'Apple SD Gothic Neo', 'Noto Sans KR']
-  const KO_SERIF = ['NiuOffice Batang', 'NiuOffice Serif KR', 'NiuOffice Myungjo', 'Noto Serif KR']
-  const TC_SANS = ['Microsoft JhengHei', 'PingFang TC', 'NiuOffice Heiti TC', 'Noto Sans TC']
+  const KO_SERIF = ['BP Office Batang', 'NiuOffice Serif KR', 'BP Office Myungjo', 'Noto Serif KR']
+  const TC_SANS = ['Microsoft JhengHei', 'PingFang TC', 'BP Office Heiti TC', 'Noto Sans TC']
   // 'NiuOffice Fullwidth TC' (fonts.css): fullwidth U+FF0D/FF0F/FF3C/FF3F/FF5E whose Songti TC glyphs look half-width
-  const TC_SERIF = ['NiuOffice MingLiU', 'NiuOffice Fullwidth TC', 'Songti TC', 'Noto Serif TC']
+  const TC_SERIF = ['BP Office MingLiU', 'NiuOffice Fullwidth TC', 'Songti TC', 'Noto Serif TC']
   const SC_SANS = ['PingFang SC', 'Microsoft YaHei', CJK_SANS]
   const SC_SERIF = ['NiuOffice Songti SC', 'STSong', 'SimSun', CJK_SERIF]
   const nfkc = font.normalize('NFKC')
@@ -749,7 +749,7 @@ export function cssFontFamily(font: string, followAltName = true): string {
     if (/(?:batang|gulim|dotum|gungsuh) ?che\b|(?:바탕|굴림|돋움|궁서)체/i.test(nfkc)) {
       const cheGungsuh = /gungsuh|궁서/i.test(nfkc)
       const cheSerif = cheGungsuh || /batang|바탕/i.test(nfkc)
-      return `${chain(font, 'NiuOffice Che Latin KR', ...(cheGungsuh ? ['GungSeo'] : []), ...(cheSerif ? KO_SERIF : KO_SANS))},${cheSerif ? 'serif' : 'sans-serif'}`
+      return `${chain(font, 'BP Office Che Latin KR', ...(cheGungsuh ? ['GungSeo'] : []), ...(cheSerif ? KO_SERIF : KO_SANS))},${cheSerif ? 'serif' : 'sans-serif'}`
     }
     // Gungsuh ships with Office (batang.ttc) and Word renders it real; its
     // Latin is typewriter-slab at ~0.58em advances — Courier New is the
@@ -779,7 +779,7 @@ export function cssFontFamily(font: string, followAltName = true): string {
   // Kefa alias (fonts.css) re-centers Chromium's ~1.35x-wide Kefa fallback. On
   // Windows the declared name resolves natively ahead of the alias.
   if (/nyala|ebrima|abyssinica|ethiopic/i.test(nfkc)) {
-    return `${chain(font, 'NiuOffice Ethiopic')},sans-serif`
+    return `${chain(font, 'BP Office Ethiopic')},sans-serif`
   }
   // Tamil: Word substitutes missing Tamil families with Latha; the bundled
   // Latha-metric face (fonts.css) keeps line breaks aligned. On Windows the

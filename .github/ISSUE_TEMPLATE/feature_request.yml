@@ -7,11 +7,11 @@ body:
     attributes:
       label: App
       options:
-        - NiuOffice Docs (docs)
-        - NiuOffice Sheets (sheets)
-        - NiuOffice PDF (pdf)
-        - NiuOffice Markdown (markdown)
-        - NiuOffice shell / home / settings
+        - BP Office Docs (docs)
+        - BP Office Sheets (sheets)
+        - BP Office PDF (pdf)
+        - BP Office Markdown (markdown)
+        - BP Office shell / home / settings
         - AI panel / providers
         - Whole suite
     validations:

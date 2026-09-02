@@ -104,7 +104,7 @@ export function writeLmStudioConfig(path: string, value: unknown): LmStudioConfi
   return config
 }
 
-/** Only the two providers surfaced by this NiuOffice build can cross shell IPC. */
+/** Only the two providers surfaced by this BP Office build can cross shell IPC. */
 export function parseAiConnectionProvider(value: unknown): AiConnectionProvider {
   if (value === 'lmstudio' || value === 'chatgpt') {
     assertProductAiProviderEnabled(value)

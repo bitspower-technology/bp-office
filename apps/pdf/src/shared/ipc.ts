@@ -50,7 +50,7 @@ export const PDF_CHANNELS = {
   themeChanged: 'app:theme-changed',
 } as const
 
-export const VISUAL_SIGNATURE_CONTENT_PREFIX = 'NiuOffice visual signature field: '
+export const VISUAL_SIGNATURE_CONTENT_PREFIX = 'BP Office visual signature field: '
 export const LEGACY_VISUAL_SIGNATURE_CONTENT_PREFIX = 'GenOffice visual signature field: '
 
 /** Signature strokes: pad pixel coords, scaled proportionally and y-flipped when placed on the page */
@@ -191,7 +191,7 @@ export type DrawingInput =
       color: [number, number, number]
       at: [number, number]
       contents: string
-      /** Annotation author (/T); omitted → 'NiuOffice' */
+      /** Annotation author (/T); omitted → 'BP Office' */
       author?: string
       /** Creation time (ms since epoch) → /CreationDate and /M; omitted → save time */
       createdMs?: number
@@ -406,7 +406,7 @@ export interface PageImageRef {
   aboveText: boolean
 }
 
-/** Editable metadata for a NiuOffice static form fill embedded as a page image. */
+/** Editable metadata for a BP Office static form fill embedded as a page image. */
 export interface StaticFormFillRecord {
   id: string
   kind: 'text' | 'check' | 'cross'
@@ -553,7 +553,7 @@ export interface ValidateTextEditsRequest {
   edits: TextEditInput[]
 }
 
-/** Extract pages into a new PDF written to the NiuOffice save dir and opened in a new tab */
+/** Extract pages into a new PDF written to the BP Office save dir and opened in a new tab */
 export interface ExtractPagesRequest {
   path: string
   /** Original page indices */
@@ -643,7 +643,7 @@ export interface SetPageSizeRequest {
 export type SetPageSizeResult = { ok: true } | { ok: false; error: string }
 
 /** Split every page into a grid of pages (inverse of merge pages), written to the
- * NiuOffice save dir and opened in a new tab */
+ * BP Office save dir and opened in a new tab */
 export interface SplitPagesRequest {
   path: string
   perPage: 2 | 4 | 9
@@ -713,7 +713,7 @@ export interface PdfApi {
   canDrawText(text: string, font?: string, bold?: boolean, italic?: boolean): Promise<boolean>
   /** Enumerate the content-stream images of every page (for image edit mode) */
   listPageImages(path: string): Promise<PageImageRef[]>
-  /** Read NiuOffice static-fill metadata stored inside the PDF. */
+  /** Read BP Office static-fill metadata stored inside the PDF. */
   listStaticFormFills(path: string): Promise<StaticFormFillRecord[]>
   /** System-OCR one rendered page image (PNG, base64); null when no engine is
       available on this platform, [] when recognition failed for this image */

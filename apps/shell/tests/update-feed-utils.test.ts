@@ -26,7 +26,7 @@ describe('update-feed-utils', () => {
     expect(semverNewer('0.6.0', '0.5.82')).toBe(true)
   })
 
-  it('orders numbered NiuOffice prereleases instead of truncating them to the core version', () => {
+  it('orders numbered BP Office prereleases instead of truncating them to the core version', () => {
     expect(semverNewer('0.8.667-niu.4', '0.8.667-niu.3')).toBe(true)
     expect(semverNewer('0.8.667-niu.10', '0.8.667-niu.9')).toBe(true)
     expect(semverNewer('0.8.667-niu.3', '0.8.667-niu.4')).toBe(false)
@@ -79,7 +79,7 @@ describe('update-feed-utils', () => {
     expect(releaseUploadDecision('0.5.81', '0.5.82', { allowExisting: true }).action).toBe('reject')
   })
 
-  it('allows a forward NiuOffice release while rejecting an older numbered build', () => {
+  it('allows a forward BP Office release while rejecting an older numbered build', () => {
     expect(releaseUploadDecision('0.8.667-niu.4', '0.8.667-niu.3').action).toBe('upload')
     expect(releaseUploadDecision('0.8.667-niu.2', '0.8.667-niu.3').action).toBe('reject')
   })

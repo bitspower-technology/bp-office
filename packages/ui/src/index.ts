@@ -17,7 +17,7 @@ export {
 } from './popover-dismiss'
 export { Dropdown, type DropdownOption } from './dropdown'
 export { AiTypingIndicator } from './AiTypingIndicator'
-export { IconSend, IconStop, NiuOfficeMark, type IconProps } from './icons'
+export { IconSend, IconStop, BPOfficeMark, type IconProps } from './icons'
 export { Markdown, type MarkdownNav } from './Markdown'
 export { isSymbolFontFamily } from './symbol-fonts'
 export { BUILTIN_FONT_FAMILIES, fontFamiliesFor } from './font-list'

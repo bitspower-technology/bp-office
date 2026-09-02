@@ -623,12 +623,12 @@ describe('cssFontFamily', () => {
 
   it('Japanese fonts → same-script fallback chain, never falls back to Simplified Chinese', () => {
     expect(cssFontFamily('游ゴシック')).toBe(
-      "'游ゴシック','Yu Gothic','NiuOffice Hiragino Sans','Meiryo','Noto Sans JP',sans-serif",
+      "'游ゴシック','Yu Gothic','BP Office Hiragino Sans','Meiryo','Noto Sans JP',sans-serif",
     )
     expect(cssFontFamily('ＭＳ Ｐ明朝')).toBe(
-      "'ＭＳ Ｐ明朝','Yu Mincho','NiuOffice Hiragino Mincho','NiuOffice MS Mincho','Noto Serif JP',serif",
+      "'ＭＳ Ｐ明朝','Yu Mincho','BP Office Hiragino Mincho','BP Office MS Mincho','Noto Serif JP',serif",
     )
-    expect(cssFontFamily('Meiryo')).toContain("'NiuOffice Hiragino Sans'")
+    expect(cssFontFamily('Meiryo')).toContain("'BP Office Hiragino Sans'")
     expect(cssFontFamily('Meiryo')).not.toContain('CJK SC')
   })
 
@@ -665,13 +665,13 @@ describe('cssFontFamily', () => {
 
     it('jp/kr/tc variants keep their same-script substitution', () => {
       expect(cssFontFamily('Noto Sans CJK JP')).toBe(
-        "'Noto Sans CJK JP','Yu Mincho','NiuOffice Hiragino Mincho','NiuOffice MS Mincho','Noto Serif JP',serif",
+        "'Noto Sans CJK JP','Yu Mincho','BP Office Hiragino Mincho','BP Office MS Mincho','Noto Serif JP',serif",
       )
       expect(cssFontFamily('Source Han Sans K')).toBe(
-        "'Source Han Sans K','KR Theme Latin GO','NiuOffice Batang','NiuOffice Serif KR','NiuOffice Myungjo','Noto Serif KR',serif",
+        "'Source Han Sans K','KR Theme Latin GO','BP Office Batang','NiuOffice Serif KR','BP Office Myungjo','Noto Serif KR',serif",
       )
       expect(cssFontFamily('Noto Sans CJK TC')).toBe(
-        "'Noto Sans CJK TC','NiuOffice MingLiU','NiuOffice Fullwidth TC','Songti TC','Noto Serif TC',serif",
+        "'Noto Sans CJK TC','BP Office MingLiU','NiuOffice Fullwidth TC','Songti TC','Noto Serif TC',serif",
       )
     })
   })
@@ -681,13 +681,13 @@ describe('cssFontFamily', () => {
       "'맑은 고딕','Malgun Gothic','NiuOffice Sans KR','Apple SD Gothic Neo','Noto Sans KR',sans-serif",
     )
     expect(cssFontFamily('Batang')).toBe(
-      "'Batang','NiuOffice Batang','NiuOffice Serif KR','NiuOffice Myungjo','Noto Serif KR',serif",
+      "'Batang','BP Office Batang','NiuOffice Serif KR','BP Office Myungjo','Noto Serif KR',serif",
     )
     expect(cssFontFamily('微軟正黑體')).toBe(
-      "'微軟正黑體','Microsoft JhengHei','PingFang TC','NiuOffice Heiti TC','Noto Sans TC',sans-serif",
+      "'微軟正黑體','Microsoft JhengHei','PingFang TC','BP Office Heiti TC','Noto Sans TC',sans-serif",
     )
     expect(cssFontFamily('新細明體')).toBe(
-      "'新細明體','NiuOffice MingLiU','NiuOffice Fullwidth TC','Songti TC','Noto Serif TC',serif",
+      "'新細明體','BP Office MingLiU','NiuOffice Fullwidth TC','Songti TC','Noto Serif TC',serif",
     )
   })
 
@@ -696,14 +696,14 @@ describe('cssFontFamily', () => {
 
     it('missing KR variant gets the theme Latin head ahead of the Batang chain', () => {
       expect(cssFontFamily('Noto Sans CJK KR')).toBe(
-        "'Noto Sans CJK KR','KR Theme Latin GO','NiuOffice Batang','NiuOffice Serif KR','NiuOffice Myungjo','Noto Serif KR',serif",
+        "'Noto Sans CJK KR','KR Theme Latin GO','BP Office Batang','NiuOffice Serif KR','BP Office Myungjo','Noto Serif KR',serif",
       )
     })
 
     it('installed KR variant keeps its chain without the theme Latin head', () => {
       stubCanvas(['Noto Serif CJK KR'])
       expect(cssFontFamily('Noto Serif CJK KR')).toBe(
-        "'Noto Serif CJK KR','NiuOffice Batang','NiuOffice Serif KR','NiuOffice Myungjo','Noto Serif KR',serif",
+        "'Noto Serif CJK KR','BP Office Batang','NiuOffice Serif KR','BP Office Myungjo','Noto Serif KR',serif",
       )
     })
 
@@ -727,7 +727,7 @@ describe('cssFontFamily', () => {
 
     it('other source-vendor families keep the Batang-normalized serif chain', () => {
       expect(cssFontFamily('NanumBarunGothic')).toBe(
-        "'NanumBarunGothic','NiuOffice Batang','NiuOffice Serif KR','NiuOffice Myungjo','Noto Serif KR',serif",
+        "'NanumBarunGothic','BP Office Batang','NiuOffice Serif KR','BP Office Myungjo','Noto Serif KR',serif",
       )
     })
 
@@ -763,9 +763,9 @@ describe('document fontTable substitution hints', () => {
       { name: '가온글꼴', panose: '02020603000000000000' },
       { name: '나래글꼴', panose: '00000000000000000000' },
     ])
-    expect(cssFontFamily('가온글꼴')).toContain("'NiuOffice Batang'")
+    expect(cssFontFamily('가온글꼴')).toContain("'BP Office Batang'")
     expect(krLineFactor('가온글꼴')).toBe(1.3029)
-    expect(cssFontFamily('나래글꼴')).toContain("'NiuOffice Batang'")
+    expect(cssFontFamily('나래글꼴')).toContain("'BP Office Batang'")
     expect(krLineFactor('나래글꼴')).toBe(1.3029)
     expect(krLineFactor('다솜글꼴')).toBe(1.3029)
     expect(cjkDeclaredLineFactor('다솜글꼴')).toBe(1.3029)
@@ -775,7 +775,7 @@ describe('document fontTable substitution hints', () => {
     setDocFontTable([
       { name: 'Noto Sans CJK KR', altName: 'Cambria', panose: '00000000000000000000' },
     ])
-    expect(cssFontFamily('Noto Sans CJK KR')).toContain("'NiuOffice Batang'")
+    expect(cssFontFamily('Noto Sans CJK KR')).toContain("'BP Office Batang'")
     expect(cssFontFamily('Noto Sans CJK KR')).not.toContain("'Cambria'")
     expect(cjkDeclaredLineFactor('Noto Sans CJK KR')).toBe(1.3029)
     expect(krLineFactor('Noto Sans CJK KR')).toBe(1.3029)
@@ -970,7 +970,7 @@ describe('Korean line metrics', () => {
 
   it('Korean ascii face in a dual-slot chain keeps only the literal family plus the Latin backstop', () => {
     expect(cssDualFontFamily('맑은 고딕', 'Batang')).toBe(
-      "'맑은 고딕','Latin Sans GO','Batang','NiuOffice Batang','NiuOffice Serif KR','NiuOffice Myungjo','Noto Serif KR',serif",
+      "'맑은 고딕','Latin Sans GO','Batang','BP Office Batang','NiuOffice Serif KR','BP Office Myungjo','Noto Serif KR',serif",
     )
   })
 
@@ -1019,7 +1019,7 @@ describe('Korean line metrics', () => {
     expect(lineHeightFactor('Book Antiqua')).toBe(1.21)
     // Gungsuh's Latin is typewriter-slab: Courier New leads, hangul falls through
     expect(cssFontFamily('Gungsuh')).toBe(
-      "'Gungsuh','Courier New','GungSeo','NiuOffice Batang','NiuOffice Serif KR','NiuOffice Myungjo','Noto Serif KR',serif",
+      "'Gungsuh','Courier New','GungSeo','BP Office Batang','NiuOffice Serif KR','BP Office Myungjo','Noto Serif KR',serif",
     )
     expect(lineHeightFactor('Gungsuh')).toBe(1.3029)
     // Nunito Sans is an Office cloud font Word renders real
