@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "edition": "oem",
+  "productName": "BP Office",
+  "aiName": "BP Office AI",
+  "vendor": "Bitspower Technology",
+  "appId": "com.bitspower.bpoffice",
+  "artifactSlug": "BPOffice",
+  "executableName": "bpoffice",
+  "desktopName": "bpoffice.desktop",
+  "userDataDirectory": "BPOffice",
+  "developmentUserDataDirectory": "BPOffice Dev",
+  "repository": {
+    "owner": "bitspower-technology",
+    "name": "bp-office"
+  },
+  "features": {
+    "chatgptSubscription": false
+  },
+  "updates": {
+    "enabled": true
+  }
+}

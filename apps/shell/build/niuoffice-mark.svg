@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="33 31 80 80" role="img" aria-labelledby="niuoffice-mark-title">
+  <title id="niuoffice-mark-title">NiuOffice gradient outline mark</title>
+  <defs>
+    <path id="lower" transform="translate(83.6899 72.9248)" d="M0 0H-9.628V-9.627H-24.628C-26.967-9.627-28.88-7.714-28.88-5.375V14.441H-38.507V-5.081C-38.507-12.876-32.129-19.254-24.334-19.254H-9.628V-19.255H0V-19.254H.001V-9.627H0Z"/>
+    <path id="upper" transform="translate(83.8511 87.3652)" d="M0 0H-14.707V.001H-24.334V0H-24.335V-9.627H-24.334V-19.254H-14.707V-9.627H.294C2.632-9.627 4.546-11.54 4.546-13.879V-33.695H14.173V-14.173C14.173-6.378 7.795 0 0 0Z"/>
+    <linearGradient id="signatureLower" gradientUnits="userSpaceOnUse" x1="-39.6899" y1="-18.9248" x2="16.3101" y2="15.0752">
+      <stop offset="0" stop-color="#20DAE6"/>
+      <stop offset=".5" stop-color="#8081E5"/>
+      <stop offset="1" stop-color="#DE2287"/>
+    </linearGradient>
+    <linearGradient id="signatureUpper" gradientUnits="userSpaceOnUse" x1="-39.8511" y1="-33.3652" x2="16.1489" y2=".6348">
+      <stop offset="0" stop-color="#20DAE6"/>
+      <stop offset=".5" stop-color="#8081E5"/>
+      <stop offset="1" stop-color="#DE2287"/>
+    </linearGradient>
+    <clipPath id="clipLower"><use href="#lower"/></clipPath>
+    <clipPath id="clipUpper"><use href="#upper"/></clipPath>
+  </defs>
+  <g transform="translate(0 141.732) scale(1 -1)">
+    <g clip-path="url(#clipLower)"><use href="#lower" fill="none" stroke="url(#signatureLower)" stroke-width="1.4"/></g>
+    <g clip-path="url(#clipUpper)"><use href="#upper" fill="none" stroke="url(#signatureUpper)" stroke-width="1.4"/></g>
+  </g>
+</svg>

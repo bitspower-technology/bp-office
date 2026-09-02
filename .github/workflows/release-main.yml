@@ -1,0 +1,336 @@
+name: Release main (Windows)
+
+# Binary releases belong exclusively to the main edition. The OEM branch is
+# source-only and cannot reach this workflow because every release is tied to
+# a version tag whose commit must equal the remote main tip.
+on:
+  push:
+    tags:
+      - 'v*-niu.*'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing vX.Y.Z-niu.N tag to release (must point at the current main tip)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-main-windows
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-2022
+    timeout-minutes: 90
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.release_tag || github.ref }}
+
+      - name: Validate main release and forward version
+        id: preflight
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_TAG: ${{ inputs.release_tag || github.ref_name }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+
+          $tag = $env:REQUESTED_TAG.Trim()
+          if ($tag -notmatch '^v\d+\.\d+\.\d+-niu\.\d+$') {
+            throw "Release tag must use the exact vX.Y.Z-niu.N form; received '$tag'."
+          }
+
+          $package = Get-Content -Raw -LiteralPath 'apps/shell/package.json' | ConvertFrom-Json
+          $product = Get-Content -Raw -LiteralPath 'branding/product.json' | ConvertFrom-Json
+          $version = [string]$package.version
+          $expectedTag = "v$version"
+          if ($tag -cne $expectedTag) {
+            throw "Tag $tag does not match apps/shell/package.json version $version. Expected $expectedTag."
+          }
+          if ($product.edition -cne 'main') {
+            throw "Binary release refused: branding/product.json edition is '$($product.edition)', not 'main'."
+          }
+          if ($product.updates.enabled -ne $true) {
+            throw 'Binary release refused: automatic updates are disabled in branding/product.json.'
+          }
+          if ($product.features.chatgptSubscription -ne $true) {
+            throw 'Binary release refused: the main edition must include ChatGPT subscription support.'
+          }
+          if ([string]$product.artifactSlug -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$') {
+            throw 'branding/product.json contains an unsafe artifactSlug.'
+          }
+
+          $updateRepository = "$($product.repository.owner)/$($product.repository.name)"
+          if ($updateRepository -cne $env:GITHUB_REPOSITORY) {
+            throw "Configured update repository $updateRepository differs from workflow repository $env:GITHUB_REPOSITORY. A repository-scoped GITHUB_TOKEN cannot publish that feed."
+          }
+
+          git fetch --no-tags --force origin '+refs/heads/main:refs/remotes/origin/main'
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to fetch origin/main.' }
+          $tagCommit = (git rev-parse "$tag^{commit}").Trim()
+          if ($LASTEXITCODE -ne 0) { throw "Unable to resolve release tag $tag." }
+          $mainCommit = (git rev-parse 'refs/remotes/origin/main^{commit}').Trim()
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to resolve origin/main.' }
+          if ($tagCommit -cne $mainCommit) {
+            throw "Release tag $tag points to $tagCommit, but origin/main points to $mainCommit. Tag the current main tip; OEM or stale commits may not publish binaries."
+          }
+
+          # Installed apps fetch releases/latest/download without credentials.
+          # Publishing from a private repository would create a permanently
+          # unreachable update feed even though the workflow token can upload it.
+          $privateValue = (& gh api "repos/$updateRepository" --jq '.private' 2>&1 | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0) { throw "Unable to inspect update repository: $privateValue" }
+          if ($privateValue -cne 'false') {
+            throw "Automatic updates require a PUBLIC GitHub repository. $updateRepository is private. Do not embed a token in the application."
+          }
+
+          $latestOutput = (& gh api "repos/$updateRepository/releases/latest" --jq '.tag_name' 2>&1 | Out-String).Trim()
+          $latestExit = $LASTEXITCODE
+          if ($latestExit -ne 0 -and $latestOutput -notmatch 'HTTP 404') {
+            throw "Unable to inspect the current release: $latestOutput"
+          }
+          $currentTag = if ($latestExit -eq 0) { $latestOutput } else { '' }
+          $currentArgument = if ($currentTag) { $currentTag } else { '-' }
+          $decisionJson = node -e "const u=require('./scripts/update-feed-utils.cjs'); const current=process.argv[2]==='-'?null:process.argv[2]; console.log(JSON.stringify(u.releaseUploadDecision(process.argv[1],current,{allowExisting:true})))" $version $currentArgument
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to compare release versions.' }
+          $decision = $decisionJson | ConvertFrom-Json
+          if ($decision.action -eq 'reject') { throw $decision.reason }
+
+          $updateUrl = "https://github.com/$updateRepository/releases/latest/download"
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "action=$($decision.action)"
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "release_tag=$tag"
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "version=$version"
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "artifact_slug=$($product.artifactSlug)"
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "update_repository=$updateRepository"
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "update_url=$updateUrl"
+
+      - name: Exact version is already the latest release
+        if: steps.preflight.outputs.action == 'skip'
+        shell: pwsh
+        run: Write-Host '${{ steps.preflight.outputs.release_tag }} is already published as the latest release; leaving its immutable assets unchanged.'
+
+      - name: Setup Node
+        if: steps.preflight.outputs.action == 'upload'
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Setup Rust
+        if: steps.preflight.outputs.action == 'upload'
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable branch, 2026-07
+        with:
+          toolchain: stable
+
+      - name: Cache cargo (xlsx sidecar)
+        if: steps.preflight.outputs.action == 'upload'
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: apps/sheets/native/xlsx-engine
+
+      - name: Install dependencies
+        if: steps.preflight.outputs.action == 'upload'
+        run: npm ci
+
+      - name: Run release-specific gates
+        if: steps.preflight.outputs.action == 'upload'
+        shell: pwsh
+        run: |
+          npm run check:product-boundaries
+          if ($LASTEXITCODE -ne 0) { throw 'Product-boundary check failed.' }
+          npm run typecheck -w @genoffice/shell
+          if ($LASTEXITCODE -ne 0) { throw 'Shell typecheck failed.' }
+          npm run test -w @genoffice/shell -- tests/update-feed-utils.test.ts
+          if ($LASTEXITCODE -ne 0) { throw 'Release helper tests failed.' }
+
+      - name: Build setup and portable executables
+        if: steps.preflight.outputs.action == 'upload'
+        shell: pwsh
+        env:
+          NIUOFFICE_UPDATE_URL: ${{ steps.preflight.outputs.update_url }}
+          CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: |
+          npm run native:build -w @genoffice/sheets
+          if ($LASTEXITCODE -ne 0) { throw 'Windows xlsx sidecar build failed.' }
+          npm run dist:win
+          if ($LASTEXITCODE -ne 0) { throw 'Windows packaging failed.' }
+
+      - name: Verify updater metadata and assemble release assets
+        if: steps.preflight.outputs.action == 'upload'
+        id: assets
+        shell: pwsh
+        env:
+          CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
+          RELEASE_TAG: ${{ steps.preflight.outputs.release_tag }}
+          RELEASE_VERSION: ${{ steps.preflight.outputs.version }}
+          ARTIFACT_SLUG: ${{ steps.preflight.outputs.artifact_slug }}
+          UPDATE_URL: ${{ steps.preflight.outputs.update_url }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $releaseDirectory = (Resolve-Path -LiteralPath 'apps/shell/release').Path
+          $setupName = "$env:ARTIFACT_SLUG-Setup-$env:RELEASE_VERSION.exe"
+          $portableName = "$env:ARTIFACT_SLUG-Portable-$env:RELEASE_VERSION.exe"
+          $setupPath = Join-Path $releaseDirectory $setupName
+          $portablePath = Join-Path $releaseDirectory $portableName
+          $feedPath = Join-Path $releaseDirectory 'latest.yml'
+          foreach ($required in @($setupPath, $portablePath, $feedPath)) {
+            if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
+              throw "Required release output is missing: $required"
+            }
+          }
+
+          $feed = Get-Content -Raw -LiteralPath $feedPath
+          $escapedVersion = [regex]::Escape($env:RELEASE_VERSION)
+          $escapedSetup = [regex]::Escape($setupName)
+          $escapedPortable = [regex]::Escape($portableName)
+          if ($feed -notmatch "(?m)^version:\s*$escapedVersion\s*$") {
+            throw "latest.yml does not declare version $env:RELEASE_VERSION."
+          }
+          if ($feed -notmatch "(?m)^\s*(?:-\s+url|path):\s*['`\"]?$escapedSetup['`\"]?\s*$") {
+            throw "latest.yml does not reference the exact setup artifact $setupName."
+          }
+          if ($feed -match $escapedPortable) {
+            throw 'latest.yml must never offer the portable executable to electron-updater.'
+          }
+
+          $setupBytes = [IO.File]::ReadAllBytes($setupPath)
+          $setupSha512 = [Convert]::ToBase64String([Security.Cryptography.SHA512]::HashData($setupBytes))
+          if ($feed -notmatch [regex]::Escape($setupSha512)) {
+            throw 'latest.yml SHA-512 does not match the setup executable.'
+          }
+
+          $appUpdateFiles = @(Get-ChildItem -LiteralPath $releaseDirectory -Recurse -File -Filter 'app-update.yml')
+          if ($appUpdateFiles.Count -eq 0) {
+            throw 'The packaged application contains no app-update.yml.'
+          }
+          foreach ($appUpdateFile in $appUpdateFiles) {
+            $appUpdate = Get-Content -Raw -LiteralPath $appUpdateFile.FullName
+            if ($appUpdate -notmatch '(?m)^provider:\s*generic\s*$') {
+              throw "$($appUpdateFile.FullName) does not use the generic update provider."
+            }
+            if ($appUpdate -notmatch "(?m)^url:\s*$([regex]::Escape($env:UPDATE_URL))\s*$") {
+              throw "$($appUpdateFile.FullName) does not target $env:UPDATE_URL."
+            }
+          }
+
+          $assetDirectory = Join-Path $env:RUNNER_TEMP 'niuoffice-release-assets'
+          New-Item -ItemType Directory -Force -Path $assetDirectory | Out-Null
+          Copy-Item -LiteralPath $setupPath, $portablePath, $feedPath -Destination $assetDirectory
+          $blockmapPath = "$setupPath.blockmap"
+          if (Test-Path -LiteralPath $blockmapPath -PathType Leaf) {
+            Copy-Item -LiteralPath $blockmapPath -Destination $assetDirectory
+          }
+
+          $sourceName = "$env:ARTIFACT_SLUG-$env:RELEASE_VERSION-source.zip"
+          $sourcePath = Join-Path $assetDirectory $sourceName
+          git archive --format=zip --prefix="$env:ARTIFACT_SLUG-$env:RELEASE_VERSION/" --output="$sourcePath" $env:RELEASE_TAG
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) {
+            throw 'Unable to create the source archive from the release tag.'
+          }
+
+          $hashLines = Get-ChildItem -LiteralPath $assetDirectory -File |
+            Sort-Object Name |
+            ForEach-Object {
+              $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant()
+              "$hash *$($_.Name)"
+            }
+          $checksumPath = Join-Path $assetDirectory 'SHA256SUMS.txt'
+          [IO.File]::WriteAllLines($checksumPath, $hashLines, [Text.UTF8Encoding]::new($false))
+
+          $signatures = @(
+            Get-AuthenticodeSignature -LiteralPath $setupPath
+            Get-AuthenticodeSignature -LiteralPath $portablePath
+          )
+          $signedCount = @($signatures | Where-Object { $null -ne $_.SignerCertificate }).Count
+          if ($signedCount -ne 0 -and $signedCount -ne $signatures.Count) {
+            throw 'Setup and portable executables have inconsistent Authenticode signing state.'
+          }
+          $signed = $signedCount -eq $signatures.Count
+          if (-not [string]::IsNullOrWhiteSpace($env:CSC_LINK) -and -not $signed) {
+            throw 'Signing credentials were supplied, but the setup executable is not Authenticode-signed.'
+          }
+          $signingLabel = if ($signed) { 'signed' } else { 'unsigned contributor' }
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "asset_directory=$assetDirectory"
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "signing_label=$signingLabel"
+
+      - name: Publish GitHub release
+        if: steps.preflight.outputs.action == 'upload'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.preflight.outputs.release_tag }}
+          RELEASE_VERSION: ${{ steps.preflight.outputs.version }}
+          UPDATE_REPOSITORY: ${{ steps.preflight.outputs.update_repository }}
+          ASSET_DIRECTORY: ${{ steps.assets.outputs.asset_directory }}
+          SIGNING_LABEL: ${{ steps.assets.outputs.signing_label }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+
+          # Refuse to publish if main moved after the build. A new release is
+          # always the exact validated main tip, never an OEM or stale commit.
+          git fetch --no-tags --force origin '+refs/heads/main:refs/remotes/origin/main'
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to re-fetch origin/main.' }
+          $tagCommit = (git rev-parse "$env:RELEASE_TAG^{commit}").Trim()
+          $mainCommit = (git rev-parse 'refs/remotes/origin/main^{commit}').Trim()
+          if ($tagCommit -cne $mainCommit) {
+            throw "origin/main moved to $mainCommit while the release was building; create a new release tag at that commit."
+          }
+
+          # Recheck the public feed after the long Windows build. This closes
+          # the race with a manually published release outside this workflow.
+          $latestOutput = (& gh api "repos/$env:UPDATE_REPOSITORY/releases/latest" --jq '.tag_name' 2>&1 | Out-String).Trim()
+          $latestExit = $LASTEXITCODE
+          if ($latestExit -ne 0 -and $latestOutput -notmatch 'HTTP 404') {
+            throw "Unable to recheck the current release: $latestOutput"
+          }
+          $currentArgument = if ($latestExit -eq 0) { $latestOutput } else { '-' }
+          $decisionJson = node -e "const u=require('./scripts/update-feed-utils.cjs'); const current=process.argv[2]==='-'?null:process.argv[2]; console.log(JSON.stringify(u.releaseUploadDecision(process.argv[1],current,{allowExisting:true})))" $env:RELEASE_VERSION $currentArgument
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to recheck release version ordering.' }
+          $decision = $decisionJson | ConvertFrom-Json
+          if ($decision.action -ne 'upload') {
+            $detail = if ($decision.reason) { $decision.reason } else { 'the same release was published while this job was building' }
+            throw "Release stopped: $detail. Published assets were not modified."
+          }
+
+          $notesPath = Join-Path $env:RUNNER_TEMP 'NiuOffice-release-notes.md'
+          @"
+          NiuOffice $env:RELEASE_VERSION for Windows.
+
+          - Setup executable with automatic updates from this public GitHub release feed
+          - Portable executable (manual updates only)
+          - Complete tagged source archive
+          - SHA-256 checksums for every uploaded asset
+
+          This is a $env:SIGNING_LABEL build.
+          "@ | Set-Content -LiteralPath $notesPath -Encoding utf8
+
+          $releaseLookup = (& gh api "repos/$env:UPDATE_REPOSITORY/releases/tags/$env:RELEASE_TAG" --jq '.draft' 2>&1 | Out-String).Trim()
+          $lookupExit = $LASTEXITCODE
+          if ($lookupExit -ne 0 -and $releaseLookup -notmatch 'HTTP 404') {
+            throw "Unable to inspect the target release: $releaseLookup"
+          }
+          if ($lookupExit -eq 0 -and $releaseLookup -cne 'true') {
+            throw "Release $env:RELEASE_TAG already exists and is not a draft; immutable published assets will not be replaced."
+          }
+          if ($lookupExit -ne 0) {
+            gh release create $env:RELEASE_TAG --repo $env:UPDATE_REPOSITORY --verify-tag --draft --title "NiuOffice $env:RELEASE_VERSION" --notes-file $notesPath
+            if ($LASTEXITCODE -ne 0) { throw 'Unable to create the draft GitHub release.' }
+          }
+
+          $assets = @(Get-ChildItem -LiteralPath $env:ASSET_DIRECTORY -File | ForEach-Object FullName)
+          if ($assets.Count -lt 5) { throw 'Release asset set is unexpectedly incomplete.' }
+          gh release upload $env:RELEASE_TAG @assets --repo $env:UPDATE_REPOSITORY --clobber
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to upload GitHub release assets.' }
+          gh release edit $env:RELEASE_TAG --repo $env:UPDATE_REPOSITORY --draft=false --latest --title "NiuOffice $env:RELEASE_VERSION" --notes-file $notesPath
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to publish the GitHub release.' }
