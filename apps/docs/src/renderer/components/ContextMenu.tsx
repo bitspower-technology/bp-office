@@ -57,6 +57,7 @@ interface EditorContextMenuProps {
 const TRANSLATE_TARGETS: Array<{ labelKey: StringKey }> = [
   { labelKey: 'appLangEnglish' },
   { labelKey: 'appLangSimplifiedChinese' },
+  { labelKey: 'appLangTraditionalChinese' },
   { labelKey: 'appLangJapanese' },
   { labelKey: 'appLangKorean' },
   { labelKey: 'appLangFrench' },
