@@ -46,7 +46,7 @@ BP Office keeps one trunk:
   Windows binary may only be produced from a tag whose commit is the exact tip
   of `main`, by [`.github/workflows/release-bpoffice.yml`](.github/workflows/release-bpoffice.yml).
 - Release tags use `v<apps/shell/package.json version>` — for example
-  `v1.0.0-bp.1` — and every published release is public, non-prerelease, and
+  `v1.0.0-bp.2` — and every published release is public, non-prerelease, and
   marked Latest so the updater feed resolves anonymously.
 
 Upstream work flows in one direction: shared changes land in the upstream BP Office

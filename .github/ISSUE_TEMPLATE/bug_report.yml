@@ -23,7 +23,7 @@ body:
     attributes:
       label: Version and OS
       description: App version (or commit) and operating system
-      placeholder: '1.0.0-bp.1 on Windows 11'
+      placeholder: '1.0.0-bp.2 on Windows 11'
     validations:
       required: true
   - type: textarea

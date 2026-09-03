@@ -12,7 +12,7 @@ stay absent or disabled by the boundary gates in `tools/check-oem-boundaries.mjs
 `tools/check-niuoffice-boundaries.mjs`.
 
 Only `main` produces BP Office Windows binaries. A release tag must equal
-`v<apps/shell/package.json version>` (for example `v1.0.0-bp.1`) and point at the
+`v<apps/shell/package.json version>` (for example `v1.0.0-bp.2`) and point at the
 current `main` commit. [`.github/workflows/release-bpoffice.yml`](.github/workflows/release-bpoffice.yml)
 verifies that relationship before publishing, then uploads:
 
