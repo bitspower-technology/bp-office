@@ -1,6 +1,7 @@
 import type { AgentMessage, AgentToolDef } from '@genoffice/agent-core'
 import { aiFetch } from '../fetch'
 import { httpBodyDetail } from '../http-error'
+import { GEMINI_NO_THINKING, rejectsNoThinkingField } from '../no-thinking'
 import type { AiChatResponse, AiProviderConfig } from '../types'
 import { createStreamWatchdog, type StreamWatchdog } from '../watchdog'
 import { jsonBodyInsteadOfSse, sseErrorText, sseLines, type StreamCallbacks } from './shared'
@@ -130,35 +131,49 @@ async function geminiTurn(
     cb.onActivity?.()
   }
   const url = `${baseUrl.replace(/\/$/, '')}/models/${config.model}:streamGenerateContent?alt=sse`
-  const response = await aiFetch(url, {
-    method: 'POST',
-    signal: wd.signal,
-    headers: {
-      'Content-Type': 'application/json',
-      'x-goog-api-key': config.apiKey ?? '',
-    },
-    body: JSON.stringify({
-      systemInstruction: { parts: [{ text: system }] },
-      contents: geminiContents(messages),
-      ...(tools.length > 0
-        ? {
-            tools: [
-              {
-                functionDeclarations: tools.map((t) => ({
-                  name: t.name,
-                  description: t.description,
-                  parameters: t.inputSchema,
-                })),
-              },
-            ],
-          }
-        : {}),
-      generationConfig: { temperature: 0.3, maxOutputTokens: maxTokens },
-    }),
-  })
+  const headers = {
+    'Content-Type': 'application/json',
+    'x-goog-api-key': config.apiKey ?? '',
+  }
+  const post = (thinking: Record<string, unknown>) =>
+    aiFetch(url, {
+      method: 'POST',
+      signal: wd.signal,
+      headers,
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: system }] },
+        contents: geminiContents(messages),
+        ...(tools.length > 0
+          ? {
+              tools: [
+                {
+                  functionDeclarations: tools.map((t) => ({
+                    name: t.name,
+                    description: t.description,
+                    parameters: t.inputSchema,
+                  })),
+                },
+              ],
+            }
+          : {}),
+        generationConfig: { temperature: 0.3, maxOutputTokens: maxTokens, ...thinking },
+      }),
+    })
+
+  let response = await post(GEMINI_NO_THINKING)
   // headers arrived: ping the renderer watchdog too, or a slow first chunk could trip it
   onBytes()
-  if (!response.ok || !response.body) {
+  if (!response.ok) {
+    const detail = httpBodyDetail(await response.text())
+    // A model that cannot switch thinking off answers 400 naming the field; drop
+    // our own hint and retry rather than failing the turn (see openai-compatible).
+    if (response.status === 400 && rejectsNoThinkingField(detail)) {
+      response = await post({})
+    } else {
+      throw new Error(`Gemini HTTP ${response.status}: ${detail}`)
+    }
+  }
+  if (!response.body) {
     throw new Error(`Gemini HTTP ${response.status}: ${httpBodyDetail(await response.text())}`)
   }
   const jsonBody = await jsonBodyInsteadOfSse(response)
@@ -237,24 +252,30 @@ export async function chatGemini(
   baseUrl = GEMINI_BASE_URL,
 ): Promise<AiChatResponse> {
   const url = `${baseUrl.replace(/\/$/, '')}/models/${config.model}:generateContent`
-  const response = await aiFetch(url, {
-    method: 'POST',
-    signal: wd.signal,
-    headers: {
-      'Content-Type': 'application/json',
-      'x-goog-api-key': config.apiKey ?? '',
-    },
-    body: JSON.stringify({
-      systemInstruction: { parts: [{ text: system }] },
-      contents: [{ role: 'user', parts: [{ text: user }] }],
-      generationConfig: { temperature: 0.3 },
-    }),
-  })
+  const headers = {
+    'Content-Type': 'application/json',
+    'x-goog-api-key': config.apiKey ?? '',
+  }
+  const post = (thinking: Record<string, unknown>) =>
+    aiFetch(url, {
+      method: 'POST',
+      signal: wd.signal,
+      headers,
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: system }] },
+        contents: [{ role: 'user', parts: [{ text: user }] }],
+        generationConfig: { temperature: 0.3, ...thinking },
+      }),
+    })
+
+  let response = await post(GEMINI_NO_THINKING)
   wd.touch()
   if (!response.ok) {
-    return {
-      ok: false,
-      error: `Gemini HTTP ${response.status}: ${httpBodyDetail(await response.text())}`,
+    const detail = httpBodyDetail(await response.text())
+    if (response.status === 400 && rejectsNoThinkingField(detail)) {
+      response = await post({})
+    } else {
+      return { ok: false, error: `Gemini HTTP ${response.status}: ${detail}` }
     }
   }
   const json = (await response.json()) as {

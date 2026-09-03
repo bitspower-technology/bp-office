@@ -1,6 +1,7 @@
 import type { AgentMessage, AgentToolCall, AgentToolDef } from '@genoffice/agent-core'
 import { aiFetch } from '../fetch'
 import { httpBodyDetail } from '../http-error'
+import { openAiNoThinkingFields, rejectsNoThinkingField } from '../no-thinking'
 import { modelEchoesReasoning } from '../registry'
 import type { AiChatResponse, AiProviderConfig } from '../types'
 import { createStreamWatchdog, type StreamWatchdog } from '../watchdog'
@@ -147,35 +148,51 @@ async function openAiCompatibleTurn(
     wd.touch()
     cb.onActivity?.()
   }
-  const response = await aiFetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
-    method: 'POST',
-    signal: wd.signal,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(config.apiKey?.trim() ? { Authorization: `Bearer ${config.apiKey.trim()}` } : {}),
-    },
-    body: JSON.stringify({
-      model: config.model,
-      ...(options.useMaxCompletionTokens
-        ? { max_completion_tokens: maxTokens }
-        : { max_tokens: maxTokens }),
-      messages: openAiMessages(system, messages, modelEchoesReasoning(config.model)),
-      ...(tools.length > 0
-        ? {
-            tools: tools.map((t) => ({
-              type: 'function',
-              function: { name: t.name, description: t.description, parameters: t.inputSchema },
-            })),
-          }
-        : {}),
-      ...(options.omitTemperature ? {} : { temperature: 0.3 }),
-      ...options.bodyExtras,
-      stream: true,
-    }),
-  })
+  const url = `${baseUrl.replace(/\/$/, '')}/chat/completions`
+  const headers = {
+    'Content-Type': 'application/json',
+    ...(config.apiKey?.trim() ? { Authorization: `Bearer ${config.apiKey.trim()}` } : {}),
+  }
+  const post = (noThinking: Record<string, unknown>) =>
+    aiFetch(url, {
+      method: 'POST',
+      signal: wd.signal,
+      headers,
+      body: JSON.stringify({
+        model: config.model,
+        ...(options.useMaxCompletionTokens
+          ? { max_completion_tokens: maxTokens }
+          : { max_tokens: maxTokens }),
+        messages: openAiMessages(system, messages, modelEchoesReasoning(config.model)),
+        ...(tools.length > 0
+          ? {
+              tools: tools.map((t) => ({
+                type: 'function',
+                function: { name: t.name, description: t.description, parameters: t.inputSchema },
+              })),
+            }
+          : {}),
+        ...(options.omitTemperature ? {} : { temperature: 0.3 }),
+        ...noThinking,
+        ...options.bodyExtras,
+        stream: true,
+      }),
+    })
+
+  let response = await post(openAiNoThinkingFields(config.model))
   // headers arrived: ping the renderer watchdog too, or a slow first chunk could trip it
   onBytes()
-  if (!response.ok || !response.body) {
+  if (!response.ok) {
+    const detail = httpBodyDetail(await response.text())
+    // An endpoint that validates its schema can reject the no-thinking field itself.
+    // Dropping our own hint and retrying beats failing the user's turn.
+    if (response.status === 400 && rejectsNoThinkingField(detail)) {
+      response = await post({})
+    } else {
+      throw new Error(`HTTP ${response.status}: ${detail}`)
+    }
+  }
+  if (!response.body) {
     throw new Error(`HTTP ${response.status}: ${httpBodyDetail(await response.text())}`)
   }
   const jsonBody = await jsonBodyInsteadOfSse(response)
@@ -286,26 +303,38 @@ export async function chatOpenAiCompatible(
   user: string,
   options: OpenAiRequestOptions = {},
 ): Promise<AiChatResponse> {
-  const response = await aiFetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
-    method: 'POST',
-    signal: wd.signal,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(config.apiKey?.trim() ? { Authorization: `Bearer ${config.apiKey.trim()}` } : {}),
-    },
-    body: JSON.stringify({
-      model: config.model,
-      messages: [
-        { role: 'system', content: system },
-        { role: 'user', content: user },
-      ],
-      ...(options.omitTemperature ? {} : { temperature: 0.3 }),
-      ...options.bodyExtras,
-    }),
-  })
+  const url = `${baseUrl.replace(/\/$/, '')}/chat/completions`
+  const headers = {
+    'Content-Type': 'application/json',
+    ...(config.apiKey?.trim() ? { Authorization: `Bearer ${config.apiKey.trim()}` } : {}),
+  }
+  const post = (noThinking: Record<string, unknown>) =>
+    aiFetch(url, {
+      method: 'POST',
+      signal: wd.signal,
+      headers,
+      body: JSON.stringify({
+        model: config.model,
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: user },
+        ],
+        ...(options.omitTemperature ? {} : { temperature: 0.3 }),
+        ...noThinking,
+        ...options.bodyExtras,
+      }),
+    })
+
+  let response = await post(openAiNoThinkingFields(config.model))
   wd.touch()
   if (!response.ok) {
-    return { ok: false, error: `HTTP ${response.status}: ${httpBodyDetail(await response.text())}` }
+    const detail = httpBodyDetail(await response.text())
+    // see streamOpenAiCompatible: a schema-validating endpoint may reject the hint
+    if (response.status === 400 && rejectsNoThinkingField(detail)) {
+      response = await post({})
+    } else {
+      return { ok: false, error: `HTTP ${response.status}: ${detail}` }
+    }
   }
   const json = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> }
   const content = json.choices?.[0]?.message?.content
