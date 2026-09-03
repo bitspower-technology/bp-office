@@ -396,6 +396,19 @@ describe('generated BP Office brand assets', () => {
     expect(svg).not.toMatch(/GenOffice|Genspark|NiuOffice/i)
   })
 
+  it('drives the tab strip from the same branded file-type marks as Home', () => {
+    const tabSource = readFileSync(join(shellRenderer, 'TabBar.tsx'), 'utf8')
+    for (const asset of ['file-docx.svg', 'file-xlsx.svg', 'file-pdf.svg', 'file-md.svg']) {
+      expect(tabSource, `TabBar must import ${asset}`).toContain(`./assets/${asset}`)
+    }
+    // the upstream badges were inline SVGs with their own Office-ish palette
+    expect(tabSource).not.toMatch(/#3276CD|#4FA16B|#EF4444|#7C3AED/i)
+    expect(tabSource).toMatch(/KIND_ICON: Record<TabSummary\['kind'\], ReactElement>/)
+
+    const css = readFileSync(join(shellRenderer, 'tabbar.css'), 'utf8')
+    expect(css).toMatch(/\.tab-icon img\s*\{[^}]*display:\s*block/)
+  })
+
   it('keeps the traced vector mark, its build copy and the shared React icon identical', () => {
     const canonical = readFileSync(repoFile('branding', 'bpoffice-mark.svg'), 'utf8')
     const buildCopy = readFileSync(join(shellBuild, 'bpoffice-mark.svg'), 'utf8')
@@ -412,7 +425,8 @@ describe('generated BP Office brand assets', () => {
     }
 
     const pathOf = (svg: string): string => svg.match(/\bd="([^"]+)"/)?.[1] ?? ''
-    const uiPath = uiModule.match(/BP_OFFICE_MARK_PATH =\s*\n?\s*"([^"]+)"/)?.[1] ?? ''
+    // the constant is a single-quoted TS string once Prettier has had its way
+    const uiPath = uiModule.match(/BP_OFFICE_MARK_PATH\s*=\s*['"]([^'"]+)['"]/)?.[1] ?? ''
     expect(pathOf(buildCopy).length, 'build mark carries no geometry').toBeGreaterThan(1000)
     expect(pathOf(canonical)).toBe(pathOf(buildCopy))
     expect(uiPath).toBe(pathOf(buildCopy))
@@ -444,7 +458,7 @@ describe('generated BP Office brand assets', () => {
       features: { chatgptSubscription: boolean }
       updates: { enabled: boolean }
     }
-    expect(manifest).toMatchObject({ productName: 'BP Office', version: '1.0.0-bp.1' })
+    expect(manifest).toMatchObject({ productName: 'BP Office', version: '1.0.0-bp.2' })
     expect(productConfig).toMatchObject({
       productName: 'BP Office',
       artifactSlug: 'BPOffice',

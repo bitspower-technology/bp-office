@@ -204,6 +204,11 @@ html.genoffice-popover-open .tab-bar {
   align-items: center;
 }
 
+/* BP Office file-type marks are colored artwork, not currentColor glyphs */
+.tab-icon img {
+  display: block;
+}
+
 .tab-title {
   flex: 1 1 auto;
   overflow: hidden;
