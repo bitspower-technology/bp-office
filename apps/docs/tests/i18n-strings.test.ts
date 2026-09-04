@@ -12,7 +12,8 @@ const TRADITIONAL_LABEL =
 /**
  * The ribbon and the right-click menu build their Translate target list straight
  * out of these tables, so a key added to one locale has to exist in all of them —
- * otherwise that language silently loses 繁體中文 or gains an empty menu row.
+ * otherwise that language silently loses its Traditional Chinese entry or gains
+ * an empty menu row.
  */
 describe('i18n string tables', () => {
   it('provides a dictionary for every supported language and nothing else', () => {
