@@ -400,6 +400,44 @@ describe('generated NiuOffice brand assets', () => {
     expect(svg).not.toMatch(/GenOffice|Genspark/i)
   })
 
+  it('keeps every shipped document-kind icon surface in sync and omits Slides', () => {
+    const tabBar = readFileSync(join(shellRenderer, 'TabBar.tsx'), 'utf8')
+    for (const component of ['DocIcon', 'SheetIcon', 'PdfIcon', 'MarkdownIcon']) {
+      expect(tabBar).toContain(`function ${component}()`)
+    }
+    expect(tabBar).toMatch(/const KIND_ICON:[\s\S]*?docs:\s*<DocIcon\s*\/>/)
+    expect(tabBar).toMatch(/const KIND_ICON:[\s\S]*?sheets:\s*<SheetIcon\s*\/>/)
+    expect(tabBar).toMatch(/const KIND_ICON:[\s\S]*?pdf:\s*<PdfIcon\s*\/>/)
+    expect(tabBar).toMatch(/const KIND_ICON:[\s\S]*?markdown:\s*<MarkdownIcon\s*\/>/)
+    expect(tabBar).not.toMatch(/SlideIcon|\bslides\s*:/)
+
+    for (const kind of ['docx', 'xlsx', 'pdf', 'md']) {
+      expect(existsSync(join(shellRenderer, 'assets', `file-${kind}.svg`))).toBe(true)
+      expect(
+        existsSync(repoFile('apps', 'shell', 'src', 'main', 'assets', `menu-${kind}.png`)),
+      ).toBe(true)
+      expect(
+        existsSync(repoFile('apps', 'shell', 'src', 'main', 'assets', `menu-${kind}@2x.png`)),
+      ).toBe(true)
+      expect(existsSync(join(shellBuild, `${kind}.ico`))).toBe(true)
+      expect(existsSync(join(shellBuild, `${kind}.icns`))).toBe(true)
+    }
+
+    expect(existsSync(join(shellRenderer, 'assets', 'file-pptx.svg'))).toBe(false)
+    expect(existsSync(repoFile('apps', 'shell', 'src', 'main', 'assets', 'menu-pptx.png'))).toBe(
+      false,
+    )
+    expect(existsSync(join(shellBuild, 'pptx.ico'))).toBe(false)
+    expect(existsSync(join(shellBuild, 'pptx.icns'))).toBe(false)
+
+    const generator = readFileSync(repoFile('tools', 'gen-file-association-icons.mjs'), 'utf8')
+    expect(generator).toMatch(/docx:\s*'file-docx\.svg'/)
+    expect(generator).toMatch(/xlsx:\s*'file-xlsx\.svg'/)
+    expect(generator).toMatch(/pdf:\s*'file-pdf\.svg'/)
+    expect(generator).toMatch(/md:\s*'file-md\.svg'/)
+    expect(generator).not.toMatch(/pptx|file-pptx/i)
+  })
+
   it('brands both Windows artifacts and excludes removed packaged modules', () => {
     const builder = readFileSync(repoFile('apps', 'shell', 'electron-builder.cjs'), 'utf8')
     const manifest = JSON.parse(
@@ -419,7 +457,7 @@ describe('generated NiuOffice brand assets', () => {
       features: { chatgptSubscription: boolean }
       updates: { enabled: boolean }
     }
-    expect(manifest).toMatchObject({ productName: 'NiuOffice', version: '0.8.667-niu.4' })
+    expect(manifest).toMatchObject({ productName: 'NiuOffice', version: '0.8.970-niu.1' })
     expect(productConfig).toMatchObject({
       productName: 'NiuOffice',
       artifactSlug: 'NiuOffice',

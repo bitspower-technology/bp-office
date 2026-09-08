@@ -133,7 +133,8 @@ or packaged.
 
 ## Development
 
-NiuOffice is based on GenOffice v0.8.667 and preserves the internal
+NiuOffice is based on GenOffice v0.8.970
+(`93b8938c456eb1194ad8dc505ec5d1398f4e5654`) and preserves the internal
 `@genoffice/*` workspace names, `com.genoffice.app` bundle identifier, and
 `GenOffice` user-data directory for compatibility.
 

@@ -260,6 +260,95 @@ Home, onboarding, and updater UI. Update
 colors, accessibility, output sizes, and product configuration. Do not remove
 its SVG safety checks or ICO/ICNS structure checks.
 
+### Document-kind icons in tabs, Home, menus, and the operating system
+
+The small blue **W** shown beside a document title in the shell tab strip is
+not the application logo and is not produced by
+`generate-brand-assets.py`. It is the inline `DocIcon` React component in
+`apps/shell/src/renderer/src/TabBar.tsx`. Rebranding only the application mark
+will therefore leave this icon unchanged. Audit all four shipped document
+kinds as a single icon family:
+
+- `DocIcon` is used by `KIND_ICON.docs`.
+- `SheetIcon` is used by `KIND_ICON.sheets`.
+- `PdfIcon` is used by `KIND_ICON.pdf`.
+- `MarkdownIcon` is used by `KIND_ICON.markdown`.
+
+Each component currently contains its own hardcoded SVG `viewBox`, paths,
+fills, background color, and explicit `width="16" height="16"`. Replace those
+values with the approved client document-kind artwork; changing
+`NiuOfficeMark`, `app-icon.png`, or the Home lockup does not affect them. Keep
+the icons decorative with `aria-hidden="true"`, preserve all four `KIND_ICON`
+mappings, and do not add `SlideIcon` or a `slides` mapping. `HomeIcon` is a
+separate navigation glyph and is not one of the four document-kind marks.
+
+The wrapper is `.tab-icon` in
+`apps/shell/src/renderer/src/tabbar.css`. It currently supplies flex layout,
+vertical centering, and `flex-shrink: 0`; the inline SVGs provide the actual
+16-by-16-pixel size. Keep the wrapper, SVG size, tab gap, title truncation, and
+close-button spacing visually aligned. If the approved artwork needs another
+size, change the SVG dimensions and the relevant tab spacing together, then
+test narrow tabs and high-DPI scaling rather than allowing CSS to stretch the
+art implicitly.
+
+The same document kinds have three additional, independent asset layers. A
+complete rebrand must update all of them:
+
+1. **Home quick-create and recent-file tiles.** Replace the self-contained
+   SVG artwork in
+   `apps/shell/src/renderer/src/assets/file-docx.svg`,
+   `file-xlsx.svg`, `file-pdf.svg`, and `file-md.svg`. `Home.tsx` imports these
+   files and maps them through `FILE_ICONS`; `markdown` deliberately reuses
+   `file-md.svg`. Preserve a square view box, transparent background where
+   intended, and SVG safety rules (no scripts, `foreignObject`, remote
+   references, or imported executable content).
+2. **Native tab/overflow menus.** Replace the four 1x/2x pairs under
+   `apps/shell/src/main/assets`: `menu-docx.png` plus
+   `menu-docx@2x.png`, `menu-xlsx.png` plus `menu-xlsx@2x.png`,
+   `menu-pdf.png` plus `menu-pdf@2x.png`, and `menu-md.png` plus
+   `menu-md@2x.png`. They must be transparent RGBA PNGs at exactly 16x16 and
+   32x32 pixels. `apps/shell/src/main/index.ts` loads both representations via
+   `menuIcons()` and maps shell kinds through `TAB_MENU_ICON` (`docs` to
+   `docx`, `sheets` to `xlsx`, `pdf` to `pdf`, and `markdown` to `md`). The
+   separate `menu-home.png`/`menu-home@2x.png` pair belongs to Home navigation;
+   replace it only if the client's approved system includes a branded Home
+   glyph.
+3. **Explorer/Finder file associations.** Regenerate
+   `apps/shell/build/{docx,xlsx,pdf,md}.ico` and matching `.icns` files from the
+   four Home SVGs. `apps/shell/electron-builder.cjs` maps DOCX to `docx`, XLSX,
+   XLSM, XLS, and CSV to `xlsx`, PDF to `pdf`, and MD/Markdown to `md`. Do not
+   remove these `icon` fields: without them, Windows and macOS fall back to the
+   generic application logo.
+
+After changing any `file-*.svg`, run this from the repository root:
+
+```powershell
+node tools/gen-file-association-icons.mjs
+```
+
+The current generator launches the Playwright `chrome` channel and always
+invokes Apple's `iconutil` before it writes the Windows ICO for each kind.
+Consequently, run it on macOS with Chrome/Playwright available (or use a macOS
+CI job), then commit both the `.icns` and `.ico` outputs. A Windows or Linux
+run cannot produce the complete committed set as written; do not ship partial
+output or leave stale ICNS files. If a downstream workflow must generate on
+multiple platforms, deliberately split/refactor the generator and add tests
+for both output paths first.
+
+There must be no PPTX layer: no `file-pptx.svg`, `menu-pptx.png` or
+`menu-pptx@2x.png`, `pptx.ico`, `pptx.icns`, `SlideIcon`, `KIND_ICON.slides`,
+or PPTX file-association entry. Slides remains unshipped.
+
+For visual QA, open one DOCX, XLSX/CSV, PDF, and Markdown file together and
+inspect their tab icons at normal and narrow tab widths in light and dark
+themes. Check Home quick-create and recent-file cards, the native tab overflow
+menu, and 100%, 125%, and 200% Windows display scaling. Install the validation
+package and verify the associated file icons in Windows Explorer; verify the
+same `.icns` artwork in Finder on macOS. Operating-system icon caches can retain
+an old association, so validate after a clean install/reassociation or cache
+refresh. Confirm PPTX is neither associated nor accepted for opening, and run
+the focused shell brand-asset test before release.
+
 The repository also contains standalone-editor icon remnants such as
 `apps/docs/build/icon.*`, `apps/docs/src/renderer/assets/app-icon.png`, and
 `apps/sheets/src/renderer/assets/app-icon.png`. The normal OEM shell package

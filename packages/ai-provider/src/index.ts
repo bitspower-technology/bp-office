@@ -41,6 +41,7 @@ export type {
 export { chatForProvider } from './chat'
 export { setRescueFetch } from './fetch'
 export { isAiNetworkError } from './network-error'
+export { isAiOverloadedError } from './overload-error'
 export { sseLines, streamForProvider } from './stream'
 export type { StreamCallbacks } from './stream'
 export {

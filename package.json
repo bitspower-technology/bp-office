@@ -10,7 +10,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/bitspower-technology/bp-office.git"
+    "url": "git+https://github.com/Niuulh/NiuOffice.git"
   },
   "workspaces": [
     "apps/docs",

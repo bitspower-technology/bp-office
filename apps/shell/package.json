@@ -1,13 +1,13 @@
 {
   "name": "@genoffice/shell",
-  "productName": "BP Office",
-  "version": "1.0.0-bp.1",
+  "productName": "NiuOffice",
+  "version": "0.8.970-niu.1",
   "license": "Apache-2.0",
-  "homepage": "https://github.com/bitspower-technology/bp-office",
+  "homepage": "https://github.com/Niuulh/NiuOffice",
   "private": true,
-  "description": "Unified BP Office shell hosting the Docs, Sheets, PDF, and Markdown editors",
+  "description": "Unified NiuOffice shell hosting the Docs, Sheets, PDF, and Markdown editors",
   "main": "out/main/index.js",
-  "desktopName": "bpoffice.desktop",
+  "desktopName": "genoffice.desktop",
   "scripts": {
     "dev": "electron-vite dev --watch",
     "build": "electron-vite build",
@@ -41,5 +41,5 @@
     "vite": "^7.3.1",
     "vitest": "^4.1.10"
   },
-  "author": "Bitspower Technology"
+  "author": "NiuOffice"
 }

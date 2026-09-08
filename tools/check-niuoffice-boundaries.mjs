@@ -44,6 +44,7 @@ const CONFIG_FILES = [
   'packages/pdf2docx/src/index.ts',
   'package-lock.json',
   'tools/build-stale-preloads.mjs',
+  'tools/gen-file-association-icons.mjs',
 ]
 const CODE_EXTENSIONS = new Set([
   '.ts',

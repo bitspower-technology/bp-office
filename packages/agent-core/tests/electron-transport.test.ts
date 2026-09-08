@@ -15,6 +15,7 @@ function setup(
   startImpl?: (request: IpcStreamStart<FakeSettings>) => void | Promise<unknown>,
   replyImpl?: (payload: IpcToolResult) => void | Promise<unknown>,
   networkErrorText?: () => string,
+  overloadedErrorText?: () => string,
 ) {
   let listener: ((chunk: IpcStreamChunk) => void) | undefined
   const unsubscribe = vi.fn(() => {
@@ -41,6 +42,7 @@ function setup(
     unknownErrorText: () => 'unknown error',
     timeoutErrorText: () => 'timed out',
     ...(networkErrorText ? { networkErrorText } : {}),
+    ...(overloadedErrorText ? { overloadedErrorText } : {}),
   })
   const cb = {
     onDelta: vi.fn(),
@@ -210,6 +212,25 @@ describe('createIpcTransport', () => {
     expect(cb.onError).toHaveBeenCalledWith('Claude fetch failed: fetch failed cause=ECONNRESET')
   })
 
+  it('maps an overloaded error code to the localized busy message', () => {
+    const { cb, emit } = setup(undefined, undefined, undefined, () => 'service busy')
+    emit({
+      type: 'error',
+      error: 'HTTP 429: {"error":{"type":"engine_overloaded_error"}}',
+      errorCode: 'overloaded',
+    })
+    expect(cb.onError).toHaveBeenCalledWith('service busy')
+  })
+
+  it('an overloaded error code without overloadedErrorText falls back to the carried text', () => {
+    const { cb, emit } = setup()
+    emit({
+      type: 'error',
+      error: 'HTTP 429: engine overloaded',
+      errorCode: 'overloaded',
+    })
+    expect(cb.onError).toHaveBeenCalledWith('HTTP 429: engine overloaded')
+  })
   it('fails the run after prolonged silence; pings re-arm the watchdog', () => {
     vi.useFakeTimers()
     try {

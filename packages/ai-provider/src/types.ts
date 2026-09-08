@@ -157,8 +157,8 @@ export interface AiStreamChunk {
   /** complete parsed tool call (emitted once its arguments finish streaming) */
   toolCall?: AgentToolCall
   error?: string
-  /** machine-readable error cause; lets the renderer localize connection failures */
-  errorCode?: 'timeout' | 'network'
+  /** machine-readable error cause; lets the renderer localize connection and capacity failures */
+  errorCode?: 'timeout' | 'network' | 'overloaded'
   /** normalized stop reason carried on 'done' ('max_tokens' = output cut off by the token limit) */
   stopReason?: string
 }

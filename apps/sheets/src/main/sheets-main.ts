@@ -36,11 +36,13 @@ import type {
 import { z } from 'zod'
 import {
   appMenuLabels,
+  buildPrintableHtml,
   configuredDefaultSaveDir,
   contextMenuLabels,
   fetchRemoteImage,
   installContextMenu,
   installNavigationGuard,
+  printHtmlToPdf,
   safeExternalUrl,
   showOpenDialogWithMemory,
   showSaveDialogWithMemory,
@@ -54,6 +56,7 @@ import {
   AI_PROVIDERS,
   AiTimeoutError,
   isAiNetworkError,
+  isAiOverloadedError,
   chatForProvider,
   constrainAiSettingsToProduct,
   defaultAiSettings,
@@ -68,7 +71,7 @@ import {
 } from '@genoffice/ai-provider'
 import { getSharedChatGptProviderService } from '@genoffice/ai-provider/chatgpt-main'
 import type { AgentToolCall, AgentToolResult } from '@genoffice/agent-core'
-import { csvToXlsxBuffer, decodeCsvBuffer } from '../gateway/csv-import'
+import { csvToXlsxBuffer, decodeCsvBuffer, sheetCsvToXlsxBuffer } from '../gateway/csv-import'
 import { parseFileToText } from '@genoffice/file-parse'
 import type { CellEdit, SheetStructuralOps } from '../gateway/xlsx-gateway'
 import { readArchiveEntryText, saveWorkbookViaSidecar } from '../gateway/xlsx-package-io'
@@ -101,14 +104,17 @@ import {
   screenCaptureResultSchema,
   screenSourcesResultSchema,
   workbookPivotDefinitionSchema,
+  workbookCreateDocumentRequestSchema,
   workbookExportCsvRequestSchema,
   workbookExportPdfRequestSchema,
   workbookRangeRequestSchema,
   workbookRangeResultSchema,
   workbookSaveEditsAbortSchema,
   workbookSaveEditsBeginSchema,
+  saveEditsChunkArraySchema,
   workbookSaveEditsChunkSchema,
   workbookSaveRequestSchema,
+  type WorkbookCreateDocumentResult,
   type WorkbookSaveRequest,
 } from '../shared/desktop-api'
 import { IPC_CHANNELS } from '../shared/ipc-channels'
@@ -151,6 +157,7 @@ const tMain = createI18n({
     errImageNoText: '图片附件不提供文本,已作为图像随用户消息发送,直接看图即可',
     errNotImage: '不是支持的图片类型',
     errNoApiKey: '未配置 {provider} 的 API Key',
+    errAiBusy: 'AI 服务当前繁忙，请稍后重试',
     errNoModel: '未配置模型名称',
     errImgAbsPath: '图片路径必须是绝对路径。',
     errImgNotFound: '找不到图片文件: {path}',
@@ -205,6 +212,7 @@ const tMain = createI18n({
     errImageNoText: 'Image attachments have no text; the image is sent along with the user message',
     errNotImage: 'not a supported image type',
     errNoApiKey: 'No API key configured for {provider}',
+    errAiBusy: 'The AI service is busy right now — please try again in a moment',
     errNoModel: 'No model name configured',
     errImgAbsPath: 'Image path must be absolute.',
     errImgNotFound: 'Image file not found: {path}',
@@ -262,6 +270,7 @@ const tMain = createI18n({
       '画像添付にはテキストがありません。画像はユーザー メッセージと一緒に送信されるため、そのまま画像をご確認ください',
     errNotImage: 'サポートされていない画像形式です',
     errNoApiKey: '{provider} の API キーが設定されていません',
+    errAiBusy: 'AI サービスが混み合っています。しばらくしてからもう一度お試しください',
     errNoModel: 'モデル名が設定されていません',
     errImgAbsPath: '画像パスは絶対パスで指定してください。',
     errImgNotFound: '画像ファイルが見つかりません: {path}',
@@ -321,6 +330,7 @@ const tMain = createI18n({
       '이미지 첨부에는 텍스트가 없습니다. 이미지는 사용자 메시지와 함께 전송되므로 이미지를 직접 확인하세요',
     errNotImage: '지원되는 이미지 형식이 아닙니다',
     errNoApiKey: '{provider}의 API 키가 설정되지 않았습니다',
+    errAiBusy: 'AI 서비스가 혼잡합니다. 잠시 후 다시 시도해 주세요',
     errNoModel: '모델 이름이 설정되지 않았습니다',
     errImgAbsPath: '이미지 경로는 절대 경로여야 합니다.',
     errImgNotFound: '이미지 파일을 찾을 수 없습니다: {path}',
@@ -380,6 +390,7 @@ const tMain = createI18n({
       "Les images jointes n'ont pas de texte ; l'image est envoyée avec le message de l'utilisateur",
     errNotImage: "type d'image non pris en charge",
     errNoApiKey: 'Aucune clé API configurée pour {provider}',
+    errAiBusy: "Le service d'IA est actuellement surchargé — réessayez dans un instant",
     errNoModel: 'Aucun nom de modèle configuré',
     errImgAbsPath: "Le chemin de l'image doit être absolu.",
     errImgNotFound: 'Fichier image introuvable : {path}',
@@ -440,6 +451,7 @@ const tMain = createI18n({
       'Bildanlagen enthalten keinen Text; das Bild wird zusammen mit der Benutzernachricht gesendet',
     errNotImage: 'kein unterstützter Bildtyp',
     errNoApiKey: 'Kein API-Schlüssel für {provider} konfiguriert',
+    errAiBusy: 'Der KI-Dienst ist derzeit überlastet — bitte gleich erneut versuchen',
     errNoModel: 'Kein Modellname konfiguriert',
     errImgAbsPath: 'Der Bildpfad muss absolut sein.',
     errImgNotFound: 'Bilddatei nicht gefunden: {path}',
@@ -499,6 +511,8 @@ const tMain = createI18n({
       'Las imágenes adjuntas no tienen texto; la imagen se envía junto con el mensaje del usuario',
     errNotImage: 'no es un tipo de imagen compatible',
     errNoApiKey: 'No hay clave de API configurada para {provider}',
+    errAiBusy:
+      'El servicio de IA está saturado en este momento; inténtalo de nuevo en unos instantes',
     errNoModel: 'No hay nombre de modelo configurado',
     errImgAbsPath: 'La ruta de la imagen debe ser absoluta.',
     errImgNotFound: 'No se encontró el archivo de imagen: {path}',
@@ -557,6 +571,7 @@ const tMain = createI18n({
       'รูปภาพแนบไม่มีข้อความ รูปภาพจะถูกส่งไปพร้อมข้อความของผู้ใช้ ให้ดูที่รูปภาพโดยตรง',
     errNotImage: 'ไม่ใช่ชนิดรูปภาพที่รองรับ',
     errNoApiKey: 'ยังไม่ได้ตั้งค่า API Key ของ {provider}',
+    errAiBusy: 'บริการ AI มีผู้ใช้งานจำนวนมากในขณะนี้ โปรดลองอีกครั้งในอีกสักครู่',
     errNoModel: 'ยังไม่ได้กำหนดชื่อโมเดล',
     errImgAbsPath: 'เส้นทางรูปภาพต้องเป็นเส้นทางแบบสัมบูรณ์',
     errImgNotFound: 'ไม่พบไฟล์รูปภาพ: {path}',
@@ -614,6 +629,7 @@ const tMain = createI18n({
     errImageNoText: 'Lampiran gambar tidak memiliki teks; gambar dikirim bersama pesan pengguna',
     errNotImage: 'bukan jenis gambar yang didukung',
     errNoApiKey: 'API Key untuk {provider} belum dikonfigurasi',
+    errAiBusy: 'Layanan AI sedang sibuk — silakan coba lagi sebentar lagi',
     errNoModel: 'Nama model belum dikonfigurasi',
     errImgAbsPath: 'Jalur gambar harus berupa jalur absolut.',
     errImgNotFound: 'File gambar tidak ditemukan: {path}',
@@ -672,6 +688,7 @@ const tMain = createI18n({
       'Вложенные изображения не содержат текста; изображение отправляется вместе с сообщением пользователя',
     errNotImage: 'неподдерживаемый тип изображения',
     errNoApiKey: 'API-ключ для {provider} не настроен',
+    errAiBusy: 'Сервис ИИ сейчас перегружен — повторите попытку чуть позже',
     errNoModel: 'Имя модели не настроено',
     errImgAbsPath: 'Путь к изображению должен быть абсолютным.',
     errImgNotFound: 'Файл изображения не найден: {path}',
@@ -729,6 +746,7 @@ const tMain = createI18n({
     errImageNoText: 'مرفقات الصور لا تحتوي على نص؛ تُرسل الصورة مع رسالة المستخدم',
     errNotImage: 'نوع صورة غير مدعوم',
     errNoApiKey: 'لم يتم تكوين مفتاح API لـ {provider}',
+    errAiBusy: 'خدمة الذكاء الاصطناعي مشغولة حاليًا — يرجى المحاولة مرة أخرى بعد قليل',
     errNoModel: 'لم يتم تكوين اسم النموذج',
     errImgAbsPath: 'يجب أن يكون مسار الصورة مسارًا مطلقًا.',
     errImgNotFound: 'لم يتم العثور على ملف الصورة: {path}',
@@ -785,6 +803,7 @@ const tMain = createI18n({
       'Anexos de imagem não têm texto; a imagem é enviada junto com a mensagem do usuário',
     errNotImage: 'não é um tipo de imagem suportado',
     errNoApiKey: 'Nenhuma chave de API configurada para {provider}',
+    errAiBusy: 'O serviço de IA está sobrecarregado no momento — tente novamente em instantes',
     errNoModel: 'Nenhum nome de modelo configurado',
     errImgAbsPath: 'O caminho da imagem deve ser absoluto.',
     errImgNotFound: 'Arquivo de imagem não encontrado: {path}',
@@ -843,6 +862,7 @@ const tMain = createI18n({
       "Gli allegati immagine non hanno testo; l'immagine viene inviata insieme al messaggio dell'utente",
     errNotImage: 'tipo di immagine non supportato',
     errNoApiKey: 'Nessuna chiave API configurata per {provider}',
+    errAiBusy: 'Il servizio IA è momentaneamente sovraccarico — riprova tra poco',
     errNoModel: 'Nessun nome di modello configurato',
     errImgAbsPath: "Il percorso dell'immagine deve essere assoluto.",
     errImgNotFound: 'File immagine non trovato: {path}',
@@ -902,6 +922,7 @@ const tMain = createI18n({
       'Załączniki graficzne nie zawierają tekstu; obraz jest wysyłany razem z wiadomością użytkownika',
     errNotImage: 'nieobsługiwany typ obrazu',
     errNoApiKey: 'Nie skonfigurowano klucza API dla {provider}',
+    errAiBusy: 'Usługa AI jest obecnie przeciążona — spróbuj ponownie za chwilę',
     errNoModel: 'Nie skonfigurowano nazwy modelu',
     errImgAbsPath: 'Ścieżka obrazu musi być bezwzględna.',
     errImgNotFound: 'Nie znaleziono pliku obrazu: {path}',
@@ -960,6 +981,7 @@ const tMain = createI18n({
       'Afbeeldingsbijlagen bevatten geen tekst; de afbeelding wordt samen met het gebruikersbericht verzonden',
     errNotImage: 'geen ondersteund afbeeldingstype',
     errNoApiKey: 'Geen API-sleutel geconfigureerd voor {provider}',
+    errAiBusy: 'De AI-service is momenteel overbelast — probeer het zo opnieuw',
     errNoModel: 'Geen modelnaam geconfigureerd',
     errImgAbsPath: 'Het afbeeldingspad moet absoluut zijn.',
     errImgNotFound: 'Afbeeldingsbestand niet gevonden: {path}',
@@ -1018,6 +1040,7 @@ const tMain = createI18n({
     errImageNoText: 'Lampiran imej tiada teks; imej dihantar bersama mesej pengguna',
     errNotImage: 'bukan jenis imej yang disokong',
     errNoApiKey: 'Kunci API untuk {provider} belum dikonfigurasikan',
+    errAiBusy: 'Perkhidmatan AI sedang sibuk — sila cuba lagi sebentar lagi',
     errNoModel: 'Nama model belum dikonfigurasikan',
     errImgAbsPath: 'Laluan imej mestilah laluan mutlak.',
     errImgNotFound: 'Fail imej tidak ditemui: {path}',
@@ -1076,6 +1099,7 @@ const tMain = createI18n({
     errImageNoText: 'קבצים מצורפים מסוג תמונה אינם מכילים טקסט; התמונה נשלחת יחד עם הודעת המשתמש',
     errNotImage: 'סוג תמונה שאינו נתמך',
     errNoApiKey: 'לא הוגדר מפתח API עבור {provider}',
+    errAiBusy: 'שירות ה-AI עמוס כרגע — נסו שוב בעוד רגע',
     errNoModel: 'לא הוגדר שם מודל',
     errImgAbsPath: 'נתיב התמונה חייב להיות מוחלט.',
     errImgNotFound: 'קובץ התמונה לא נמצא: {path}',
@@ -1131,6 +1155,7 @@ const tMain = createI18n({
     errImageNoText: 'छवि अनुलग्नक में टेक्स्ट नहीं होता; छवि उपयोगकर्ता संदेश के साथ भेजी जाती है',
     errNotImage: 'समर्थित छवि प्रकार नहीं है',
     errNoApiKey: '{provider} के लिए कोई API कुंजी कॉन्फ़िगर नहीं है',
+    errAiBusy: 'AI सेवा अभी व्यस्त है — कृपया थोड़ी देर बाद फिर से प्रयास करें',
     errNoModel: 'कोई मॉडल नाम कॉन्फ़िगर नहीं है',
     errImgAbsPath: 'छवि पथ निरपेक्ष होना चाहिए।',
     errImgNotFound: 'छवि फ़ाइल नहीं मिली: {path}',
@@ -1189,6 +1214,7 @@ const tMain = createI18n({
     errImageNoText: '圖片附件不提供文字,已作為影像隨使用者訊息傳送,直接看圖即可',
     errNotImage: '不是支援的圖片類型',
     errNoApiKey: '未設定 {provider} 的 API Key',
+    errAiBusy: 'AI 服務目前繁忙，請稍後重試',
     errNoModel: '未設定模型名稱',
     errImgAbsPath: '圖片路徑必須是絕對路徑。',
     errImgNotFound: '找不到圖片檔案: {path}',
@@ -1268,6 +1294,14 @@ interface SessionInfo {
 
 // ---- runtime configuration (paths differ when bundled into the shell) ----
 
+/** AI create_document content the sheets app cannot build itself — the shell
+ * routes it into the docs-owned creation flow (docx opens a fresh docs tab). */
+export interface SheetsAiHostDocumentRequest {
+  type: 'docx' | 'pdf' | 'md'
+  title: string
+  content: string
+}
+
 interface SheetsRuntimeConfig {
   /** absolute path to the sheets preload bundle */
   preloadPath: string
@@ -1277,30 +1311,85 @@ interface SheetsRuntimeConfig {
   rendererFile: string
   /** absolute path to the Rust xlsx-sidecar binary */
   sidecarPath?: string | undefined
-  /** Shell router used to open exported PDFs in a new NiuOffice tab. */
+  /** Shell router used to open exported/AI-generated files in a new NiuOffice tab. */
   openGeneratedPath?: (path: string) => boolean
+  /** Host-owned cross-app document creator (the shell routes docx/pdf/md into Docs). */
+  createDocument?: (request: SheetsAiHostDocumentRequest) => Promise<WorkbookCreateDocumentResult>
 }
 
 let runtime: SheetsRuntimeConfig = {
   preloadPath: join(__dirname, '../preload/index.js'),
   rendererUrl: process.env.ELECTRON_RENDERER_URL,
   rendererFile: join(__dirname, '../renderer/index.html'),
+  createDocument: createStandaloneSheetsDocument,
 }
 
 export function configureSheetsRuntime(config: SheetsRuntimeConfig): void {
   runtime = config
 }
 
-/** After a successful Sheets → PDF export: open the file in a PDF tab (shell)
- * or reveal it in the folder (standalone). Tab-opening failure must not
- * report the export itself as failed — the file is already persisted. */
-function openExportedPdf(path: string): void {
+/** After writing an exported/AI-generated file: open it in the right tab
+ * (shell) or reveal it in the folder (standalone). Tab-opening failure must
+ * not report the write itself as failed — the file is already persisted. */
+function openGeneratedFile(path: string): void {
   try {
     if (runtime.openGeneratedPath?.(path)) return
   } catch (err) {
-    console.warn('[sheets] Failed to open exported PDF:', err)
+    console.warn('[sheets] Failed to open generated file:', err)
   }
   shell.showItemInFolder(path)
+}
+
+/** Pick a safe file-name stem for an AI-created file (mirrors docs' sanitizeAiDocFileBase). */
+export function sanitizeGeneratedFileBase(title: string): string {
+  const cleaned = String(title ?? '')
+    // eslint-disable-next-line no-control-regex -- generated file names must reject controls
+    .replace(/[/\\:*?"<>|\u0000-\u001f]/g, '_')
+    .trim()
+    .slice(0, 80)
+    .trim()
+  return cleaned && cleaned !== '.' && cleaned !== '..' ? cleaned : 'Untitled'
+}
+
+/** first free path for fileName inside dir: name.ext, name-2.ext, name-3.ext… */
+export function uniquePathIn(dir: string, fileName: string): string {
+  const dot = fileName.lastIndexOf('.')
+  const base = dot > 0 ? fileName.slice(0, dot) : fileName
+  const ext = dot > 0 ? fileName.slice(dot) : ''
+  let candidate = join(dir, fileName)
+  for (let i = 2; existsSync(candidate); i++) candidate = join(dir, `${base}-${i}${ext}`)
+  return candidate
+}
+
+/** Standalone-window fallback for AI docx/pdf/md creation (mirrors pdf-main's
+ * createStandaloneDocument): pdf renders in a hidden sandboxed window, md
+ * writes the Markdown source; docx needs the Docs app and is refused. */
+async function createStandaloneSheetsDocument(
+  request: SheetsAiHostDocumentRequest,
+): Promise<WorkbookCreateDocumentResult> {
+  if (request.type === 'docx') {
+    return { ok: false, error: 'Creating DOCX files requires the NiuOffice shell or Docs app.' }
+  }
+  const title = sanitizeGeneratedFileBase(request.title)
+  try {
+    if (request.type === 'pdf') {
+      const bytes = await printHtmlToPdf(
+        buildPrintableHtml(title, request.content),
+        () =>
+          new BrowserWindow({ show: false, webPreferences: { sandbox: true, javascript: false } }),
+      )
+      const path = uniquePathIn(configuredDefaultSaveDir(app), `${title}.pdf`)
+      await writeFile(path, bytes)
+      openGeneratedFile(path)
+      return { ok: true, path }
+    }
+    const path = uniquePathIn(configuredDefaultSaveDir(app), `${title}.md`)
+    await writeFile(path, request.content, 'utf8')
+    openGeneratedFile(path)
+    return { ok: true, path }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
 }
 
 let mainWindow: BrowserWindow | null = null
@@ -2358,7 +2447,7 @@ export function registerSheetsIpc(): void {
     sessionFor(event)
     const request = workbookExportPdfRequestSchema.parse(input)
     const result = await exportPdf(event, request)
-    if (!result.canceled && result.path) openExportedPdf(result.path)
+    if (!result.canceled && result.path) openGeneratedFile(result.path)
     return result
   })
 
@@ -2422,6 +2511,49 @@ export function registerSheetsIpc(): void {
     }
     return { canceled: false, path: targetPath }
   })
+
+  // AI create_document: dialog-free — the file lands in the default save
+  // folder under a unique sanitized name and opens in a new tab. xlsx/csv
+  // write the renderer-serialized worksheet data here (xlsx through the same
+  // CSV→xlsx conversion as CSV imports, values only); docx/pdf/md go through
+  // the host-owned creator (the shell routes them into the docs flow, #960).
+  ipcMain.handle(
+    IPC_CHANNELS.createDocument,
+    async (event, input: unknown): Promise<WorkbookCreateDocumentResult> => {
+      sessionFor(event)
+      const request = workbookCreateDocumentRequestSchema.parse(input)
+      try {
+        if (request.type === 'csv') {
+          const filePath = uniquePathIn(
+            configuredDefaultSaveDir(app),
+            `${sanitizeGeneratedFileBase(request.title)}.csv`,
+          )
+          // UTF-8 BOM so Excel decodes the reopened file correctly (same as exportCsv)
+          await atomicWriteFile(
+            filePath,
+            Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(request.content, 'utf8')]),
+          )
+          openGeneratedFile(filePath)
+          return { ok: true, path: filePath }
+        }
+        if (request.type === 'xlsx') {
+          const buffer = await sheetCsvToXlsxBuffer(request.content, request.sheetName ?? 'Sheet1')
+          const filePath = uniquePathIn(
+            configuredDefaultSaveDir(app),
+            `${sanitizeGeneratedFileBase(request.title)}.xlsx`,
+          )
+          await atomicWriteFile(filePath, buffer)
+          openGeneratedFile(filePath)
+          return { ok: true, path: filePath }
+        }
+        const create = runtime.createDocument
+        if (!create) return { ok: false, error: 'Document creation is unavailable in this host.' }
+        return await create({ type: request.type, title: request.title, content: request.content })
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) }
+      }
+    },
+  )
 
   // First Save of a CSV session: Excel's "keep this format?" question. The
   // renderer remembers the answer for the file, so it is asked once.
@@ -2591,7 +2723,14 @@ export function registerSheetsIpc(): void {
   ipcMain.handle(IPC_CHANNELS.saveEditsChunk, (event, input: unknown) => {
     const entry = sessionFor(event)
     const request = workbookSaveEditsChunkSchema.parse(input)
-    entry.saveTransfers.addChunk(request)
+    // The chunk crosses the bridge and the IPC hop as a flat JSON string;
+    // the edits stay untrusted input until they pass the cell-edit schema.
+    entry.saveTransfers.addChunk({
+      sessionId: request.sessionId,
+      transferId: request.transferId,
+      seq: request.seq,
+      edits: saveEditsChunkArraySchema.parse(JSON.parse(request.editsJson)),
+    })
   })
 
   // Best-effort cleanup from renderer failure paths; a no-op if the transfer
@@ -2816,12 +2955,18 @@ export function registerSheetsAiIpc(): void {
       return { ok: false, error: tm('errNoModel') }
     }
     try {
-      if (provider === 'chatgpt') {
-        return await sheetsChatGptProvider().chat(config.model, request.system, request.user)
+      const result =
+        provider === 'chatgpt'
+          ? await sheetsChatGptProvider().chat(config.model, request.system, request.user)
+          : await chatForProvider(provider, config, request.system, request.user)
+      // the one-shot path reports HTTP failures as ok:false with the raw body —
+      // replace capacity/rate-limit dumps with the localized "busy" message
+      if (!result.ok && isAiOverloadedError(result.error)) {
+        return { ok: false, error: tm('errAiBusy') }
       }
-      return await chatForProvider(provider, config, request.system, request.user)
+      return result
     } catch (err) {
-      return { ok: false, error: String(err) }
+      return { ok: false, error: isAiOverloadedError(err) ? tm('errAiBusy') : String(err) }
     }
   })
 
@@ -2899,7 +3044,9 @@ export function registerSheetsAiIpc(): void {
             ? { errorCode: 'timeout' as const }
             : isAiNetworkError(err)
               ? { errorCode: 'network' as const }
-              : {}),
+              : isAiOverloadedError(err)
+                ? { errorCode: 'overloaded' as const }
+                : {}),
         })
       }
     } finally {
@@ -3391,11 +3538,12 @@ async function openWorkbookSession(
   // copy. The digest also describes exactly those bytes.
   const snapshotPath = await snapshotWorkbook(path)
   try {
-    const [opened, digest, restoreTargetSha, csvSourceSha] = await Promise.all([
+    const [opened, digest, snapshotStat, restoreTargetSha, csvSourceSha] = await Promise.all([
       client
         .open(snapshotPath, getUiLang(), systemShortDate())
         .then((result) => sidecarOpenResultSchema.parse(result)),
       sha256File(snapshotPath),
+      stat(snapshotPath),
       // Missing original (deleted since the crash) is fine: the write-back recreates it.
       restoreTarget === undefined
         ? Promise.resolve(undefined)
@@ -3424,6 +3572,7 @@ async function openWorkbookSession(
       // recovery copy that is the original file, not the copy under userData.
       path: restoreTarget ?? path,
       sha256: digest,
+      fileBytes: snapshotStat.size,
       readOnly: false,
       needsSaveAs: suggestSaveAs !== undefined,
       ...(csvSourcePath === undefined ? {} : { csvPath: csvSourcePath }),
