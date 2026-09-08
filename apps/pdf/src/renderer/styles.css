@@ -1145,7 +1145,7 @@ button {
 
 /* ── Encrypted document password ── */
 
-/* ---- encrypted-PDF password dialog (NiuOffice DS form dialog, matching the
+/* ---- encrypted-PDF password dialog (BP Office DS form dialog, matching the
    docs PasswordDialog and mockups/protect-dialogs-niuoffice.html §1/2) ---- */
 
 /* base .pdf-modal-mask (defined below) top-aligns dialogs; this one centers */
@@ -1416,7 +1416,7 @@ button {
   gap: 8px;
 }
 
-/* NiuOffice DS modal footer buttons: secondary = bg-subtle, primary = black (#232425) */
+/* BP Office DS modal footer buttons: secondary = bg-subtle, primary = black (#232425) */
 .pdf-modal-btn {
   display: inline-flex;
   align-items: center;
@@ -3291,7 +3291,7 @@ button {
   white-space: nowrap;
 }
 
-/* NiuOffice brand logo (shared by the collapsed entry and the AI panel title) */
+/* BP Office brand logo (shared by the collapsed entry and the AI panel title) */
 .niuoffice-badge {
   display: block;
   width: 22px;

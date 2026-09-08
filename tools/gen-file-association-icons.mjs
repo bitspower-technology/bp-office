@@ -55,6 +55,59 @@ const ICONSET_ENTRIES = [
 ]
 const WIN_SIZES = [16, 24, 32, 48, 64, 128, 256]
 
+// `iconutil` only exists on macOS. The container it produces is a plain
+// length-prefixed sequence of PNG entries, so any host can write the same file;
+// the four-character codes are the canonical ones for those iconset slots.
+const ICNS_TYPE_CODES = {
+  'icon_16x16.png': 'icp4',
+  'icon_16x16@2x.png': 'ic11',
+  'icon_32x32.png': 'icp5',
+  'icon_32x32@2x.png': 'ic12',
+  'icon_128x128.png': 'ic07',
+  'icon_128x128@2x.png': 'ic13',
+  'icon_256x256.png': 'ic08',
+  'icon_256x256@2x.png': 'ic14',
+  'icon_512x512.png': 'ic09',
+  'icon_512x512@2x.png': 'ic10',
+}
+
+/** ICNS container with PNG-compressed entries, byte-compatible with iconutil. */
+function buildIcns(entries) {
+  const body = Buffer.concat(
+    entries.map(({ type, png }) => {
+      const header = Buffer.alloc(8)
+      header.write(type, 0, 'ascii')
+      header.writeUInt32BE(8 + png.length, 4)
+      return Buffer.concat([header, png])
+    }),
+  )
+  const container = Buffer.alloc(8)
+  container.write('icns', 0, 'ascii')
+  container.writeUInt32BE(8 + body.length, 4)
+  return Buffer.concat([container, body])
+}
+
+/** Prefer the platform tool when it exists, otherwise pack the container here. */
+function writeIcns(iconset, macPngs, outPath) {
+  if (process.platform === 'darwin') {
+    try {
+      execFileSync('iconutil', ['-c', 'icns', iconset, '-o', outPath])
+      return
+    } catch {
+      // fall through to the portable packer below
+    }
+  }
+  writeFileSync(
+    outPath,
+    buildIcns(
+      ICONSET_ENTRIES.map(([name, size]) => ({
+        type: ICNS_TYPE_CODES[name],
+        png: macPngs.get(size),
+      })),
+    ),
+  )
+}
+
 /** ICO container with PNG-compressed entries (supported since Vista). */
 function buildIco(entries) {
   const header = Buffer.alloc(6)
@@ -87,7 +140,15 @@ async function renderPng(page, svgDataUrl, canvasSize, contentSize) {
   return page.screenshot({ omitBackground: true })
 }
 
-const browser = await chromium.launch({ channel: 'chrome', headless: true })
+// CI images ship Chrome; developer machines may only have another Chromium
+// distribution, so allow an explicit channel or executable path for local asset
+// regeneration.
+const iconBrowserPath = process.env.FILE_ICON_BROWSER_PATH
+const browser = await chromium.launch(
+  iconBrowserPath
+    ? { executablePath: iconBrowserPath, headless: true }
+    : { channel: process.env.FILE_ICON_BROWSER_CHANNEL ?? 'chrome', headless: true },
+)
 const page = await browser.newPage({ deviceScaleFactor: 1 })
 const tmp = mkdtempSync(join(tmpdir(), 'genoffice-file-icons-'))
 
@@ -105,7 +166,7 @@ try {
     for (const [name, size] of ICONSET_ENTRIES) {
       writeFileSync(join(iconset, name), macPngs.get(size))
     }
-    execFileSync('iconutil', ['-c', 'icns', iconset, '-o', join(outDir, `${type}.icns`)])
+    writeIcns(iconset, macPngs, join(outDir, `${type}.icns`))
 
     const winEntries = []
     for (const size of WIN_SIZES) {

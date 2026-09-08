@@ -1,10 +1,10 @@
 {
   "name": "@genoffice/pdf",
-  "productName": "NiuOffice PDF",
+  "productName": "BP Office PDF",
   "version": "0.1.0",
   "license": "Apache-2.0",
   "private": true,
-  "description": "NiuOffice PDF editor with local rendering and NiuOffice AI assistance",
+  "description": "BP Office PDF editor with local rendering and BP Office AI assistance",
   "main": "out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
@@ -37,5 +37,5 @@
     "vite-plugin-static-copy": "^3.0.0",
     "vitest": "^4.1.10"
   },
-  "author": "NiuOffice Contributors"
+  "author": "BP Office Contributors"
 }

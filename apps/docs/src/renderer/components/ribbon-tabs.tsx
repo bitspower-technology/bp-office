@@ -618,6 +618,7 @@ export interface InsertTabProps extends TabProps {
 const TRANSLATE_TARGETS: Array<{ labelKey: StringKey }> = [
   { labelKey: 'ribbonLangEnglish' },
   { labelKey: 'ribbonLangSimplifiedChinese' },
+  { labelKey: 'ribbonLangTraditionalChinese' },
   { labelKey: 'ribbonLangJapanese' },
   { labelKey: 'ribbonLangKorean' },
   { labelKey: 'ribbonLangFrench' },
@@ -1353,7 +1354,7 @@ export function ViewTab({
                     }}
                   >
                     {w.focused ? '✓ ' : ''}
-                    {w.title || 'NiuOffice Docs'}
+                    {w.title || 'BP Office Docs'}
                   </button>
                 ))}
               </div>

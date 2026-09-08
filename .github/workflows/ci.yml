@@ -7,9 +7,11 @@ name: CI
 
 on:
   push:
-    branches: [main, OEM, 'dev_*', 'release_*']
+    # main is both the BP Office development branch and the authorized release branch
+    # whose exact tip may produce client binaries.
+    branches: [main, 'dev_*', 'release_*']
   pull_request:
-    branches: [main, OEM]
+    branches: [main]
   workflow_dispatch:
 
 concurrency:
@@ -90,8 +92,8 @@ jobs:
       - name: Check NiuOffice product boundaries
         run: npm run check:product-boundaries
 
+      # BP Office is the endpoint-only OEM edition on every branch, so this gate always runs.
       - name: Check OEM distribution boundaries
-        if: github.ref == 'refs/heads/OEM' || github.base_ref == 'OEM'
         run: npm run check:oem-boundaries
 
       - name: Lint

@@ -36,7 +36,7 @@ import type {
 import {
   ColorPicker,
   Dropdown,
-  NiuOfficeMark,
+  BPOfficeMark,
   isSymbolFontFamily,
   useDismissablePopover,
 } from '@genoffice/ui'
@@ -2742,7 +2742,7 @@ function RibbonInner({
           </div>
         ) : tab === 'home' ? (
           <>
-            {/* ---- NiuOffice AI (first slot: entry + one-click AI actions) ---- */}
+            {/* ---- BP Office AI (first slot: entry + one-click AI actions) ---- */}
             <div className="ribbon-group">
               <div className="ribbon-group-items">
                 <button
@@ -2751,9 +2751,9 @@ function RibbonInner({
                   onClick={onToggleAi}
                 >
                   <span className="rb-big-icon">
-                    <NiuOfficeMark size={26} />
+                    <BPOfficeMark size={26} />
                   </span>
-                  <span>NiuOffice AI</span>
+                  <span>BP Office AI</span>
                 </button>
                 <button
                   className="rb-big ai-entry"
@@ -2853,7 +2853,7 @@ function RibbonInner({
                   <span>{t('aiTidyBtn')}</span>
                 </button>
               </div>
-              <div className="ribbon-group-label">NiuOffice AI</div>
+              <div className="ribbon-group-label">BP Office AI</div>
             </div>
 
             <div className="ribbon-sep" />

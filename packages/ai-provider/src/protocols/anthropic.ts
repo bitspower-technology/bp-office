@@ -1,6 +1,7 @@
 import type { AgentMessage, AgentToolCall, AgentToolDef } from '@genoffice/agent-core'
 import { aiFetch } from '../fetch'
 import { httpBodyDetail } from '../http-error'
+import { ANTHROPIC_NO_THINKING, rejectsNoThinkingField } from '../no-thinking'
 import type { AiChatResponse, AiProviderConfig } from '../types'
 import { createStreamWatchdog, type StreamWatchdog } from '../watchdog'
 import {
@@ -122,20 +123,21 @@ async function anthropicTurn(
     wd.touch()
     cb.onActivity?.()
   }
-  let response: Response
-  try {
-    response = await aiFetch(`${baseUrl.replace(/\/$/, '')}/v1/messages`, {
+  const url = `${baseUrl.replace(/\/$/, '')}/v1/messages`
+  const headers = {
+    'Content-Type': 'application/json',
+    'x-api-key': config.apiKey ?? '',
+    'anthropic-version': '2023-06-01',
+    // Renderer fetches and the net.fetch rescue path go through Chromium's network stack,
+    // which adds browser-semantics headers; Anthropic rejects those with 403 "Request not
+    // allowed". This header is the official opt-in for browser/Electron environments.
+    'anthropic-dangerous-direct-browser-access': 'true',
+  }
+  const post = (thinking: Record<string, unknown>) =>
+    aiFetch(url, {
       method: 'POST',
       signal: wd.signal,
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': config.apiKey ?? '',
-        'anthropic-version': '2023-06-01',
-        // Renderer fetches and the net.fetch rescue path go through Chromium's network stack,
-        // which adds browser-semantics headers; Anthropic rejects those with 403 "Request not
-        // allowed". This header is the official opt-in for browser/Electron environments.
-        'anthropic-dangerous-direct-browser-access': 'true',
-      },
+      headers,
       body: JSON.stringify({
         model: config.model,
         max_tokens: maxTokens,
@@ -150,20 +152,37 @@ async function anthropicTurn(
               })),
             }
           : {}),
+        // Claude only reasons when it is asked to, but the models that default to it on
+        // need the explicit switch (see no-thinking.ts).
+        ...thinking,
         stream: true,
       }),
     })
+  let response: Response
+  try {
+    response = await post(ANTHROPIC_NO_THINKING)
+    // headers arrived: ping the renderer watchdog too, or a slow first chunk could trip it
+    onBytes()
+    if (!response.ok) {
+      const detail = httpBodyDetail(await response.text())
+      // A Claude model without a thinking switch rejects the field by name; drop our
+      // own hint and retry rather than failing the turn (see no-thinking.ts).
+      if (response.status === 400 && rejectsNoThinkingField(detail)) {
+        response = await post({})
+      } else {
+        throw new Error(`Claude HTTP ${response.status}: ${detail}`)
+      }
+    }
   } catch (e) {
     // When fetch fails in the Electron main process, the real reason lives in `cause`
+    if (e instanceof Error && e.message.startsWith('Claude HTTP ')) throw e
     const err = e as { message?: unknown; cause?: { code?: unknown; message?: unknown } } | null
     const causeText = err?.cause
       ? ` cause=${String(err.cause.code || err.cause.message || err.cause)}`
       : ''
     throw new Error(`Claude fetch failed: ${err?.message || String(e)}${causeText}`, { cause: e })
   }
-  // headers arrived: ping the renderer watchdog too, or a slow first chunk could trip it
-  onBytes()
-  if (!response.ok || !response.body) {
+  if (!response.body) {
     throw new Error(`Claude HTTP ${response.status}: ${httpBodyDetail(await response.text())}`)
   }
   const jsonBody = await jsonBodyInsteadOfSse(response)
@@ -245,28 +264,37 @@ export async function chatAnthropic(
   user: string,
   baseUrl = ANTHROPIC_BASE_URL,
 ): Promise<AiChatResponse> {
-  const response = await aiFetch(`${baseUrl.replace(/\/$/, '')}/v1/messages`, {
-    method: 'POST',
-    signal: wd.signal,
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': config.apiKey ?? '',
-      'anthropic-version': '2023-06-01',
-      // Fetch in the Electron main process goes through Chromium's network stack; this header avoids 403.
-      'anthropic-dangerous-direct-browser-access': 'true',
-    },
-    body: JSON.stringify({
-      model: config.model,
-      max_tokens: 8192,
-      system,
-      messages: [{ role: 'user', content: user }],
-    }),
-  })
+  const url = `${baseUrl.replace(/\/$/, '')}/v1/messages`
+  const headers = {
+    'Content-Type': 'application/json',
+    'x-api-key': config.apiKey ?? '',
+    'anthropic-version': '2023-06-01',
+    // Fetch in the Electron main process goes through Chromium's network stack; this header avoids 403.
+    'anthropic-dangerous-direct-browser-access': 'true',
+  }
+  const post = (thinking: Record<string, unknown>) =>
+    aiFetch(url, {
+      method: 'POST',
+      signal: wd.signal,
+      headers,
+      body: JSON.stringify({
+        model: config.model,
+        max_tokens: 8192,
+        system,
+        messages: [{ role: 'user', content: user }],
+        ...thinking,
+      }),
+    })
+
+  let response = await post(ANTHROPIC_NO_THINKING)
   wd.touch()
   if (!response.ok) {
-    return {
-      ok: false,
-      error: `Claude HTTP ${response.status}: ${httpBodyDetail(await response.text())}`,
+    const detail = httpBodyDetail(await response.text())
+    // see anthropicTurn: retry once without the hint when the model has no switch
+    if (response.status === 400 && rejectsNoThinkingField(detail)) {
+      response = await post({})
+    } else {
+      return { ok: false, error: `Claude HTTP ${response.status}: ${detail}` }
     }
   }
   const json = (await response.json()) as { content?: Array<{ type: string; text?: string }> }

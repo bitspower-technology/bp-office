@@ -261,7 +261,7 @@ function parseIcns(contents: Buffer): IcnsChunk[] {
   return chunks
 }
 
-describe('generated NiuOffice brand assets', () => {
+describe('generated BP Office brand assets', () => {
   const shellBuild = repoFile('apps', 'shell', 'build')
   const shellRenderer = repoFile('apps', 'shell', 'src', 'renderer', 'src')
 
@@ -274,15 +274,17 @@ describe('generated NiuOffice brand assets', () => {
     expect({ width: png.width, height: png.height }).toEqual({ width: 1024, height: 1024 })
     const bounds = alphaBounds(png)
     expect(bounds.visiblePixels).toBeGreaterThan(0)
-    expect(countOpaqueColor(png, 16, 18, 24), 'missing dark icon tile').toBeGreaterThan(100_000)
+    // The distributor master is a monochrome mark: an ink tile with negative-space art.
+    expect(countOpaqueColor(png, 0, 0, 0), 'missing black mark ink').toBeGreaterThan(300_000)
     expect(
-      countOpaqueMatching(png, (red, green, blue) => red < 100 && green > 130 && blue > 170),
-      'missing cyan side of gradient',
-    ).toBeGreaterThan(1_000)
-    expect(
-      countOpaqueMatching(png, (red, green, blue) => red > 150 && green < 110 && blue > 100),
-      'missing pink side of gradient',
-    ).toBeGreaterThan(1_000)
+      countOpaqueMatching(png, (red, green, blue) => red > 240 && green > 240 && blue > 240),
+      'missing negative-space art',
+    ).toBeGreaterThan(100_000)
+    // The mark keeps a transparent margin instead of filling the whole canvas.
+    expect(bounds.left).toBeGreaterThan(8)
+    expect(bounds.top).toBeGreaterThan(8)
+    expect(png.width - bounds.right).toBeGreaterThan(8)
+    expect(png.height - bounds.bottom).toBeGreaterThan(8)
     for (const [x, y] of [
       [0, 0],
       [png.width - 1, 0],
@@ -359,45 +361,82 @@ describe('generated NiuOffice brand assets', () => {
     }
   })
 
-  it('uses the accessible NIUU lockup from the active Home import', () => {
-    const newLogoPath = join(shellRenderer, 'assets', 'niuoffice-logo.svg')
-    const oldLogoPath = join(shellRenderer, 'assets', 'genoffice-logo.svg')
-    expect(existsSync(newLogoPath)).toBe(true)
-    expect(existsSync(oldLogoPath)).toBe(false)
+  it('uses the accessible BP Office lockup from the active Home import', () => {
+    const logoPath = join(shellRenderer, 'assets', 'bpoffice-logo.svg')
+    expect(existsSync(logoPath)).toBe(true)
+    for (const stale of ['genoffice-logo.svg', 'niuoffice-logo.svg']) {
+      expect(
+        existsSync(join(shellRenderer, 'assets', stale)),
+        `stale ${stale} is still shipped`,
+      ).toBe(false)
+    }
 
     const homeSource = readFileSync(join(shellRenderer, 'Home.tsx'), 'utf8')
-    expect(homeSource).toMatch(
-      /^import niuOfficeLogo from ['"]\.\/assets\/niuoffice-logo\.svg['"]$/m,
-    )
-    expect(homeSource).not.toMatch(/genoffice-logo\.svg/i)
+    expect(homeSource).toMatch(/^import bpOfficeLogo from ['"]\.\/assets\/bpoffice-logo\.svg['"]$/m)
+    expect(homeSource).toMatch(/src=\{bpOfficeLogo\} alt="BP Office"/)
+    expect(homeSource).not.toMatch(/(?:genoffice|niuoffice)-logo\.svg/i)
 
-    const svg = readFileSync(newLogoPath, 'utf8')
+    const svg = readFileSync(logoPath, 'utf8')
     const openingTag = svg.match(/^<svg\b[^>]*>/)?.[0] ?? ''
     const labelledBy = openingTag.match(/\baria-labelledby="([^"]+)"/)?.[1]
     const title = svg.match(/<title\s+id="([^"]+)">([^<]+)<\/title>/)
     expect(openingTag).toContain('role="img"')
-    expect(labelledBy).toBe('niuoffice-title')
+    expect(labelledBy).toBe('bpoffice-title')
     expect(title?.[1]).toBe(labelledBy)
-    expect(title?.[2]).toBe('NiuOffice')
+    expect(title?.[2]).toBe('BP Office')
 
-    expect(svg).toContain('viewBox="0 0 1091 240"')
-    expect(svg).toContain('#20DAE6')
-    expect(svg).toContain('#8081E5')
-    expect(svg).toContain('#DE2287')
-    expect(svg).toMatch(/<text\b[^>]*\bfill="url\(#brand\)"[^>]*>NiuOffice<\/text>/)
+    // Monochrome and currentColor-driven, so one asset serves light and dark themes.
+    expect(svg).toContain('viewBox="0 0 1050 240"')
+    expect(svg).toMatch(/<g\b[^>]*\bfill="currentColor"/)
+    expect((svg.match(/<path\b/g) ?? []).length).toBeGreaterThan(6)
     expect(svg).not.toMatch(/<(?:script|foreignObject)\b/i)
     expect(svg).not.toMatch(/\b(?:href|xlink:href)\s*=/i)
     expect(svg).not.toMatch(/(?:@import|\bdata:)/i)
-    expect(svg).not.toMatch(/GenOffice|Genspark/i)
+    expect(svg).not.toMatch(/<!DOCTYPE/i)
+    expect(svg).not.toMatch(/GenOffice|Genspark|NiuOffice/i)
   })
 
-  it('keeps the supplied gradient-outline vector as the canonical source', () => {
-    const svg = readFileSync(join(shellBuild, 'niuoffice-mark.svg'), 'utf8')
-    expect(svg).toContain('NiuOffice gradient outline mark')
-    expect(svg).toContain('#20DAE6')
-    expect(svg).toContain('#8081E5')
-    expect(svg).toContain('#DE2287')
-    expect(svg).not.toMatch(/GenOffice|Genspark/i)
+  it('drives the tab strip from the same branded file-type marks as Home', () => {
+    const tabSource = readFileSync(join(shellRenderer, 'TabBar.tsx'), 'utf8')
+    for (const asset of ['file-docx.svg', 'file-xlsx.svg', 'file-pdf.svg', 'file-md.svg']) {
+      expect(tabSource, `TabBar must import ${asset}`).toContain(`./assets/${asset}`)
+    }
+    // the upstream badges were inline SVGs with their own Office-ish palette
+    expect(tabSource).not.toMatch(/#3276CD|#4FA16B|#EF4444|#7C3AED/i)
+    expect(tabSource).toMatch(/KIND_ICON: Record<TabSummary\['kind'\], ReactElement>/)
+
+    const css = readFileSync(join(shellRenderer, 'tabbar.css'), 'utf8')
+    expect(css).toMatch(/\.tab-icon img\s*\{[^}]*display:\s*block/)
+  })
+
+  it('keeps the traced vector mark, its build copy and the shared React icon identical', () => {
+    const canonical = readFileSync(repoFile('branding', 'bpoffice-mark.svg'), 'utf8')
+    const buildCopy = readFileSync(join(shellBuild, 'bpoffice-mark.svg'), 'utf8')
+    const uiModule = readFileSync(repoFile('packages', 'ui', 'src', 'brand-mark.ts'), 'utf8')
+
+    for (const svg of [canonical, buildCopy]) {
+      expect(svg).toContain('<title id="bpoffice-mark-title">BP Office</title>')
+      expect(svg).toContain('viewBox="0 0 1024 1024"')
+      expect(svg).toContain('fill="currentColor"')
+      expect((svg.match(/<path\b/g) ?? []).length).toBe(1)
+      expect(svg).not.toMatch(/<(?:script|foreignObject)\b/i)
+      expect(svg).not.toMatch(/(?:@import|\bdata:)/i)
+      expect(svg).not.toMatch(/GenOffice|Genspark|NiuOffice/i)
+    }
+
+    const pathOf = (svg: string): string => svg.match(/\bd="([^"]+)"/)?.[1] ?? ''
+    // the constant is a single-quoted TS string once Prettier has had its way
+    const uiPath = uiModule.match(/BP_OFFICE_MARK_PATH\s*=\s*['"]([^'"]+)['"]/)?.[1] ?? ''
+    expect(pathOf(buildCopy).length, 'build mark carries no geometry').toBeGreaterThan(1000)
+    expect(pathOf(canonical)).toBe(pathOf(buildCopy))
+    expect(uiPath).toBe(pathOf(buildCopy))
+
+    // The shared icon renders that same geometry with the client accessibility label.
+    const icons = readFileSync(repoFile('packages', 'ui', 'src', 'icons.tsx'), 'utf8')
+    expect(icons).toContain('export function BPOfficeMark')
+    expect(icons).toContain('aria-label="BP Office"')
+    expect(icons).toContain('d={BP_OFFICE_MARK_PATH}')
+    expect(icons).not.toMatch(/NiuOffice/i)
   })
 
   it('keeps every shipped document-kind icon surface in sync and omits Slides', () => {
@@ -457,13 +496,13 @@ describe('generated NiuOffice brand assets', () => {
       features: { chatgptSubscription: boolean }
       updates: { enabled: boolean }
     }
-    expect(manifest).toMatchObject({ productName: 'NiuOffice', version: '0.8.970-niu.1' })
+    expect(manifest).toMatchObject({ productName: 'BP Office', version: '1.0.1-bp.1' })
     expect(productConfig).toMatchObject({
-      productName: 'NiuOffice',
-      artifactSlug: 'NiuOffice',
+      productName: 'BP Office',
+      artifactSlug: 'BPOffice',
       edition: 'oem',
       features: { chatgptSubscription: false },
-      updates: { enabled: false },
+      updates: { enabled: true },
     })
     expect(builder).toContain('productName: productConfig.productName')
     expect(builder).toContain("target: 'portable'")

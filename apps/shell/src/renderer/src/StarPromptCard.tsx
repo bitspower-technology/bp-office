@@ -35,8 +35,8 @@ export function StarPromptCard({ docOpens, onClose }: StarPromptCardProps) {
 
   const title =
     docOpens >= PERSONALIZED_MIN_OPENS
-      ? `You have opened ${docOpens} documents with NiuOffice`
-      : 'Enjoying NiuOffice?'
+      ? `You have opened ${docOpens} documents with BP Office`
+      : 'Enjoying BP Office?'
 
   return (
     <div className="star-prompt" role="dialog" aria-label={title}>
@@ -57,7 +57,7 @@ export function StarPromptCard({ docOpens, onClose }: StarPromptCardProps) {
         <h3 className="star-prompt-title">{title}</h3>
       </div>
       <p className="star-prompt-body">
-        Star the NiuOffice fork on GitHub to support its local-first development.
+        Star the BP Office fork on GitHub to support its local-first development.
       </p>
       <div className="star-prompt-actions">
         <button
@@ -68,7 +68,7 @@ export function StarPromptCard({ docOpens, onClose }: StarPromptCardProps) {
           }}
         >
           <StarIcon />
-          Star NiuOffice
+          Star BP Office
         </button>
         <button className="star-prompt-done" onClick={() => react('starred')}>
           Already starred

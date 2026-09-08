@@ -1,4 +1,4 @@
-# Contributing to NiuOffice
+# Contributing to BP Office
 
 Thanks for your interest in contributing. This document covers the local
 setup, the checks a change must pass, and the conventions used in this
@@ -7,9 +7,11 @@ repository.
 ## How changes land here
 
 External pull requests are welcome at the
-[NiuOffice repository](https://github.com/Niuulh/NiuOffice). This fork tracks
-selected GenOffice releases while maintaining its independent provider,
-privacy, product-scope, and branding changes.
+[BP Office repository](https://github.com/bitspower-technology/bp-office). BP Office is a
+downstream distribution of the NiuOffice OEM source template (itself a fork of GenOffice)
+and maintains its own independent provider policy, privacy posture, product scope,
+application identity, and branding. Open an issue first for changes that would alter the
+endpoint-only AI contract or the shipped product scope.
 
 ## Repository layout
 

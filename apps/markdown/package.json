@@ -1,10 +1,10 @@
 {
   "name": "@genoffice/markdown",
-  "productName": "NiuOffice Markdown",
+  "productName": "BP Office Markdown",
   "version": "0.1.0",
   "license": "Apache-2.0",
   "private": true,
-  "description": "NiuOffice Markdown editor with NiuOffice AI assistance",
+  "description": "BP Office Markdown editor with BP Office AI assistance",
   "main": "out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
@@ -44,7 +44,7 @@
     "vite": "^7.3.1",
     "vitest": "^4.1.10"
   },
-  "author": "NiuOffice Contributors",
+  "author": "BP Office Contributors",
   "dependencies": {
     "@tiptap/extension-mathematics": "3.29.2",
     "katex": "^0.16.47"

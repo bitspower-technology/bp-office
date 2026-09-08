@@ -108,12 +108,12 @@ describe('count labels', () => {
 })
 
 describe('localized product branding', () => {
-  it('uses NiuOffice throughout every onboarding locale', () => {
+  it('uses BP Office throughout every onboarding locale', () => {
     for (const locale of Object.values(strings)) {
-      expect(locale.onbTitle1).toContain('NiuOffice')
-      expect(locale.onbBody2).toContain('NiuOffice')
+      expect(locale.onbTitle1).toContain('BP Office')
+      expect(locale.onbBody2).toContain('BP Office')
       expect(locale.onbBody2).toContain('GitHub')
-      expect(locale.onbJoinGenTeam).toContain('NiuOffice')
+      expect(locale.onbJoinGenTeam).toContain('BP Office')
       expect(locale.onbJoinGenTeam).toContain('GitHub')
       expect(`${locale.onbTitle1}${locale.onbBody2}${locale.onbJoinGenTeam}`).not.toMatch(
         /GenOffice|GenTeam/,

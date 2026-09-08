@@ -5,7 +5,7 @@ import { isAbsolute, join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { ChatGptAppServerClient, resolveInstalledChatGptExecutable } from '../src/chatgpt-main'
 
-// Explicit opt-in: this consumes a request on the NiuOffice-connected ChatGPT
+// Explicit opt-in: this consumes a request on the BP Office-connected ChatGPT
 // subscription. Use its existing CODEX_HOME normally; never copy credentials.
 // Only synthetic document text is sent, and no editor/user files are touched.
 const codexHome = process.env.NIUOFFICE_CHATGPT_LIVE_HOME
@@ -14,7 +14,7 @@ const model = process.env.NIUOFFICE_CHATGPT_LIVE_MODEL
 describe.runIf(Boolean(codexHome && model))('connected ChatGPT local document tools', () => {
   it('reads synthetic PDF outline and page text through the real runtime', async () => {
     if (!codexHome || !isAbsolute(codexHome) || !model) {
-      throw new Error('An absolute NiuOffice ChatGPT home and explicit model are required')
+      throw new Error('An absolute BP Office ChatGPT home and explicit model are required')
     }
     const executablePath =
       process.env.NIUOFFICE_CODEX_SMOKE_PATH ?? resolveInstalledChatGptExecutable()
@@ -32,7 +32,7 @@ describe.runIf(Boolean(codexHome && model))('connected ChatGPT local document to
       turnIdleTimeoutMs: 60_000,
       clientInfo: {
         name: 'niuoffice-live-tools-test',
-        title: 'NiuOffice Tool Test',
+        title: 'BP Office Tool Test',
         version: '0.0.0',
       },
     })
@@ -88,7 +88,7 @@ describe.runIf(Boolean(codexHome && model))('connected ChatGPT local document to
             return {
               id: call.id,
               name: call.name,
-              output: `[Page 1]\nNiuOffice reads this synthetic document using local editor tools, without GenOffice cloud services. Validation marker: ${marker}`,
+              output: `[Page 1]\nBP Office reads this synthetic document using local editor tools, without GenOffice cloud services. Validation marker: ${marker}`,
             }
           },
         },

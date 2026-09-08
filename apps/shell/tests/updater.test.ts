@@ -178,7 +178,7 @@ describe('initAutoUpdater', () => {
       setPlatform('win32')
       process.env[environmentVariable] =
         environmentVariable === 'PORTABLE_EXECUTABLE_FILE'
-          ? 'C:\\Portable\\NiuOffice.exe'
+          ? 'C:\\Portable\\BP Office.exe'
           : 'C:\\Portable'
 
       const { initAutoUpdater } = await loadUpdater()
@@ -259,14 +259,16 @@ describe('initAutoUpdater', () => {
     expect(pushUpdateState).toHaveBeenCalledWith({ phase: 'error' })
   })
 
-  it('opens the NiuOffice releases page for a manual download', async () => {
+  it('opens the BP Office releases page for a manual download', async () => {
     const { initAutoUpdater } = await loadUpdater()
     initAutoUpdater(() => null)
     updaterState.listeners.get('update-available')!({ version: '0.2.0' })
 
     lastShownActions().onOpenDownload()
 
-    expect(openExternal).toHaveBeenCalledWith('https://github.com/Niuulh/NiuOffice/releases/latest')
+    expect(openExternal).toHaveBeenCalledWith(
+      'https://github.com/bitspower-technology/bp-office/releases/latest',
+    )
   })
 
   it('closes the window and installs on restart when the user confirms', async () => {

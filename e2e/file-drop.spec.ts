@@ -69,7 +69,7 @@ test.describe('opening Explorer/Finder files by drag and drop', () => {
     const removedSlidesPath = join(fixtureDir, 'ignore-slides.pptx')
     await Promise.all([
       copyFile(SIMPLE_DOCX, docxPath),
-      writeFile(csvPath, 'Name,Value\nNiuOffice,358\n'),
+      writeFile(csvPath, 'Name,Value\nBP Office,358\n'),
       writeFile(pdfPath, minimalPdf()),
       writeFile(markdownPath, '# Dropped notes\n\nOpened from a local file drag.\n'),
       writeFile(unsupportedPath, 'This format is intentionally unsupported.\n'),

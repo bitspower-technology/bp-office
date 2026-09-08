@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 
-/** Pick a safe, unused PDF path inside the configured NiuOffice save directory. */
+/** Pick a safe, unused PDF path inside the configured BP Office save directory. */
 export function uniqueGeneratedPdfPath(
   dir: string,
   suggestedName: string,

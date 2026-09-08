@@ -1,23 +1,23 @@
 {
   "schemaVersion": 1,
   "edition": "oem",
-  "productName": "NiuOffice",
-  "aiName": "NiuOffice AI",
-  "vendor": "NiuOffice Contributors",
-  "appId": "com.genoffice.app",
-  "artifactSlug": "NiuOffice",
-  "executableName": "genoffice",
-  "desktopName": "genoffice.desktop",
-  "userDataDirectory": "GenOffice",
-  "developmentUserDataDirectory": "GenOffice Dev",
+  "productName": "BP Office",
+  "aiName": "BP Office AI",
+  "vendor": "Bitspower Technology",
+  "appId": "com.bitspower.bpoffice",
+  "artifactSlug": "BPOffice",
+  "executableName": "bpoffice",
+  "desktopName": "bpoffice.desktop",
+  "userDataDirectory": "BPOffice",
+  "developmentUserDataDirectory": "BPOffice Dev",
   "repository": {
-    "owner": "Niuulh",
-    "name": "NiuOffice"
+    "owner": "bitspower-technology",
+    "name": "bp-office"
   },
   "features": {
     "chatgptSubscription": false
   },
   "updates": {
-    "enabled": false
+    "enabled": true
   }
 }

@@ -4,7 +4,7 @@
   "license": "Apache-2.0",
   "private": true,
   "type": "module",
-  "description": "Generic ReAct agent loop with pluggable skills and LLM transports shared by NiuOffice editors",
+  "description": "Generic ReAct agent loop with pluggable skills and LLM transports shared by BP Office editors",
   "exports": {
     ".": "./src/index.ts"
   },

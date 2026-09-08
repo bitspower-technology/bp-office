@@ -19,7 +19,7 @@ const MARKDOWN_RULES = [
 ].join('\n')
 
 const AGENT_SYSTEM_PROMPT = [
-  'You are NiuOffice AI, the writing assistant inside NiuOffice Markdown.',
+  'You are BP Office AI, the writing assistant inside BP Office Markdown.',
   'You read and edit the open document through tools that address top-level blocks by 0-based index.',
   '',
   '## Markdown syntax rules',

@@ -5,7 +5,7 @@ import type { CSSProperties, MouseEvent as ReactMouseEvent } from 'react'
 import { GlobalWorkerOptions, getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs'
 import type { PDFDocumentProxy } from 'pdfjs-dist'
 import workerUrl from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url'
-import { NiuOfficeMark } from '@genoffice/ui'
+import { BPOfficeMark } from '@genoffice/ui'
 import { AiPanel } from './ai/AiPanel'
 import { AiAskPopover, type AskAnchorRect } from './AiAskPopover'
 import { loadSavedAnnots } from './annotation-catalog'
@@ -5805,7 +5805,7 @@ export default function App() {
         <div className="ribbon-body">
           {ribbonTab === 'home' && (
             <>
-              {/* ---- NiuOffice AI (first slot: entry + one-click AI actions, docs parity) ---- */}
+              {/* ---- BP Office AI (first slot: entry + one-click AI actions, docs parity) ---- */}
               <div className="ribbon-group">
                 <div className="ribbon-group-items">
                   <button
@@ -5814,9 +5814,9 @@ export default function App() {
                     onClick={() => setAiCollapsed((v) => !v)}
                   >
                     <span className="rb-big-icon">
-                      <NiuOfficeMark size={26} />
+                      <BPOfficeMark size={26} />
                     </span>
-                    <span>NiuOffice AI</span>
+                    <span>BP Office AI</span>
                   </button>
                   <button
                     className="rb-big ai-entry"
@@ -5955,7 +5955,7 @@ export default function App() {
                   >
                     <span className="rb-big-icon">
                       <span className="ai-feature-icon" aria-hidden="true">
-                        <NiuOfficeMark size={20} />
+                        <BPOfficeMark size={20} />
                       </span>
                     </span>
                     <span>{t('aiProcessNotesBtn')}</span>
@@ -6102,7 +6102,7 @@ export default function App() {
                   >
                     <span className="rb-big-icon">
                       <span className="ai-feature-icon" aria-hidden="true">
-                        <NiuOfficeMark size={20} />
+                        <BPOfficeMark size={20} />
                       </span>
                     </span>
                     <span>{t('aiFillFormBtn')}</span>
@@ -6431,7 +6431,7 @@ export default function App() {
               aria-label={t('aiOpenAssistant')}
               onClick={() => setAiCollapsed(false)}
             >
-              <NiuOfficeMark size={22} />
+              <BPOfficeMark size={22} />
             </button>
           )}
           <AiPanel

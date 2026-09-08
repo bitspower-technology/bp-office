@@ -142,7 +142,7 @@ beforeEach(() => {
 describe('initial state', () => {
   it('starts with only the non-closable, active Home tab', () => {
     expect(manager.list()).toEqual([
-      { id: 'home', kind: 'home', title: 'NiuOffice', closable: false, active: true },
+      { id: 'home', kind: 'home', title: 'BP Office', closable: false, active: true },
     ])
   })
 })
@@ -155,7 +155,7 @@ describe('opening tabs', () => {
     expect(tabs[1]).toMatchObject({
       id,
       kind: 'docs',
-      title: 'NiuOffice Docs',
+      title: 'BP Office Docs',
       closable: true,
       active: true,
     })
@@ -170,7 +170,7 @@ describe('opening tabs', () => {
     manager.openSheetsTab('/tmp/budget.xlsx')
     manager.openPdfTab('/tmp/scan.pdf')
     expect(manager.list().map((t) => t.title)).toEqual([
-      'NiuOffice',
+      'BP Office',
       'report.docx',
       'budget.xlsx',
       'scan.pdf',
@@ -188,7 +188,7 @@ describe('opening tabs', () => {
 
   it('uses module default titles for pathless tabs', () => {
     manager.openSheetsTab()
-    expect(manager.list().map((t) => t.title)).toEqual(['NiuOffice', 'AI Sheets'])
+    expect(manager.list().map((t) => t.title)).toEqual(['BP Office', 'AI Sheets'])
   })
 
   it('assigns unique, monotonic tab ids', () => {

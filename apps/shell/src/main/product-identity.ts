@@ -5,7 +5,7 @@ export const PRODUCT_DISPLAY_NAME = PRODUCT_CONFIG.productName
 
 /**
  * Keep persisted settings and single-instance state compatible with existing
- * installs even though the runtime-facing product name is now NiuOffice.
+ * installs even though the runtime-facing product name is now BP Office.
  */
 export function resolveShellUserDataPath(
   appDataPath: string,

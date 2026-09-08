@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { Editor } from '@tiptap/core'
 import { useEditorState } from '@tiptap/react'
-import { Dropdown, NiuOfficeMark, useDismissablePopover } from '@genoffice/ui'
+import { Dropdown, BPOfficeMark, useDismissablePopover } from '@genoffice/ui'
 import { useI18n } from '../i18n/locale'
 import type { StringKey } from '../i18n/locale'
 import { liftFromList } from '../editor/slashCommand'
@@ -295,9 +295,9 @@ export function Ribbon({
               onClick={onToggleAi}
             >
               <span className="rb-big-icon">
-                <NiuOfficeMark size={26} />
+                <BPOfficeMark size={26} />
               </span>
-              <span>NiuOffice AI</span>
+              <span>BP Office AI</span>
             </button>
             {aiPresets.map(({ kind, btn, prompt }) => (
               <button
