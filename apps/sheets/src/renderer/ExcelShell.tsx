@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
+import type { IFunctionInfo } from '@univerjs/engine-formula'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { platformShortcuts } from '@genoffice/i18n'
 import {
   Dropdown,
@@ -6,9 +7,18 @@ import {
   SHAPE_GALLERY_GROUPS,
   ShapePreview,
   useDismissablePopover,
+  useRibbonCollapse,
 } from '@genoffice/ui'
 
 import {
+  BorderAllIcon,
+  BorderBottomIcon,
+  BorderLeftIcon,
+  BorderNoneIcon,
+  BorderOuterIcon,
+  BorderRightIcon,
+  BorderThickOuterIcon,
+  BorderTopIcon,
   CaretIcon,
   RIBBON_GLYPH_ICONS,
   RedoIcon,
@@ -27,10 +37,11 @@ import { NameManagerDialog, type DefinedNameAction, type DefinedNameRow } from '
 import { categoryOptionForPattern, numberFormatCategories } from './number-format'
 import { type SelectionFormat } from './selection-format'
 import { fontFamilyGroups, useSystemFontFamilies } from './system-fonts'
-import { shouldInterceptClearSelection } from './clear-selection-keyboard'
+import { isGridKeyTarget, shouldInterceptClearSelection } from './clear-selection-keyboard'
+import { isModalOpen, resolveGlobalShortcut } from './global-shortcuts'
 
-import type { ChartSeriesVisualState } from '../domain/chart-visual'
-import type { ChangePlan } from '../domain/workbook.types'
+import type { ChartSeriesVisualState } from '@genoffice/xlsx-gateway/domain/chart-visual'
+import type { ChangePlan } from '@genoffice/xlsx-gateway/domain/workbook.types'
 import type { AttachmentMeta } from '../shared/desktop-api'
 import { AiChatPanel, type AiChatMessage } from './ai/AiChatPanel'
 import { AiSelectionAsk } from './ai/AiSelectionAsk'
@@ -49,6 +60,7 @@ import { ConsolidateDialog } from './ConsolidateDialog'
 import type { ConsolidateConfig } from './consolidate'
 import { HeaderFooterDialog, type HeaderFooterResult } from './HeaderFooterDialog'
 import type { HeaderFooterParts } from './edit-journal'
+import { useModalDialog } from './modal-dialog'
 
 // No File tab: file commands live in the macOS
 // application menu (File → Open/Save/Save As) and the toolbar icons.
@@ -150,6 +162,7 @@ function ToolSymbol({ symbol }: { readonly symbol: string }): React.JSX.Element 
 }
 
 interface ExcelShellProps {
+  readonly openingWorkbook: boolean
   readonly prompt: string
   readonly preview: ChangePlan | null
   readonly selectionFormat: SelectionFormat | null
@@ -200,6 +213,9 @@ interface ExcelShellProps {
   readonly onIsCellEditing: () => boolean
   /// Left side of the status bar (ready / streaming / AI progress messages).
   readonly statusMessage: string
+  readonly emptyCsvNotice: boolean
+  readonly onOpenWorkbook: () => void
+  readonly onDismissEmptyCsvNotice: () => void
   /// Zoom of the active sheet in percent, echoed by the status-bar slider.
   readonly zoomPercent: number
   /// True when the edit journal has unsaved changes (enables the QAT Save).
@@ -244,8 +260,8 @@ interface ExcelShellProps {
     activeSheetId: string | null
   }
   readonly onDefinedNameAction: (action: DefinedNameAction) => string | null
-  /// Field choices for the Pivot dialog, read from the selection's header row.
-  readonly onGetPivotFields: () => PivotField[]
+  /// Subtotals use the selection; pivots pass their resolved source range.
+  readonly onGetPivotFields: (sourceRange?: string) => PivotField[]
   readonly onGetSourceRange: () => string
   readonly onCreatePivot: (config: OoXmlPivotConfig) => string | null
   /// A3 editing of an existing pivot: when it returns null, App has already shown
@@ -264,6 +280,8 @@ interface ExcelShellProps {
   readonly onGoToReference: (ref: string) => string | null
   readonly onListDefinedNames: () => readonly { name: string; ref: string }[]
   readonly onApplyFormula: (formula: string) => string | null
+  /// Function descriptions from the running formula engine (Insert Function).
+  readonly onListFunctions: () => readonly IFunctionInfo[]
   readonly onCreateSubtotal: (config: SubtotalConfig) => string | null
   readonly onCreateConsolidate: (config: ConsolidateConfig) => string | null
   /// Prefill for the Consolidate reference input (current multi-cell selection).
@@ -334,6 +352,7 @@ export function ExcelShell({
   onGoToReference,
   onListDefinedNames,
   onApplyFormula,
+  onListFunctions,
   onCreateSubtotal,
   onCreateConsolidate,
   onGetConsolidateDefault,
@@ -352,7 +371,11 @@ export function ExcelShell({
   onAiCitation,
   onCommand,
   onIsCellEditing,
+  openingWorkbook,
   statusMessage,
+  emptyCsvNotice,
+  onOpenWorkbook,
+  onDismissEmptyCsvNotice,
   zoomPercent,
   canSave,
   onSave,
@@ -370,6 +393,10 @@ export function ExcelShell({
 }: ExcelShellProps): React.JSX.Element {
   const { t } = useI18n()
   const [activeTab, setActiveTab] = useState<RibbonTab>('Home')
+  const collapse = useRibbonCollapse('ai-sheets-ribbon-collapsed', {
+    collapse: t('appRibbonCollapse'),
+    expand: t('appRibbonExpand'),
+  })
   // Persisted so a closed AI panel stays closed on next launch (docs/slides parity)
   const [isCopilotOpen, setIsCopilotOpen] = useState(
     () => localStorage.getItem('ai-sheets-show-ai') !== '0',
@@ -387,6 +414,10 @@ export function ExcelShell({
   const [pivotEditSeed, setPivotEditSeed] = useState<PivotEditSeed | null>(null)
   /** null = closed; string = open on that catalog category ('All' for the plain button) */
   const [insertFunctionCat, setInsertFunctionCat] = useState<string | null>(null)
+  const liveFunctions = useMemo(
+    () => (insertFunctionCat === null ? [] : onListFunctions()),
+    [insertFunctionCat],
+  )
   const [showSubtotalDialog, setShowSubtotalDialog] = useState(false)
   const [showGoalSeek, setShowGoalSeek] = useState(false)
   const [showConsolidateDialog, setShowConsolidateDialog] = useState(false)
@@ -397,45 +428,31 @@ export function ExcelShell({
   const [chartTextTarget, setChartTextTarget] = useState<ChartTextTarget | null>(null)
   const onCommandRef = useRef(onCommand)
   const onIsCellEditingRef = useRef(onIsCellEditing)
+  const openingWorkbookRef = useRef(openingWorkbook)
   onCommandRef.current = onCommand
   onIsCellEditingRef.current = onIsCellEditing
+  openingWorkbookRef.current = openingWorkbook
   useEffect(() => {
+    // Shortcuts that write to the sheet must not fire from a text field —
+    // neither app fields (AI chat, dialogs) nor Univer's own (find/replace,
+    // rule panels, formula bar), which are native inputs INSIDE the Univer
+    // container. isGridKeyTarget tells the grid's hidden focus host apart
+    // from all of those; only Univer knows whether a cell is being edited.
     const onKeyDown = (event: KeyboardEvent): void => {
-      if ((event.metaKey || event.ctrlKey) && event.key === '1') {
-        event.preventDefault()
-        setShowFormatCells(true)
+      if (openingWorkbookRef.current) return
+      const action = resolveGlobalShortcut(event, {
+        modalOpen: isModalOpen(),
+        cellEditing: onIsCellEditingRef.current(),
+        gridTarget: isGridKeyTarget(event.target),
+      })
+      if (!action) return
+      event.preventDefault()
+      if (action.kind === 'dialog') {
+        if (action.dialog === 'formatCells') setShowFormatCells(true)
+        else setShowGoTo(true)
+        return
       }
-      // Excel's Go To shortcut (⌘G / Ctrl+G).
-      if ((event.metaKey || event.ctrlKey) && event.key === 'g') {
-        event.preventDefault()
-        setShowGoTo(true)
-      }
-      // Excel's Show Formulas shortcut (⌘` / Ctrl+`).
-      if ((event.metaKey || event.ctrlKey) && event.key === '`') {
-        event.preventDefault()
-        onCommand('toggle-show-formulas')
-      }
-      // Excel's PageUp/PageDown; Alt+ pages horizontally. Univer parks grid
-      // focus on a hidden editable host, so app fields are told apart by
-      // sitting OUTSIDE the grid container; in-cell editing is checked in the
-      // command handler via the workbook's own editing state.
-      if (
-        (event.key === 'PageDown' || event.key === 'PageUp') &&
-        !event.metaKey &&
-        !event.ctrlKey &&
-        !event.shiftKey &&
-        !event.defaultPrevented
-      ) {
-        const target = event.target as HTMLElement | null
-        const inAppField =
-          !!target?.closest?.('input, textarea, [contenteditable="true"]') &&
-          !target?.closest?.('[data-u-comp], .univer-app-container, [class*="univer"]')
-        if (!inAppField) {
-          event.preventDefault()
-          const axis = event.altKey ? 'page-col' : 'page-row'
-          onCommand(`${axis}:${event.key === 'PageDown' ? 1 : -1}`)
-        }
-      }
+      onCommand(action.command)
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
@@ -447,6 +464,7 @@ export function ExcelShell({
   // mounted once: re-binding after Univer starts would lose capture order.
   useEffect(() => {
     const onKeyDownCapture = (event: KeyboardEvent): void => {
+      if (openingWorkbookRef.current) return
       if (!shouldInterceptClearSelection(event, onIsCellEditingRef.current())) return
       event.preventDefault()
       event.stopImmediatePropagation()
@@ -459,17 +477,62 @@ export function ExcelShell({
   useEffect(() => {
     if (!selectedChart && activeTab === 'Chart Design') setActiveTab('Home')
   }, [selectedChart, activeTab])
+  // Univer's formula-bar Name Box (the defined-name selector) is the only
+  // cell-reference box; the Go To ▾ arrow rides inside the bar next to it.
+  // The bar is Univer-owned DOM that can remount with the workbench, so the
+  // button is (re)inserted on mutation rather than rendered by React.
+  const gotoTip = t('appGoToButtonTitle')
+  const gotoTipRef = useRef(gotoTip)
+  gotoTipRef.current = gotoTip
+  useEffect(() => {
+    const button = document.querySelector<HTMLButtonElement>('.goto-in-bar')
+    if (button) button.dataset['tip'] = gotoTip
+  }, [gotoTip])
+  useEffect(() => {
+    const ensure = (): void => {
+      // The Name Box sits in a fixed-width block wrapper; the flex row is the
+      // bar itself, so the button must ride as the wrapper's sibling.
+      const wrapper = document.querySelector('[data-u-comp="defined-name"]')?.parentElement
+      const bar = wrapper?.parentElement
+      if (!wrapper || !bar) return
+      let button = bar.querySelector<HTMLButtonElement>('.goto-in-bar')
+      if (!button) {
+        button = document.createElement('button')
+        button.type = 'button'
+        button.className = 'goto-in-bar'
+        button.textContent = '▾'
+        button.setAttribute('aria-label', 'Go To')
+        button.addEventListener('click', () => setShowGoTo(true))
+        wrapper.after(button)
+      }
+      if (button.dataset['tip'] !== gotoTipRef.current) button.dataset['tip'] = gotoTipRef.current
+    }
+    ensure()
+    const container = document.getElementById('univer-container')
+    if (!container) return undefined
+    const observer = new MutationObserver(ensure)
+    observer.observe(container, { childList: true, subtree: true })
+    return () => {
+      observer.disconnect()
+      document.querySelector('.goto-in-bar')?.remove()
+    }
+  }, [])
   const visibleTabs: readonly RibbonTab[] = selectedChart
     ? [...ribbonTabs, 'Chart Design']
     : ribbonTabs
   const saveAsTitle = `${t('appSaveAs')} (${platformShortcuts('⇧⌘S')})`
 
   return (
-    <main className={`app-shell ${isCopilotOpen ? '' : 'copilot-collapsed'}`}>
-      <header className="excel-header">
+    <main
+      className={`app-shell ${isCopilotOpen ? '' : 'copilot-collapsed'}`}
+      inert={openingWorkbook}
+      aria-busy={openingWorkbook}
+    >
+      <header className={`excel-header ${collapse.rootClass}`} ref={collapse.rootRef}>
         <nav
           className={`ribbon-tabs ${IN_TAB ? '' : IS_MAC ? 'ribbon-tabs-mac' : 'ribbon-tabs-win'}`}
-          aria-label="Workbook commands"
+          aria-label={t('appScopeWorkbook')}
+          onDoubleClick={collapse.onTabsDoubleClick}
         >
           <button
             type="button"
@@ -526,9 +589,13 @@ export function ExcelShell({
           <span className="qa-sep" aria-hidden="true" />
           {visibleTabs.map((tab) => (
             <button
-              className={`${tab === activeTab ? 'active' : ''} ${tab === 'Chart Design' ? 'contextual' : ''}`}
+              className={`${collapse.tabClass(tab === activeTab)} ${tab === 'Chart Design' ? 'contextual' : ''}`}
+              data-tip={collapse.tabTip(tab === activeTab)}
               key={tab}
-              onClick={() => setActiveTab(tab)}
+              onClick={() => {
+                collapse.onTabPress(tab === activeTab)
+                setActiveTab(tab)
+              }}
             >
               {t(TAB_LABEL[tab])}
             </button>
@@ -627,20 +694,24 @@ export function ExcelShell({
           onCollapse={() => setIsCopilotOpen(false)}
         />
         <div className="sheet-main">
-          {/* Excel's formula-bar row, Name Box only for now (fx bar TBD). */}
-          <div className="name-box-bar">
-            <NameBox activeCellA1={activeCellA1} onGoTo={onGoToReference} />
-            <button
-              className="name-box-goto"
-              data-tip={t('appGoToButtonTitle')}
-              aria-label="Go To"
-              onClick={() => setShowGoTo(true)}
-            >
-              ▾
-            </button>
-          </div>
           <section className="workbook-area">
             <div id="univer-container" className="spreadsheet" />
+            {emptyCsvNotice && (
+              <div className="csv-empty-notice" role="status">
+                <span>{t('appCsvEmpty')}</span>
+                <button type="button" onClick={onOpenWorkbook}>
+                  {t('appOpenWorkbookTitle')}
+                </button>
+                <button
+                  type="button"
+                  className="csv-empty-notice-close"
+                  aria-label={t('appClose')}
+                  onClick={onDismissEmptyCsvNotice}
+                >
+                  ×
+                </button>
+              </div>
+            )}
           </section>
           {aiSelectionAskAnchor && aiScopeRange && !aiBusy && (
             <AiSelectionAsk
@@ -747,14 +818,18 @@ export function ExcelShell({
             />
           )
         })()}
-      {showPivotDialog && (
-        <PivotDialog
-          fields={onGetPivotFields()}
-          sourceRange={onGetSourceRange()}
-          onCreate={onCreatePivot}
-          onClose={() => setShowPivotDialog(false)}
-        />
-      )}
+      {showPivotDialog &&
+        (() => {
+          const sourceRange = onGetSourceRange()
+          return (
+            <PivotDialog
+              fields={onGetPivotFields(sourceRange)}
+              sourceRange={sourceRange}
+              onCreate={onCreatePivot}
+              onClose={() => setShowPivotDialog(false)}
+            />
+          )
+        })()}
       {pivotEditSeed && (
         <PivotDialog
           mode="edit"
@@ -775,6 +850,7 @@ export function ExcelShell({
       {insertFunctionCat !== null && (
         <InsertFunctionDialog
           targetLabel={onGetActiveCell()}
+          functions={liveFunctions}
           onApply={onApplyFormula}
           initialCategory={insertFunctionCat}
           onClose={() => setInsertFunctionCat(null)}
@@ -826,58 +902,6 @@ export function ExcelShell({
   )
 }
 
-/// Excel's Name Box: echoes the active cell while idle; focusing it starts a
-/// draft, Enter jumps to the typed address or defined name (an invalid one
-/// keeps the draft and flags the input), Esc or blur cancels back to the
-/// echo. The echo prop updates via the SelectionChanged refresh in App.
-function NameBox({
-  activeCellA1,
-  onGoTo,
-}: {
-  readonly activeCellA1: string
-  readonly onGoTo: (ref: string) => string | null
-}): React.JSX.Element {
-  const { t } = useI18n()
-  const [draft, setDraft] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  return (
-    <input
-      className={`name-box${error === null ? '' : ' invalid'}`}
-      aria-label="Name Box"
-      data-tip={error ?? t('appNameBoxTitle')}
-      placeholder="A1"
-      spellCheck={false}
-      value={draft ?? activeCellA1}
-      onFocus={(event) => {
-        setDraft(activeCellA1)
-        event.target.select()
-      }}
-      onChange={(event) => {
-        setDraft(event.target.value)
-        setError(null)
-      }}
-      onBlur={() => {
-        setDraft(null)
-        setError(null)
-      }}
-      onKeyDown={(event) => {
-        if (event.key === 'Enter') {
-          const failure = onGoTo(draft ?? activeCellA1)
-          setError(failure)
-          if (failure === null) {
-            setDraft(null)
-            event.currentTarget.blur()
-          }
-        } else if (event.key === 'Escape') {
-          setDraft(null)
-          setError(null)
-          event.currentTarget.blur()
-        }
-      }}
-    />
-  )
-}
-
 const NO_SORT_LEVEL = -1
 
 function SortDialog({
@@ -912,12 +936,14 @@ function SortDialog({
       previous.map((level, at) => (at === index ? { ...level, ...patch } : level)),
     )
   }
+  const modal = useModalDialog(onClose)
   return (
     <div className="dialog-backdrop" onClick={onClose}>
       <div
         className="format-cells-dialog sort-dialog"
         role="dialog"
-        aria-label="Custom sort"
+        {...modal}
+        aria-label={t('appCustomSort')}
         onClick={(event) => event.stopPropagation()}
       >
         <header>{t('appSort')}</header>
@@ -980,12 +1006,14 @@ function RemoveDuplicatesDialog({
 }): React.JSX.Element {
   const { t } = useI18n()
   const [hasHeader, setHasHeader] = useState(true)
+  const modal = useModalDialog(onClose)
   return (
     <div className="dialog-backdrop" onClick={onClose}>
       <div
         className="format-cells-dialog sort-dialog"
         role="dialog"
-        aria-label="Remove duplicates"
+        {...modal}
+        aria-label={t('appRemoveDuplicates')}
         onClick={(event) => event.stopPropagation()}
       >
         <header>{t('appRemoveDuplicates')}</header>
@@ -1037,11 +1065,13 @@ function ChartTextDialog({
     onCommand(`${command}:${value.trim()}`)
     onClose()
   }
+  const modal = useModalDialog(onClose)
   return (
     <div className="dialog-backdrop" onClick={onClose}>
       <div
         className="format-cells-dialog link-dialog"
         role="dialog"
+        {...modal}
         aria-label={t(heading)}
         onClick={(event) => event.stopPropagation()}
       >
@@ -1057,7 +1087,6 @@ function ChartTextDialog({
               onChange={(event) => setValue(event.target.value)}
               onKeyDown={(event) => {
                 if (event.key === 'Enter') apply()
-                if (event.key === 'Escape') onClose()
               }}
             />
           </label>
@@ -1094,11 +1123,13 @@ function AxisSizeDialog({
     onCommand(`${axis === 'row' ? 'row-height' : 'col-width'}:${parsed}`)
     onClose()
   }
+  const modal = useModalDialog(onClose)
   return (
     <div className="dialog-backdrop" onClick={onClose}>
       <div
         className="format-cells-dialog link-dialog"
         role="dialog"
+        {...modal}
         aria-label={t(axis === 'row' ? 'appRowHeight' : 'appColWidth')}
         onClick={(event) => event.stopPropagation()}
       >
@@ -1114,7 +1145,6 @@ function AxisSizeDialog({
               onChange={(event) => setValue(event.target.value)}
               onKeyDown={(event) => {
                 if (event.key === 'Enter') apply()
-                if (event.key === 'Escape') onClose()
               }}
             />
           </label>
@@ -1145,12 +1175,14 @@ function LinkDialog({
     if (value.trim()) onCommand(`link-set:${encodeURIComponent(value)}`)
     onClose()
   }
+  const modal = useModalDialog(onClose)
   return (
     <div className="dialog-backdrop" onClick={onClose}>
       <div
         className="format-cells-dialog link-dialog"
         role="dialog"
-        aria-label="Insert link"
+        {...modal}
+        aria-label={t(currentTarget ? 'appEditLinkTitle' : 'appInsertLinkTitle')}
         onClick={(event) => event.stopPropagation()}
       >
         <header>{t(currentTarget ? 'appEditLinkTitle' : 'appInsertLinkTitle')}</header>
@@ -1165,7 +1197,6 @@ function LinkDialog({
               onChange={(event) => setValue(event.target.value)}
               onKeyDown={(event) => {
                 if (event.key === 'Enter') apply()
-                if (event.key === 'Escape') onClose()
               }}
             />
           </label>
@@ -1363,7 +1394,7 @@ function Ribbon({
       },
     ]
     return (
-      <div className="ribbon">
+      <div className="ribbon" data-ribbon-body="">
         <RibbonGroup label={t('appGroupChartLayouts')}>
           {canEditChart ? (
             largeMenu(t('appAddChartElement'), '📊', t('appAddChartElementTitle'), elementOptions)
@@ -1482,7 +1513,7 @@ function Ribbon({
 
   if (activeTab === 'Insert') {
     return (
-      <div className="ribbon">
+      <div className="ribbon" data-ribbon-body="">
         <RibbonGroup label={t('appGroupTables')}>
           <RibbonButton
             large
@@ -1753,7 +1784,7 @@ function Ribbon({
       narrow: t('appMarginNarrow'),
     } as const
     return (
-      <div className="ribbon">
+      <div className="ribbon" data-ribbon-body="">
         <RibbonGroup label={t('appGroupThemes')}>
           {largeMenu(
             t('appGroupThemes'),
@@ -1936,7 +1967,7 @@ function Ribbon({
       />
     )
     return (
-      <div className="ribbon">
+      <div className="ribbon" data-ribbon-body="">
         <RibbonGroup label={t('appGroupFunctionLibrary')}>
           <RibbonButton
             large
@@ -1956,13 +1987,7 @@ function Ribbon({
             <MenuSelect
               cover
               label="AutoSum"
-              options={[
-                { value: 'SUM', label: t('appFnSum') },
-                { value: 'AVERAGE', label: t('appFnAverage') },
-                { value: 'COUNT', label: t('appFnCountNumbers') },
-                { value: 'MAX', label: t('appFnMax') },
-                { value: 'MIN', label: t('appFnMin') },
-              ]}
+              options={autoSumOptions(t)}
               onPick={(value) => onCommand(`autofn:${value}`)}
             />
           </div>
@@ -2103,7 +2128,7 @@ function Ribbon({
 
   if (activeTab === 'Data') {
     return (
-      <div className="ribbon">
+      <div className="ribbon" data-ribbon-body="">
         <RibbonGroup label={t('appPivotTable')}>
           <RibbonButton
             large
@@ -2132,6 +2157,14 @@ function Ribbon({
             >
               <ToolSymbol symbol="🗎" />
               {t('appFromTextCsv')}
+            </button>
+            <button
+              className="styles-row as-button"
+              data-tip={t('appMergeWorkbooksTip')}
+              onClick={() => onCommand('merge-workbooks')}
+            >
+              <ToolSymbol symbol="⧉" />
+              {t('appMergeWorkbooks')}
             </button>
             <button
               className="styles-row as-button"
@@ -2252,7 +2285,7 @@ function Ribbon({
 
   if (activeTab === 'View') {
     return (
-      <div className="ribbon">
+      <div className="ribbon" data-ribbon-body="">
         <RibbonGroup label={t('appGroupWorkbookViews')}>
           <RibbonButton
             large
@@ -2349,7 +2382,7 @@ function Ribbon({
 
   if (activeTab === 'Review') {
     return (
-      <div className="ribbon">
+      <div className="ribbon" data-ribbon-body="">
         <RibbonGroup label={t('appGroupProofing')}>
           <RibbonButton
             large
@@ -2474,7 +2507,7 @@ function Ribbon({
     ? fontSizes
     : [...fontSizes, echoSize].sort((a, b) => a - b)
   return (
-    <div className="ribbon">
+    <div className="ribbon" data-ribbon-body="">
       <RibbonGroup label={t('appGroupAiAssistant')}>
         <button
           className={`ribbon-tool as-button large ai-entry ${aiOpen ? 'active' : ''}`}
@@ -2670,6 +2703,7 @@ function Ribbon({
             <ColorDropdown
               label="Font color"
               data-tip={t('appFontColor')}
+              split
               display={
                 <span className="swatch-letter">
                   A<i style={{ background: fontColor }} />
@@ -2685,6 +2719,7 @@ function Ribbon({
             <ColorDropdown
               label="Fill color"
               data-tip={t('appFillColor')}
+              split
               display={
                 <span className="swatch-letter">
                   <ToolSymbol symbol="◧" />
@@ -2708,14 +2743,18 @@ function Ribbon({
                 </>
               }
               options={[
-                { value: 'all', label: t('appBorderAll') },
-                { value: 'outer', label: t('appBorderOuter') },
-                { value: 'thick-outer', label: t('appBorderThickOuter') },
-                { value: 'top', label: t('appBorderTop') },
-                { value: 'bottom', label: t('appBorderBottom') },
-                { value: 'left', label: t('appBorderLeft') },
-                { value: 'right', label: t('appBorderRight') },
-                { value: 'none', label: t('appBorderNone') },
+                { value: 'all', label: t('appBorderAll'), icon: <BorderAllIcon /> },
+                { value: 'outer', label: t('appBorderOuter'), icon: <BorderOuterIcon /> },
+                {
+                  value: 'thick-outer',
+                  label: t('appBorderThickOuter'),
+                  icon: <BorderThickOuterIcon />,
+                },
+                { value: 'top', label: t('appBorderTop'), icon: <BorderTopIcon /> },
+                { value: 'bottom', label: t('appBorderBottom'), icon: <BorderBottomIcon /> },
+                { value: 'left', label: t('appBorderLeft'), icon: <BorderLeftIcon /> },
+                { value: 'right', label: t('appBorderRight'), icon: <BorderRightIcon /> },
+                { value: 'none', label: t('appBorderNone'), icon: <BorderNoneIcon /> },
               ]}
               onPick={(value) => onCommand(`border:${value}:${borderColor}`)}
             />
@@ -2977,7 +3016,9 @@ function Ribbon({
               }
               options={[
                 { value: 'row-height-open', label: `${t('appRowHeight')}…` },
+                { value: 'autofit-row-height', label: t('appAutoFitRowHeight') },
                 { value: 'col-width-open', label: `${t('appColWidth')}…` },
+                { value: 'autofit-col-width', label: t('appAutoFitColWidth') },
               ]}
               onPick={(value) => onCommand(value)}
             />
@@ -2987,6 +3028,37 @@ function Ribbon({
       <RibbonGroup label={t('appGroupEditing')}>
         <div className="ribbon-rows">
           <div className="inline-tools">
+            <MenuSelect
+              className="select-like compact"
+              label="AutoSum"
+              data-tip={t('appAutoSumTitle')}
+              display={
+                <>
+                  <ToolSymbol symbol="Σ" /> {t('appAutoSum')}
+                </>
+              }
+              options={autoSumOptions(t)}
+              onPick={(value) => onCommand(`autofn:${value}`)}
+            />
+            <MenuSelect
+              className="select-like compact"
+              label="Sort & Filter"
+              data-tip={t('appGroupSortFilter')}
+              display={
+                <>
+                  <ToolSymbol symbol="⇅" /> {t('appGroupSortFilter')}
+                </>
+              }
+              options={[
+                { value: 'sort:asc', label: t('appSortAToZ') },
+                { value: 'sort:desc', label: t('appSortZToA') },
+                { value: 'sort-custom-open', label: t('appCustomSort') },
+                { value: 'filter-toggle', label: t('appFilter') },
+                { value: 'filter-clear', label: t('appClearFilterTitle') },
+                { value: 'filter-reapply', label: t('appReapplyTitle') },
+              ]}
+              onPick={(value) => onCommand(value)}
+            />
             <MenuSelect
               className="select-like compact"
               label="Fill"
@@ -3048,6 +3120,16 @@ function Ribbon({
   )
 }
 
+function autoSumOptions(t: (key: StringKey) => string): { value: string; label: string }[] {
+  return [
+    { value: 'SUM', label: t('appFnSum') },
+    { value: 'AVERAGE', label: t('appFnAverage') },
+    { value: 'COUNT', label: t('appFnCountNumbers') },
+    { value: 'MAX', label: t('appFnMax') },
+    { value: 'MIN', label: t('appFnMin') },
+  ]
+}
+
 /// Escape-to-close for the ribbon dropdowns; outside-press / blur / shell
 /// chrome-press dismissal lives in the shared useDismissablePopover.
 function useEscapeClose(open: boolean, close: () => void): void {
@@ -3087,7 +3169,7 @@ function MenuSelect({
   readonly display?: React.ReactNode
   /// currently applied value, highlighted in the open panel ('' = none)
   readonly value?: string
-  readonly options: readonly { value: string; label: string }[]
+  readonly options: readonly { value: string; label: string; icon?: React.ReactNode }[]
   readonly onPick: (value: string) => void
 }): React.JSX.Element {
   const [open, setOpen] = useState(false)
@@ -3127,6 +3209,7 @@ function MenuSelect({
                 onPick(option.value)
               }}
             >
+              {option.icon && <span className="menu-option-icon">{option.icon}</span>}
               {option.label}
             </button>
           ))}

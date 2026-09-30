@@ -1,0 +1,104 @@
+name: Build main packages (Windows and Linux)
+
+# Produces downloadable build artifacts without publishing a release or changing
+# the public update feed. OEM remains source-only.
+on:
+  workflow_dispatch:
+  push:
+    branches: ['codex/niuoffice-*', '0.*-niu.*']
+    paths-ignore: ['**/*.md']
+  workflow_call:
+    inputs:
+      source_ref:
+        required: true
+        type: string
+      linux_only:
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: packages-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(inputs.linux_only && '[{"os":"ubuntu-22.04","platform":"linux"}]' || '[{"os":"windows-2022","platform":"windows"},{"os":"ubuntu-22.04","platform":"linux"}]') }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 100
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+      - name: Require personal main-edition source
+        run: node -e "const p=require('./branding/product.json');if(p.edition!=='main'||!p.features.chatgptSubscription)throw Error('OEM is source-only; binary packaging is refused.');"
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: apps/sheets/native/xlsx-engine
+      - name: Linux package and smoke-test dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libfuse2 rpm xvfb libgtk-3-0 libnss3 libasound2 libgbm1 libxml2-utils
+      - run: npm ci
+      - run: npm run check:product-boundaries
+      - name: Validate isolated signed-out ChatGPT runtime and editor-tool host
+        env:
+          NIUOFFICE_CHATGPT_SMOKE: '1'
+        run: npm run test -w @genoffice/ai-provider -- tests/chatgpt-real-smoke.test.ts tests/chatgpt-code-mode-smoke.test.ts
+      - name: Build all editors and native spreadsheet engine
+        run: npm run build:all
+      - name: Generate redistribution notices
+        run: npm run notices
+      - name: Package Windows installer and portable
+        if: runner.os == 'Windows'
+        working-directory: apps/shell
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npx electron-builder --win --publish never
+      - name: Package Fedora-compatible AppImage and RPM
+        if: runner.os == 'Linux'
+        working-directory: apps/shell
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npx electron-builder --linux AppImage rpm --publish never
+      - name: Audit packaged product boundaries and runtime resources
+        run: node tools/audit-release.mjs apps/shell/release
+      - name: Smoke-test Linux packaged app
+        if: runner.os == 'Linux'
+        run: xvfb-run --auto-servernum -- node tools/smoke-packaged-linux.mjs apps/shell/release/linux-unpacked
+      - name: Validate the RPM and desktop launch on Fedora 44
+        if: runner.os == 'Linux'
+        run: |
+          docker run --rm \
+            --volume "$PWD/apps/shell/release:/artifacts:ro" \
+            --volume "$PWD/node_modules:/check/node_modules:ro" \
+            --volume "$PWD/tools/smoke-packaged-linux.mjs:/check/tools/smoke-packaged-linux.mjs:ro" \
+            --volume "$PWD/branding/product.json:/check/branding/product.json:ro" \
+            --workdir /check fedora:44 bash -lc '
+              set -euo pipefail
+              dnf install -y /artifacts/NiuOffice-*.rpm nodejs xorg-x11-server-Xvfb xorg-x11-xauth mesa-libgbm alsa-lib
+              xvfb-run -a node tools/smoke-packaged-linux.mjs /opt/NiuOffice
+            '
+      - name: Assemble checksums and exact-commit source
+        run: node tools/assemble-release.mjs apps/shell/release ${{ matrix.platform }}
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: NiuOffice-${{ matrix.platform }}-${{ github.sha }}
+          path: apps/shell/release/artifacts/*
+          if-no-files-found: error
+          retention-days: 30

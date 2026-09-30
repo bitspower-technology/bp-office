@@ -1,4 +1,4 @@
-export type TabKind = 'home' | 'docs' | 'sheets' | 'pdf' | 'markdown'
+export type TabKind = 'home' | 'docs' | 'sheets' | 'pdf' | 'markdown' | 'html'
 
 /** one open tab in the top tab strip; Home is always id 'home' and not closable */
 export interface TabSummary {
@@ -7,6 +7,8 @@ export interface TabSummary {
   title: string
   closable: boolean
   active: boolean
+  /** absolute path behind the tab; absent while the document is untitled */
+  filePath?: string
 }
 
 export interface TabsApi {
@@ -25,6 +27,19 @@ export interface TabsApi {
    * as showMenu.
    */
   showNewMenu(x: number, y: number): Promise<void>
+  /**
+   * pop up the native per-tab context menu (Open in New Window / Close) at
+   * (x, y) in window CSS coordinates. Native for the same reason as showMenu.
+   */
+  showTabMenu(id: string, x: number, y: number): Promise<void>
+  /** detach a docs/sheets tab into its own window ("Open in New Window") */
+  detach(id: string): Promise<void>
+  /**
+   * pop up the application menu (File / Edit / View …) at (x, y). Windows and
+   * Linux hide the native menu bar under the tab strip; macOS keeps the
+   * system menu bar and never shows the button.
+   */
+  showAppMenu(x: number, y: number): Promise<void>
   /** move a tab to a new index in the strip; Home stays pinned at index 0 */
   reorder(id: string, toIndex: number): Promise<void>
   /** subscribe to tab list changes (open/close/activate/title updates); returns unsubscribe */
@@ -47,6 +62,9 @@ export const TABS_CHANNELS = {
   close: 'tabs:close',
   showMenu: 'tabs:show-menu',
   showNewMenu: 'tabs:show-new-menu',
+  showTabMenu: 'tabs:show-tab-menu',
+  detach: 'tabs:detach',
+  showAppMenu: 'tabs:show-app-menu',
   reorder: 'tabs:reorder',
   changed: 'tabs:changed',
   chromePressed: 'tabs:chrome-pressed',

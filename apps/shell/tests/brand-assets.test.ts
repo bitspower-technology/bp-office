@@ -457,7 +457,7 @@ describe('generated NiuOffice brand assets', () => {
       features: { chatgptSubscription: boolean }
       updates: { enabled: boolean }
     }
-    expect(manifest).toMatchObject({ productName: 'NiuOffice', version: '0.8.970-niu.1' })
+    expect(manifest).toMatchObject({ productName: 'NiuOffice', version: '0.10.1467-niu.1' })
     expect(productConfig).toMatchObject({
       productName: 'NiuOffice',
       artifactSlug: 'NiuOffice',
@@ -479,6 +479,7 @@ describe('generated NiuOffice brand assets', () => {
       'sheets',
       'pdf',
       'markdown',
+      'html',
     ])
     expect([...builder.matchAll(/\bext:\s*'([^']+)'/g)].map((match) => match[1])).toEqual([
       'docx',
@@ -486,9 +487,12 @@ describe('generated NiuOffice brand assets', () => {
       'xlsm',
       'xls',
       'csv',
+      'tsv',
       'pdf',
       'md',
       'markdown',
+      'html',
+      'htm',
     ])
     expect(manifest.devDependencies?.['@openai/codex']).toBeUndefined()
     expect(manifest.dependencies?.['@openai/codex']).toBeUndefined()

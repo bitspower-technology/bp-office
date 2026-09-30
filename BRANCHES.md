@@ -13,12 +13,13 @@ connections:
 - OpenAI Endpoint, including local LM Studio-compatible servers.
 - ChatGPT subscription through the pinned, isolated Codex app-server runtime.
 
-Only `main` produces official NiuOffice Windows binaries. A release tag must
+Only `main` produces official NiuOffice Windows and Linux binaries. A release tag must
 match the version in `apps/shell/package.json` and point at the current `main`
 commit. The release workflow verifies that relationship before publishing:
 
 - `NiuOffice-Setup-<version>.exe`
 - `NiuOffice-Portable-<version>.exe`
+- Linux x64 AppImage and Fedora/RHEL RPM
 - `latest.yml` and any updater sidecar metadata
 - `SHA256SUMS.txt`
 - the complete source archive
@@ -28,9 +29,10 @@ as its update feed. Portable builds do not run the automatic updater and must
 be replaced manually.
 
 An updater feed must be anonymously readable. Do not put a GitHub token,
-personal access token, or other repository credential in the application. If
-the source repository is private, configure a separate public repository for
-release assets before producing the first updater-enabled build.
+personal access token, or other repository credential in the application.
+The maintained release workflow requires the configured feed repository to
+match the source repository and be public. Supporting a separate public asset
+repository requires a deliberate workflow change before building.
 
 The already-published `0.8.667-niu.3` build contains no updater feed metadata.
 Existing users must install the first updater-enabled setup build manually;

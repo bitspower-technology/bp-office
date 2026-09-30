@@ -12,6 +12,7 @@ const SHIPPED_ROOTS = [
   'apps/sheets/src',
   'apps/pdf/src',
   'apps/markdown/src',
+  'apps/html/src',
   'apps/shell/src',
   'packages/agent-core/src',
   'packages/ai-provider/src',
@@ -23,7 +24,9 @@ const VISIBLE_BRAND_ROOTS = [
   'apps/sheets/src/renderer',
   'apps/pdf/src/renderer',
   'apps/markdown/src/renderer',
+  'apps/html/src/renderer',
   'apps/shell/src/renderer',
+  'packages/electron-utils/src/app-menu.ts',
 ]
 const CONFIG_FILES = [
   'package.json',
@@ -39,6 +42,9 @@ const CONFIG_FILES = [
   'apps/markdown/package.json',
   'apps/markdown/electron.vite.config.ts',
   'apps/markdown/vite.renderer.config.ts',
+  'apps/html/package.json',
+  'apps/html/electron.vite.config.ts',
+  'apps/html/vite.renderer.config.ts',
   'apps/shell/package.json',
   'apps/shell/electron-builder.cjs',
   'packages/pdf2docx/src/index.ts',
@@ -66,6 +72,12 @@ const SKIP_DIRS = new Set(['node_modules', 'out', 'dist', 'release', 'target'])
 
 const FORBIDDEN = [
   ['AI Search workspace', /@genoffice\/ai-search/i],
+  ['external automation CLI', /@genoffice\/cli\b/i],
+  ['MCP server dependency', /@modelcontextprotocol\/sdk/i],
+  [
+    'external MCP/headless server',
+    /(?:app-mcp|mcp-server|mcp-stdio-bridge|control-server|control-handlers|--headless-export|--headless-server|HEADLESS_EXPORT_FLAG)/i,
+  ],
   ['Genspark CLI', /@genspark\/cli/i],
   ['Genspark product branding', /\bGenspark\b/i],
   ['visible GenOffice package identity', /"(?:productName|author)"\s*:\s*"GenOffice\b/i],
@@ -159,15 +171,31 @@ for (const file of files) {
 }
 
 for (const file of VISIBLE_BRAND_ROOTS.flatMap((path) => walk(join(ROOT, path)))) {
-  const text = readFileSync(file, 'utf8')
+  let text = readFileSync(file, 'utf8')
+  // HTML export strips historical internal font aliases from old documents;
+  // this compatibility regex is not visible product branding.
+  if (relative(ROOT, file).replaceAll('\\', '/') === 'apps/docs/src/renderer/html-export.ts') {
+    text = text.replace(/^const INTERNAL_FONTS = [^\r\n]+$/m, '')
+  }
   const match = /\bGenOffice(?:\s+AI)?\b/.exec(text)
   if (!match) continue
   const line = text.slice(0, match.index).split(/\r?\n/).length
   violations.push(`${relative(ROOT, file)}:${line}: visible upstream branding: ${match[0]}`)
 }
 
-if (existsSync(join(ROOT, 'packages/ai-search'))) {
+if (existsSync(join(ROOT, 'packages/ai-search/package.json'))) {
   violations.push('packages/ai-search: removed AI Search workspace still exists')
+}
+
+for (const removed of [
+  'packages/cli/package.json',
+  'scripts/mcp-stdio-bridge.js',
+  'apps/shell/src/main/mcp/app-mcp.ts',
+  'apps/shell/src/main/control-server.ts',
+  'apps/shell/src/main/headless-export.ts',
+]) {
+  if (existsSync(join(ROOT, removed)))
+    violations.push(`${removed}: removed external automation surface still exists`)
 }
 
 if (existsSync(join(ROOT, 'packages/pdf2docx/tests/rebuild-pptx.test.ts'))) {

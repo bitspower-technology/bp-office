@@ -1,3 +1,4 @@
+import type { AiPanelPrefs } from '@genoffice/ui/ai-panel-prefs'
 import type {
   ChatGptLoginCompleted,
   ChatGptRateLimit,
@@ -22,6 +23,7 @@ export type UiLanguage =
   | 'pt'
   | 'it'
   | 'pl'
+  | 'cs'
   | 'nl'
   | 'ms'
   | 'he'
@@ -30,6 +32,12 @@ export type UiLanguage =
 
 /** UI theme preference */
 export type UiTheme = 'light' | 'dark' | 'system'
+
+/** shell-wide AutoSave default for every editor; updatedAt is 0 until first set */
+export interface AutoSaveDefault {
+  on: boolean
+  updatedAt: number
+}
 
 /** a recent file entry shown on the home screen; type derives from the extension */
 export interface RecentEntry {
@@ -43,6 +51,9 @@ export interface RecentEntry {
   sizeBytes: number
   /** whether the user starred this file */
   starred: boolean
+  /** the path failed to stat (disconnected drive, moved, deleted) — kept
+      listed like Word's recents instead of silently dropped (r158) */
+  missing?: boolean
 }
 
 /** paged query for the home file lists */
@@ -76,12 +87,56 @@ export interface OpenDroppedFilesResult {
   rejected: number
 }
 
+export interface FileSearchQuery {
+  q: string
+  /** sidebar filter key ('docx' | 'xlsx' | ...); omit for all */
+  ext?: string
+  offset?: number
+  limit?: number
+}
+
+export interface FileSearchSnippetPart {
+  text: string
+  hit: boolean
+}
+
+export interface FileSearchHit extends RecentEntry {
+  /** excerpt around the first content match; null when only the name or folder matched */
+  snippet: FileSearchSnippetPart[] | null
+  /** folded query fragments the file matched; highlight them in the name and folder */
+  needles: string[]
+}
+
+export interface FileSearchPage {
+  hits: FileSearchHit[]
+  total: number
+  index: {
+    indexed: number
+    pending: number
+    scanning: boolean
+  }
+}
+
+export interface DefaultAppStatus {
+  state: 'unsupported' | 'unknown' | 'default' | 'other'
+  others: string[]
+  manualOnly: boolean
+}
+
 export interface HomeApi {
+  getAutoSaveDefault(): Promise<AutoSaveDefault>
+  setAutoSaveDefault(on: boolean): Promise<void>
+  getAiPanelPrefs(): Promise<AiPanelPrefs>
+  setAiPanelPrefs(patch: Partial<AiPanelPrefs>): Promise<AiPanelPrefs>
+  newHtml(opts?: NewFileOpts): Promise<void>
+  newPdf(opts?: NewFileOpts): Promise<void>
   /** unified recents across document types, newest first (paged) */
   recents(query?: RecentQuery): Promise<RecentPage>
+  /** search indexed files by name, folder and content */
+  searchFiles(query: FileSearchQuery): Promise<FileSearchPage>
   /** starred files (independent of the recent list), newest first (paged) */
   starred(query?: RecentQuery): Promise<RecentPage>
-  /** stat a specific set of paths (project view); missing files are skipped */
+  /** stat a specific set of paths (project view); unstat-able files come back flagged `missing` */
   statPaths(paths: string[]): Promise<RecentEntry[]>
   /** star / unstar a file */
   toggleStar(path: string): Promise<void>
@@ -91,12 +146,12 @@ export interface HomeApi {
   openDroppedFiles(files: File[]): Promise<OpenDroppedFilesResult>
   /** file picker accepting every supported extension, then routes */
   browse(): Promise<void>
-  /** open a docs window at its start screen */
-  newDoc(opts?: { projectId?: string }): Promise<void>
+  /** open a docs window at its start screen; `dir` = folder the first save should land in */
+  newDoc(opts?: NewFileOpts): Promise<void>
   /** open a sheets window */
-  newSheet(opts?: { projectId?: string }): Promise<void>
+  newSheet(opts?: NewFileOpts): Promise<void>
   /** open a blank markdown editor tab */
-  newMarkdown(opts?: { projectId?: string }): Promise<void>
+  newMarkdown(opts?: NewFileOpts): Promise<void>
   /** drop entries from the recent list (does not touch the files) */
   removeRecent(paths: string[]): Promise<void>
   /** reveal the file in Finder / Explorer */
@@ -109,6 +164,28 @@ export interface HomeApi {
   deleteFiles(paths: string[]): Promise<void>
   /** open the OS trash, where deleted files can be restored */
   openTrash(): Promise<void>
+  /** the tree roots: the default save folder first, then the folders the user added */
+  folderRoots(): Promise<FolderRoot[]>
+  /** directory picker; the chosen folder joins the tree in place (nothing is copied or moved) */
+  addFolderRoot(): Promise<FolderRoot | null>
+  /** OS paths dropped on the Folders panel: folders join the tree, documents open */
+  dropFolderRoots(paths: string[]): Promise<FolderRoot[]>
+  /** take an added folder off the list; the disk is untouched */
+  removeFolderRoot(path: string): Promise<void>
+  /** absolute path of a File from an OS drag (Electron webUtils) */
+  pathForFile(file: File): string
+  /** one level of the tree: sub-folders + supported files directly inside `dir` */
+  listFolder(dir: string): Promise<FolderListing>
+  /** create `parent/name`; resolves to the new path */
+  createFolder(parent: string, name: string): Promise<RenameResult>
+  /** rename a folder in place (files inside keep their recents/stars/chat history) */
+  renameFolder(dir: string, newName: string): Promise<RenameResult>
+  /** move files and/or folders into `targetDir` */
+  movePaths(paths: string[], targetDir: string, onConflict: MoveConflictPolicy): Promise<MoveResult>
+  /** move a folder (and everything inside) to the trash */
+  deleteFolder(dir: string): Promise<void>
+  /** a folder under the root changed on disk (created/renamed/deleted/moved, from anywhere) */
+  onFolderChanged(handler: (dirs: string[]) => void): () => void
   /** current UI language (persisted in userData/app-settings.json) */
   getLanguage(): Promise<UiLanguage>
   /** switch + persist the UI language; main rebuilds its menus to match */
@@ -155,23 +232,16 @@ export interface HomeApi {
   getDefaultSaveDir(): Promise<string>
   /** directory picker to change the default save folder; resolves to the new folder, or null when canceled or the pick was unusable */
   pickDefaultSaveDir(): Promise<string | null>
+  /** who opens .docx/.xlsx/.pdf today (Settings → General "default app" row) */
+  getDefaultAppStatus(): Promise<DefaultAppStatus>
+  /** claim the Office types (mac/linux) or open the system Default Apps page (win); resolves to the refreshed status */
+  setDefaultApp(): Promise<DefaultAppStatus>
   /** theme switched anywhere (broadcast from the main process) */
   onThemeChanged(handler: (theme: UiTheme) => void): () => void
   /** open the NiuOffice community page in the default browser */
   openGenTeam(): Promise<void>
   /** open the NiuOffice fork in the default browser */
   openGitHubRepo(): Promise<void>
-  /** decide whether the value-gated NiuOffice star invitation should appear */
-  starPromptShouldShow(): Promise<StarPromptShow>
-  /** persist the user's response to the star invitation */
-  starPromptAction(action: StarPromptAction): Promise<void>
-}
-
-export type StarPromptAction = 'starred' | 'later'
-
-export interface StarPromptShow {
-  show: boolean
-  docOpens: number
 }
 
 export interface LmStudioConfig {
@@ -210,47 +280,70 @@ export interface RenameResult {
   error?: string
 }
 
-// ── Project-related APIs (P1) ────────────────────────────────
+export interface NewFileOpts {
+  /** folder the new file's first save should land in (defaults to the save folder root) */
+  dir?: string
+}
 
-export interface ProjectSummaryEntry {
-  id: string
+// ── Folder tree (home "Folders" panel: the default save folder plus any folder the user added) ──
+
+export interface FolderRoot {
+  path: string
+  /** folder name shown on the root row */
   name: string
-  createdAt: string
-  updatedAt: string
-  fileCount: number
-  lastActiveAt: string
-  isDefault: boolean
+  /** false when the folder does not exist and cannot be created, or is read-only */
+  usable: boolean
+  /** the folder exists and can be listed (a read-only or unplugged root is still shown) */
+  readable: boolean
+  /** an added folder: can be taken off the list; the default save folder cannot */
+  removable: boolean
 }
 
-export interface TimelineEntryItem {
-  filePath: string
-  fileName: string
-  chatId: string
-  ts: string
-  role: 'user' | 'assistant'
-  preview: string
-  seq: number
+export interface FolderEntry {
+  path: string
+  name: string
+  mtimeMs: number
+  /** whether it contains at least one visible sub-folder (drives the expand chevron) */
+  hasSubfolders: boolean
 }
 
-export interface ProjectHomeApi {
-  /** list all projects (with file count + last-active time) */
-  listProjects(): Promise<ProjectSummaryEntry[]>
-  /** list existing files currently belonging to a project */
-  listFiles(projectId: string): Promise<string[]>
-  /** create a project */
-  createProject(name: string): Promise<ProjectSummaryEntry>
-  /** rename a project */
-  renameProject(id: string, name: string): Promise<void>
-  /** soft-delete a project */
-  deleteProject(id: string): Promise<void>
-  /** move a file into the given project */
-  moveFile(filePath: string, projectId: string): Promise<void>
-  /** fetch the project timeline */
-  getTimeline(projectId: string, limit?: number): Promise<TimelineEntryItem[]>
+/** a document file listed by the tree (same shape as the home recents rows) */
+export interface FileEntry {
+  path: string
+  name: string
+  /** lowercased extension without the dot */
+  ext: string
+  mtimeMs: number
+  sizeBytes: number
+  starred: boolean
+  /** the path failed to stat */
+  missing?: boolean
+}
+
+export interface FolderListing {
+  dir: string
+  folders: FolderEntry[]
+  /** supported document files directly inside `dir`, newest first */
+  files: FileEntry[]
+  /** the directory could not be read (deleted or moved outside the app) */
+  missing?: boolean
+}
+
+/** what to do when a moved item's name already exists in the target */
+export type MoveConflictPolicy = 'ask' | 'replace' | 'keepBoth' | 'skip'
+
+export interface MoveResult {
+  /** old path → new path for everything that moved */
+  moved: Array<{ from: string; to: string }>
+  /** items skipped because the name exists in the target (policy 'ask'/'skip') */
+  conflicts: string[]
+  /** items that failed for another reason */
+  failed: Array<{ path: string; error: string }>
 }
 
 export const HOME_CHANNELS = {
   recents: 'home:recents',
+  searchFiles: 'home:search-files',
   starred: 'home:starred',
   statPaths: 'home:stat-paths',
   toggleStar: 'home:toggle-star',
@@ -258,6 +351,12 @@ export const HOME_CHANNELS = {
   openDroppedPaths: 'home:open-dropped-paths',
   browse: 'home:browse',
   newDoc: 'home:new-doc',
+  newHtml: 'home:new-html',
+  newPdf: 'home:new-pdf',
+  getAutoSaveDefault: 'home:get-auto-save-default',
+  setAutoSaveDefault: 'home:set-auto-save-default',
+  getAiPanelPrefs: 'home:get-ai-panel-prefs',
+  setAiPanelPrefs: 'home:set-ai-panel-prefs',
   newSheet: 'home:new-sheet',
   newMarkdown: 'home:new-markdown',
   removeRecent: 'home:remove-recent',
@@ -266,6 +365,16 @@ export const HOME_CHANNELS = {
   duplicateFile: 'home:duplicate-file',
   deleteFiles: 'home:delete-files',
   openTrash: 'home:open-trash',
+  folderRoots: 'home:folder-roots',
+  addFolderRoot: 'home:folder-root-add',
+  dropFolderRoots: 'home:folder-root-drop',
+  removeFolderRoot: 'home:folder-root-remove',
+  listFolder: 'home:folder-list',
+  createFolder: 'home:folder-create',
+  renameFolder: 'home:folder-rename',
+  movePaths: 'home:move-paths',
+  deleteFolder: 'home:folder-delete',
+  folderChanged: 'home:folder-changed',
   getLanguage: 'home:get-language',
   setLanguage: 'home:set-language',
   getLmStudioConfig: 'home:lmstudio-get-config',
@@ -286,11 +395,11 @@ export const HOME_CHANNELS = {
   getTheme: 'home:get-theme',
   setTheme: 'home:set-theme',
   getDefaultSaveDir: 'home:get-default-save-dir',
+  getDefaultAppStatus: 'home:get-default-app-status',
+  setDefaultApp: 'home:set-default-app',
   pickDefaultSaveDir: 'home:pick-default-save-dir',
   openGenTeam: 'home:open-genteam',
   openGitHubRepo: 'home:open-github-repo',
-  starPromptShouldShow: 'home:star-prompt-should-show',
-  starPromptAction: 'home:star-prompt-action',
 } as const
 
 /** Broadcast after the shared AI provider settings change. */

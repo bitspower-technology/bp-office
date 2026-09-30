@@ -30,10 +30,14 @@ interface LaunchOptions {
   lang?: string
   /** pre-seed app-settings.json with onboardingSeen=true to start at the home screen */
   onboardingSeen?: boolean
+  /** extra app-settings.json keys (e.g. defaultSaveDir) written before launch */
+  settings?: Record<string, unknown>
   /** subdir of e2e/artifacts to store this launch's video in */
   videoDir: string
   /** absolute document path passed as argv, opened in an editor tab on launch */
   openFile?: string
+  /** extra environment variables for the launched app */
+  env?: Record<string, string>
 }
 
 export interface LaunchedApp {
@@ -47,10 +51,13 @@ export async function launchShell(options: LaunchOptions): Promise<LaunchedApp> 
     throw new Error(`Missing build output at ${SHELL_MAIN} — run \`npm run build:all\` first`)
   }
   const userDataDir = options.userDataDir ?? (await mkdtemp(join(tmpdir(), 'genoffice-e2e-')))
-  if (options.onboardingSeen) {
+  if (options.onboardingSeen || options.settings) {
     await writeFile(
       join(userDataDir, 'app-settings.json'),
-      JSON.stringify({ onboardingSeen: true }),
+      JSON.stringify({
+        ...(options.onboardingSeen ? { onboardingSeen: true } : {}),
+        ...options.settings,
+      }),
     )
   }
   const require = createRequire(join(SHELL_DIR, 'package.json'))
@@ -73,7 +80,9 @@ export async function launchShell(options: LaunchOptions): Promise<LaunchedApp> 
     env: {
       ...hostEnv,
       GENOFFICE_USER_DATA: userDataDir,
+      GENOFFICE_NO_SPARE_VIEW: '1',
       GENOFFICE_LANG: options.lang ?? 'en',
+      ...(options.env ?? {}),
       ...(process.platform === 'linux' ? { ELECTRON_DISABLE_SANDBOX: '1' } : {}),
     },
     // Playwright's Electron screencast wedges the page CDP session on Linux
@@ -132,7 +141,7 @@ async function waitForDocumentReady(
  * Open editor tabs trigger a native Save/Don't Save/Cancel dialog on close,
  * which would block app.close() forever — stub the dialog to answer
  * "Don't Save" (button index 1) so shutdown stays unattended. If close still
- * hangs, kill the process after 20s so the suite never wedges.
+ * hangs, force-kill the process after 20s and wait for close to finish.
  */
 export async function closeAndSaveVideo(
   launched: LaunchedApp,
@@ -147,17 +156,17 @@ export async function closeAndSaveVideo(
       })) as typeof dialog.showMessageBox
     })
     .catch(() => {})
-  let killTimer: NodeJS.Timeout | undefined
-  await Promise.race([
-    launched.app.close(),
-    new Promise<void>((resolvePromise) => {
-      killTimer = setTimeout(() => {
-        launched.app.process().kill()
-        resolvePromise()
-      }, 20_000)
-    }),
-  ])
-  if (killTimer) clearTimeout(killTimer)
+  const child = launched.app.process()
+  const killTimer = setTimeout(() => {
+    // SIGTERM can enter Electron's graceful quit path and leave it alive.
+    // child.killed only means a signal was sent, not that the process exited.
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
+  }, 20_000)
+  try {
+    await launched.app.close()
+  } finally {
+    clearTimeout(killTimer)
+  }
   if (!video) return undefined
   const target = join(ARTIFACTS_DIR, 'videos', `${name}.webm`)
   try {
@@ -282,12 +291,17 @@ export async function waitForPageWithUrl(
   timeoutMs = 30_000,
 ): Promise<Page> {
   const deadline = Date.now() + timeoutMs
+  // Installed/editor views now use the privileged renderer scheme. Keep old
+  // file-path callers useful without accepting an unrelated editor window.
+  const editor = /^(docs|sheets|pdf|markdown|html)\/out(?:\/|$)/.exec(urlPart)?.[1]
+  const matches = (url: string) =>
+    url.includes(urlPart) || (editor !== undefined && url.startsWith(`genoffice-app://${editor}/`))
   for (;;) {
     for (const candidate of app.windows()) {
-      if (candidate.url().includes(urlPart)) return candidate
+      if (matches(candidate.url())) return candidate
       // page.url() stays empty when attach raced navigation; ask the document
       const href = await candidate.evaluate(() => window.location.href).catch(() => '')
-      if (href.includes(urlPart)) return candidate
+      if (matches(href)) return candidate
     }
     const remaining = deadline - Date.now()
     if (remaining <= 0) throw new Error(`No window with URL containing "${urlPart}"`)

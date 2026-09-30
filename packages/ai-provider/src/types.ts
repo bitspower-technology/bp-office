@@ -20,6 +20,10 @@ export type AiProviderId =
   | 'xai'
   | 'mistral'
   | 'openrouter'
+  | 'requesty'
+  | 'opper'
+  | 'opencode-zen'
+  | 'opencode-go'
   | 'custom'
 
 export type AiAuthenticationMode = 'none' | 'optional-token' | 'api-key' | 'managed'
@@ -118,6 +122,8 @@ export interface LmStudioStatus {
 export interface AiSettings {
   provider: AiProviderId
   providers: Record<AiProviderId, AiProviderConfig>
+  /** Maximum generated tokens per model turn; independent of the input context budget. */
+  maxOutputTokens?: number | undefined
 }
 
 /** pre-provider settings shape (single OpenAI-compatible endpoint); migrated into "custom" */
@@ -141,6 +147,8 @@ export interface AiChatResponse {
 
 export interface AiStreamRequest {
   requestId: string
+  /** Stable renderer transport id used to retain native provider sessions. */
+  sessionId?: string
   settings: AiSettings
   system: string
   messages: AgentMessage[]

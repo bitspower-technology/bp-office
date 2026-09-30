@@ -15,6 +15,7 @@ import type { AnimEffectKind, GradientFillSpec, TransitionKind } from '../../sha
 import type { ChartStyleInfo } from '@genoffice/pptx-render'
 import {
   useDismissablePopover,
+  useRibbonCollapse,
   Dropdown,
   THEME_COLORS,
   THEME_COLOR_SHADES,
@@ -25,6 +26,7 @@ import { ICON_COLORS } from '../insert-presets'
 import { THEME_PRESETS, type SlideThemePreset } from '../themes'
 import { restoreEditSelection } from '../TextEditOverlay'
 import { armColorInput, toPickerHex } from '../color-input'
+import { nextPreset, prevPreset } from '../zoom-steps'
 import { TABLE_SHADING_COLORS } from './table-shading-colors'
 import { useI18n, type StringKey } from '../i18n/locale'
 import {
@@ -86,6 +88,11 @@ import {
   IconShapes,
   IconShapeStyle,
   IconFillColor,
+  IconObjFlipH,
+  IconObjFlipV,
+  IconReplacePicture,
+  IconRotateLeft,
+  IconRotateRight,
 } from './icons'
 // brand-supplied Review AI icon art (44px = 22px @2x), color baked in
 import iconSpelling from '../assets/icon-spelling.png'
@@ -116,7 +123,7 @@ import type { FormatCmd } from './ribbon-shared'
 import { RibbonHomeTab } from './RibbonHomeTab'
 import { RibbonInsertTab } from './RibbonInsertTab'
 import { ShapeGalleryContent } from './ShapeGalleryPopover'
-import { contextTabForElement, type ContextTab } from './context-tabs'
+import { autoContextTabForElement, contextTabForElement, type ContextTab } from './context-tabs'
 
 const IS_MAC = navigator.platform.toLowerCase().includes('mac')
 /** shell tab mode: the tab strip above owns traffic lights / caption buttons */
@@ -265,7 +272,7 @@ const TRANSITIONS: Array<{ kind: TransitionKind; label: StringKey; icon: React.R
 const ANIM_EFFECTS: Array<{
   kind: AnimEffectKind
   label: StringKey
-  cls: 'entr' | 'emph' | 'exit'
+  cls: 'entr' | 'emph' | 'exit' | 'media'
 }> = [
   { kind: 'appear', label: 'ribbonAnimAppear', cls: 'entr' },
   { kind: 'fade', label: 'ribbonAnimFade', cls: 'entr' },
@@ -286,12 +293,16 @@ const ANIM_EFFECTS: Array<{
   { kind: 'wipeOut', label: 'ribbonAnimWipeOut', cls: 'exit' },
   { kind: 'shrink', label: 'ribbonAnimShrinkTurn', cls: 'exit' },
   { kind: 'zoomOut', label: 'ribbonAnimZoomOut', cls: 'exit' },
+  { kind: 'mediaPlay', label: 'ribbonAnimMediaPlay', cls: 'media' },
+  { kind: 'mediaPause', label: 'ribbonAnimMediaPause', cls: 'media' },
+  { kind: 'mediaStop', label: 'ribbonAnimMediaStop', cls: 'media' },
 ]
 
-const ANIM_CLS_TITLE: Record<'entr' | 'emph' | 'exit', StringKey> = {
+const ANIM_CLS_TITLE: Record<'entr' | 'emph' | 'exit' | 'media', StringKey> = {
   entr: 'ribbonAnimEntrance',
   emph: 'ribbonAnimEmphasis',
   exit: 'ribbonAnimExit',
+  media: 'ribbonAnimMedia',
 }
 
 /** Motion path presets (path coordinates 0..1 relative to slide size, matching OOXML animMotion). */
@@ -1095,8 +1106,6 @@ export function Ribbon({
   aiOpen,
   onToggleAi,
   onAiPreset,
-  onAskSelection,
-  onInsert,
   onPickShape,
   onInsertImage,
   onFormatBackground,
@@ -1144,6 +1153,7 @@ export function Ribbon({
   transition,
   onTransition,
   selectedAnimEffect,
+  selectionIsMedia,
   timingAnim,
   onApplyAnimation,
   onAnimHoverPreview,
@@ -1191,7 +1201,8 @@ export function Ribbon({
   onInsertWordArt,
   onInsertField,
   onOpenLink,
-  onInsertZoom,
+  onOpenZoom,
+  hasSections,
   slideCount,
   currentSlide,
   onOpenHeaderFooter,
@@ -1201,6 +1212,7 @@ export function Ribbon({
   recording,
   onToggleScreenRecord,
   contextElementType,
+  tabRequest,
   contextElementId: _contextElementId,
   contextSlideIndex: _contextSlideIndex,
   contextChartStyle,
@@ -1217,6 +1229,8 @@ export function Ribbon({
   cropActive,
   onPictureOpacity,
   onPictureCutout,
+  onPictureReplace,
+  onPictureRotate,
   onEditTableStyle,
   tableStyleFlags,
   tableActiveCell,
@@ -1227,9 +1241,8 @@ export function Ribbon({
   canDistribute,
 }: Props) {
   const { t } = useI18n()
-  // Shapes get their own format tab; text-bearing shapes do not auto-activate it
-  // (users are usually after Home's text controls when selecting them).
   const contextTab = contextTabForElement(contextElementType ?? null)
+  const autoContextTab = autoContextTabForElement(contextElementType ?? null)
 
   const [tab, setTab] = useState<MainTab | ContextTab>('home')
   const [fileOpen, setFileOpen] = useState(false)
@@ -1279,7 +1292,7 @@ export function Ribbon({
   const [fontDraft, setFontDraft] = useState<string | null>(null)
   const [tableOpen, setTableOpen] = useState(false)
   const [tableHover, setTableHover] = useState({ r: 0, c: 0 })
-  const [tableCustom, setTableCustom] = useState({ r: 8, c: 5 })
+  const [tableDialogOpen, setTableDialogOpen] = useState(false)
   const [layoutOpen, setLayoutOpen] = useState(false)
   // responsive-collapse state (see the collapse effect below)
   const [collapsedGroups, setCollapsedGroups] = useState<string[]>([])
@@ -1372,6 +1385,10 @@ export function Ribbon({
   // Expanded/collapsed widths are cached per group so the required width is
   // computable in every state (before the first fold the collapsed width is
   // an estimate, corrected by measurement as soon as the group first folds).
+  const collapse = useRibbonCollapse('ai-slides-ribbon-collapsed', {
+    collapse: t('ribbonCollapse'),
+    expand: t('ribbonExpand'),
+  })
   const bodyRef = useRef<HTMLDivElement | null>(null)
   const inlineWidthsRef = useRef(new Map<string, number>())
   const collapsedWidthsRef = useRef(new Map<string, number>())
@@ -1385,6 +1402,8 @@ export function Ribbon({
     const order = COLLAPSE_ORDER[tab] ?? []
     if (!order.length) return
     const evaluate = () => {
+      // hidden (collapsed ribbon): offsets read 0 and would poison the width caches
+      if (!el.clientWidth) return
       const kids = Array.from(el.children) as HTMLElement[]
       if (!kids.length) return
       const first = kids[0]!
@@ -1435,18 +1454,28 @@ export function Ribbon({
     return () => ro.disconnect()
   }, [tab, collapsedGroups])
 
-  // Contextual tab auto-switch: selecting an object jumps to its format tab
-  // (shapes included, text-bearing or not); deselecting falls back to Home.
+  // Contextual tab auto-switch: pictures/tables/charts jump to their format
+  // tab; shapes only reveal Shape Format (PowerPoint parity, so Home stays put for
+  // text formatting). Leaving a tab that is no longer offered falls back to Home.
   const prevContextTab = useRef<ContextTab | null>(null)
   useEffect(() => {
     const previousContextTab = prevContextTab.current
-    if (contextTab && contextTab !== previousContextTab) {
-      setTab(contextTab)
-    } else if (!contextTab && previousContextTab) {
-      setTab((cur) => (cur === previousContextTab ? 'home' : cur))
+    if (contextTab !== previousContextTab) {
+      if (autoContextTab) {
+        setTab(autoContextTab)
+      } else if (previousContextTab) {
+        setTab((cur) => (cur === previousContextTab ? 'home' : cur))
+      }
     }
     prevContextTab.current = contextTab
-  }, [contextTab])
+  }, [contextTab, autoContextTab])
+
+  const handledTabRequest = useRef(0)
+  useEffect(() => {
+    if (!tabRequest || tabRequest.seq === handledTabRequest.current) return
+    handledTabRequest.current = tabRequest.seq
+    if (tabRequest.tab === contextTab) setTab(tabRequest.tab)
+  }, [tabRequest, contextTab])
 
   /** Insert tab dropdown big button (click toggles, content stopPropagation) */
   const dropBig = (
@@ -1593,7 +1622,6 @@ export function Ribbon({
     onAddSlide,
     onAddSlideWithLayout,
     onAiPreset,
-    onAskSelection,
     onAlign,
     onDirection,
     onArrange,
@@ -1607,7 +1635,6 @@ export function Ribbon({
     onFormat,
     onFormatBrushClick,
     onFormatBrushDoubleClick,
-    onInsert,
     onPickShape,
     onInsertChart,
     onInsertField,
@@ -1618,7 +1645,8 @@ export function Ribbon({
     onInsertSmartArt,
     onInsertTable,
     onInsertWordArt,
-    onInsertZoom,
+    onOpenZoom,
+    hasSections,
     onNewComment,
     onOpenEquation,
     onOpenHeaderFooter,
@@ -1672,7 +1700,7 @@ export function Ribbon({
     setSizeOpen,
     setSlideShowFromStart,
     setSlideShowOpen,
-    setTableCustom,
+    setTableDialogOpen,
     setTableHover,
     setTableOpen,
     sizeDraft,
@@ -1680,17 +1708,18 @@ export function Ribbon({
     slideShowFromStart,
     slideShowOpen,
     t,
-    tableCustom,
+    tableDialogOpen,
     tableHover,
     tableOpen,
   }
 
   return (
-    <div className="ribbon">
+    <div className={`ribbon ${collapse.rootClass}`} ref={collapse.rootRef}>
       <div
         className={`ribbon-tabs ${IN_TAB ? '' : IS_MAC ? 'ribbon-tabs-mac' : 'ribbon-tabs-win'}${
           anyPanelOpen ? ' ribbon-tabs-nodrag' : ''
         }`}
+        onDoubleClick={collapse.onTabsDoubleClick}
       >
         {!IS_MAC && (
           <div className="file-tab-wrap">
@@ -1820,8 +1849,10 @@ export function Ribbon({
         {TABS.filter((tb) => tb !== 'file').map((tb) => (
           <button
             key={tb}
-            className={`ribbon-tab ${tab === tb ? 'active' : ''}`}
+            className={`ribbon-tab ${collapse.tabClass(tab === tb)}`}
+            data-tip={collapse.tabTip(tab === tb)}
             onClick={() => {
+              collapse.onTabPress(tab === tb)
               setTab(tb)
               setFileOpen(false)
             }}
@@ -1832,9 +1863,12 @@ export function Ribbon({
         {contextTab && (
           <button
             key={contextTab}
-            className={`ribbon-tab ribbon-tab-context ${tab === contextTab ? 'active' : ''}`}
-            onClick={() => setTab(contextTab)}
-            data-tip={t(TAB_LABEL[contextTab])}
+            className={`ribbon-tab ribbon-tab-context ${collapse.tabClass(tab === contextTab)}`}
+            onClick={() => {
+              collapse.onTabPress(tab === contextTab)
+              setTab(contextTab)
+            }}
+            data-tip={collapse.tabTip(tab === contextTab) ?? t(TAB_LABEL[contextTab])}
           >
             {t(TAB_LABEL[contextTab])}
           </button>
@@ -1842,7 +1876,7 @@ export function Ribbon({
         <span className="ribbon-tabs-spacer" />
       </div>
 
-      <div className="ribbon-body" ref={bodyRef}>
+      <div className="ribbon-body" data-ribbon-body="" ref={bodyRef}>
         {tab === 'home' ? (
           <RibbonHomeTab rb={tabCtx} />
         ) : tab === 'insert' ? (
@@ -2183,10 +2217,10 @@ export function Ribbon({
                 <button
                   key={a.kind}
                   className={`rb-big ${selectedAnimEffect === a.kind ? 'active' : ''}`}
-                  disabled={!hasDoc || !hasSelection}
+                  disabled={!hasDoc || !hasSelection || (a.cls === 'media' && !selectionIsMedia)}
                   onClick={() => onApplyAnimation(a.kind)}
                   onMouseEnter={() => {
-                    if (hasDoc && hasSelection) animHoverStart(a.kind)
+                    if (hasDoc && hasSelection && a.cls !== 'media') animHoverStart(a.kind)
                   }}
                   onMouseLeave={animHoverStop}
                   data-tip={t('ribbonAnimApplyTip', {
@@ -2244,7 +2278,14 @@ export function Ribbon({
                 t('ribbonAddAnimation'),
                 t('ribbonAddAnimationTip'),
                 <div className="rb-menu rb-anim-menu">
-                  {(['entr', 'emph', 'exit'] as const).map((cls) => (
+                  {(
+                    [
+                      'entr',
+                      'emph',
+                      'exit',
+                      ...(selectionIsMedia ? (['media'] as const) : []),
+                    ] as const
+                  ).map((cls) => (
                     <React.Fragment key={cls}>
                       <div className="rb-drop-title">{t(ANIM_CLS_TITLE[cls])}</div>
                       {ANIM_EFFECTS.filter((a) => a.cls === cls).map((a) => (
@@ -2255,7 +2296,7 @@ export function Ribbon({
                             setInsertDrop(null)
                           }}
                           onMouseEnter={() => {
-                            if (hasDoc && hasSelection) animHoverStart(a.kind)
+                            if (hasDoc && hasSelection && cls !== 'media') animHoverStart(a.kind)
                           }}
                           onMouseLeave={animHoverStop}
                         >
@@ -2622,19 +2663,11 @@ export function Ribbon({
             <div className="ribbon-sep" />
             <Group label={t('ribbonGroupZoom')}>
               <div className="rb-col">
-                <button
-                  className="rb-small"
-                  disabled={!hasDoc}
-                  onClick={() => onZoom((z) => Math.min(z * 1.15, 3))}
-                >
+                <button className="rb-small" disabled={!hasDoc} onClick={() => onZoom(nextPreset)}>
                   <IconZoomIn size={18} />
                   <span>{t('ribbonZoomIn')}</span>
                 </button>
-                <button
-                  className="rb-small"
-                  disabled={!hasDoc}
-                  onClick={() => onZoom((z) => Math.max(z / 1.15, 0.25))}
-                >
+                <button className="rb-small" disabled={!hasDoc} onClick={() => onZoom(prevPreset)}>
                   <IconZoomOut size={18} />
                   <span>{t('ribbonZoomOut')}</span>
                 </button>
@@ -3036,6 +3069,17 @@ export function Ribbon({
                 </span>
                 <span>{t('ribbonRemoveBg')}</span>
               </button>
+              <button
+                className="rb-big"
+                data-tip={t('ribbonReplacePicture')}
+                disabled={!onPictureReplace || contextElementType !== 'picture'}
+                onClick={onPictureReplace}
+              >
+                <span className="rb-big-icon">
+                  <IconReplacePicture size={BIG} />
+                </span>
+                <span>{t('ribbonReplacePicture')}</span>
+              </button>
               <div className="rb-drop-wrap">
                 <button
                   className={`rb-big ${transparencyOpen ? 'active' : ''}`}
@@ -3155,6 +3199,45 @@ export function Ribbon({
                 </span>
                 <span>{t('ribbonCrop')}</span>
               </button>
+            </Group>
+            <div className="ribbon-sep" />
+            <Group label={t('ribbonGroupArrange')}>
+              <div className="rb-col">
+                {(
+                  [
+                    [90, 'ribbonRotateRight', IconRotateRight],
+                    [-90, 'ribbonRotateLeft', IconRotateLeft],
+                  ] as const
+                ).map(([delta, key, Icon]) => (
+                  <button
+                    key={key}
+                    className="rb-small"
+                    disabled={!onPictureRotate || contextElementType !== 'picture'}
+                    onClick={() => onPictureRotate?.(delta)}
+                  >
+                    <Icon size={18} />
+                    <span>{t(key)}</span>
+                  </button>
+                ))}
+              </div>
+              <div className="rb-col">
+                {(
+                  [
+                    ['h', 'ribbonFlipH', IconObjFlipH],
+                    ['v', 'ribbonFlipV', IconObjFlipV],
+                  ] as const
+                ).map(([axis, key, Icon]) => (
+                  <button
+                    key={key}
+                    className="rb-small"
+                    disabled={!onFlip || contextElementType !== 'picture'}
+                    onClick={() => onFlip?.(axis)}
+                  >
+                    <Icon size={18} />
+                    <span>{t(key)}</span>
+                  </button>
+                ))}
+              </div>
             </Group>
           </>
         ) : tab === 'shapeFormat' ? (

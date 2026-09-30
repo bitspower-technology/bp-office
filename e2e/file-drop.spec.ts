@@ -65,6 +65,8 @@ test.describe('opening Explorer/Finder files by drag and drop', () => {
     const csvPath = join(fixtureDir, 'drag-data.csv')
     const pdfPath = join(fixtureDir, 'drag-review.pdf')
     const markdownPath = join(fixtureDir, 'drag-notes.md')
+    const htmlPath = join(fixtureDir, 'drag-page.html')
+    const tsvPath = join(fixtureDir, 'drag-table.tsv')
     const unsupportedPath = join(fixtureDir, 'ignore.txt')
     const removedSlidesPath = join(fixtureDir, 'ignore-slides.pptx')
     await Promise.all([
@@ -72,6 +74,8 @@ test.describe('opening Explorer/Finder files by drag and drop', () => {
       writeFile(csvPath, 'Name,Value\nNiuOffice,358\n'),
       writeFile(pdfPath, minimalPdf()),
       writeFile(markdownPath, '# Dropped notes\n\nOpened from a local file drag.\n'),
+      writeFile(htmlPath, '<!doctype html><html><body><h1>Local HTML</h1></body></html>'),
+      writeFile(tsvPath, 'Name\tValue\nNiuOffice\t1467\n'),
       writeFile(unsupportedPath, 'This format is intentionally unsupported.\n'),
       writeFile(removedSlidesPath, 'PPTX opening is intentionally absent.\n'),
     ])
@@ -87,7 +91,17 @@ test.describe('opening Explorer/Finder files by drag and drop', () => {
       // webUtils.getPathForFile() bridge and the main-process sender/path gate.
       const drag = await beginLocalFileDrag(
         shellPage,
-        [docxPath, csvPath, pdfPath, markdownPath, docxPath, unsupportedPath, removedSlidesPath],
+        [
+          docxPath,
+          csvPath,
+          pdfPath,
+          markdownPath,
+          htmlPath,
+          tsvPath,
+          docxPath,
+          unsupportedPath,
+          removedSlidesPath,
+        ],
         '.app-frame-content',
       )
       try {
@@ -98,12 +112,14 @@ test.describe('opening Explorer/Finder files by drag and drop', () => {
       }
 
       await expect(shellPage.getByTestId('file-drop-overlay')).toBeHidden()
-      await expect(editorTabs).toHaveCount(4)
+      await expect(editorTabs).toHaveCount(6)
       for (const name of [
         'drag-report.docx',
         'drag-data.csv',
         'drag-review.pdf',
         'drag-notes.md',
+        'drag-page.html',
+        'drag-table.tsv',
       ]) {
         await expect(editorTabs.filter({ hasText: name })).toHaveCount(1)
       }
@@ -116,6 +132,7 @@ test.describe('opening Explorer/Finder files by drag and drop', () => {
         ['drag-data.csv', 'sheets/out'],
         ['drag-review.pdf', 'pdf/out'],
         ['drag-notes.md', 'markdown/out'],
+        ['drag-page.html', 'html/out'],
       ] as const) {
         surfaces.push({ name, url, page: await waitForPageWithUrl(app, url) })
       }

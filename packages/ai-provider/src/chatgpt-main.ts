@@ -4,6 +4,10 @@ import { mkdir } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
 import { createInterface, type Interface as ReadLineInterface } from 'node:readline'
+import {
+  EDITOR_AGENT_MAX_CONTEXT_BYTES,
+  EDITOR_AGENT_MAX_CONTEXT_TOKENS,
+} from '@genoffice/agent-core'
 import type {
   AgentMessage,
   AgentToolCall,
@@ -29,6 +33,13 @@ export const CHATGPT_TURN_IDLE_TIMEOUT_MS = 180_000
 
 const MAX_MODEL_PAGES = 20
 const nodeRequire = createRequire(import.meta.url)
+
+function chatGptContextBudgetError(): Error {
+  return new Error(
+    'This ChatGPT request exceeds the 130K-token (estimated) context budget. ' +
+      'Narrow the document/context or ask tools to return a smaller result, then try again.',
+  )
+}
 
 /**
  * Explicit deny list for every pinned Codex 0.147 feature that can discover,
@@ -97,6 +108,8 @@ const CHATGPT_RESTRICTED_CODEX_FEATURES = Object.freeze({
  * remote-control startup work before NiuOffice can issue `thread/start`.
  */
 export const CHATGPT_GLOBAL_CODEX_CONFIG_OVERRIDES = Object.freeze([
+  `model_context_window=${EDITOR_AGENT_MAX_CONTEXT_TOKENS}`,
+  'model_auto_compact_token_limit=115000',
   'cli_auth_credentials_store="keyring"',
   'web_search="disabled"',
   'analytics.enabled=false',
@@ -170,6 +183,8 @@ export const CHATGPT_SCRUBBED_ENVIRONMENT_VARIABLES = [
  * no approval path, and explicit instructions to use only host dynamic tools.
  */
 export const CHATGPT_RESTRICTED_THREAD_CONFIG = Object.freeze({
+  model_context_window: EDITOR_AGENT_MAX_CONTEXT_TOKENS,
+  model_auto_compact_token_limit: 115_000,
   cli_auth_credentials_store: 'keyring',
   web_search: 'disabled',
   analytics: { enabled: false },
@@ -288,6 +303,7 @@ interface ActiveTurn {
   reject(error: Error): void
   settled: boolean
   pendingToolRpcIds: Set<RpcId>
+  contextBytes: number
   idleTimer?: ReturnType<typeof setTimeout>
   removeAbort?: () => void
   lastError?: Error
@@ -313,6 +329,7 @@ export class ChatGptAppServerClient {
   private readonly listeners = new Set<(event: ChatGptAppServerEvent) => void>()
   private readonly activeTurns = new Map<string, ActiveTurn>()
   private readonly allowedToolsByThread = new Map<string, Set<string>>()
+  private readonly contextBytesByThread = new Map<string, number>()
   private readonly toolRequestOwners = new Map<RpcId, ActiveTurn>()
   private stderrTail = ''
   private disposed = false
@@ -349,6 +366,7 @@ export class ChatGptAppServerClient {
     this.activeLogin = null
     this.failAll(new ChatGptUnavailableError('ChatGPT service stopped'))
     this.allowedToolsByThread.clear()
+    this.contextBytesByThread.clear()
     this.lines?.close()
     this.lines = null
     this.initialized = false
@@ -505,6 +523,11 @@ export class ChatGptAppServerClient {
       description: tool.description,
       inputSchema: tool.inputSchema,
     }))
+    const contextBytes = Buffer.byteLength(
+      input.system + RESTRICTED_BASE_INSTRUCTIONS + JSON.stringify(dynamicTools),
+      'utf8',
+    )
+    if (contextBytes > EDITOR_AGENT_MAX_CONTEXT_BYTES) throw chatGptContextBudgetError()
     const result = await this.request<JsonRecord>('thread/start', {
       ...(input.model ? { model: input.model } : {}),
       modelProvider: 'openai',
@@ -527,6 +550,7 @@ export class ChatGptAppServerClient {
       throw new Error('ChatGPT app-server returned an invalid thread')
     }
     this.allowedToolsByThread.set(thread.id, new Set(input.tools.map((tool) => tool.name)))
+    this.contextBytesByThread.set(thread.id, contextBytes)
     return {
       threadId: thread.id,
       ...(typeof result.model === 'string' ? { model: result.model } : {}),
@@ -539,6 +563,14 @@ export class ChatGptAppServerClient {
     callbacks: ChatGptTurnCallbacks,
   ): Promise<ChatGptTurnResult> {
     if (this.activeTurns.has(threadId)) throw new Error('A ChatGPT turn is already active')
+    const contextBytes =
+      (this.contextBytesByThread.get(threadId) ?? 0) +
+      Buffer.byteLength(JSON.stringify(input), 'utf8')
+    if (contextBytes > EDITOR_AGENT_MAX_CONTEXT_BYTES) {
+      this.allowedToolsByThread.delete(threadId)
+      this.contextBytesByThread.delete(threadId)
+      throw chatGptContextBudgetError()
+    }
     await this.start()
     return new Promise<ChatGptTurnResult>((resolve, reject) => {
       const turn: ActiveTurn = {
@@ -548,6 +580,7 @@ export class ChatGptAppServerClient {
         reject,
         settled: false,
         pendingToolRpcIds: new Set(),
+        contextBytes,
       }
       this.activeTurns.set(threadId, turn)
       this.touchTurn(turn)
@@ -748,6 +781,7 @@ export class ChatGptAppServerClient {
       return
     }
     if (method === 'item/agentMessage/delta' && typeof params.delta === 'string') {
+      turn.contextBytes += Buffer.byteLength(params.delta, 'utf8')
       turn.callbacks.onDelta(params.delta)
       return
     }
@@ -836,6 +870,18 @@ export class ChatGptAppServerClient {
         this.sendDynamicToolResult(id, 'The host returned a mismatched tool result.', true)
         return
       }
+      const additionalBytes = Buffer.byteLength(JSON.stringify(call) + result.output, 'utf8')
+      if (turn.contextBytes + additionalBytes > EDITOR_AGENT_MAX_CONTEXT_BYTES) {
+        const error = chatGptContextBudgetError()
+        // Reply to the pending tool before interrupting so the runtime never
+        // waits forever for the oversized result that was intentionally withheld.
+        this.sendDynamicToolResult(id, error.message, true)
+        const turnId = turn.turnId ?? params.turnId
+        this.settleTurn(turn, error)
+        void this.interruptTurn(threadId, turnId).catch(() => {})
+        return
+      }
+      turn.contextBytes += additionalBytes
       this.sendDynamicToolResult(id, result.output, result.isError === true)
     } catch (error) {
       if (!turn.pendingToolRpcIds.delete(id)) return
@@ -874,6 +920,7 @@ export class ChatGptAppServerClient {
     turn.removeAbort?.()
     this.activeTurns.delete(turn.threadId)
     this.allowedToolsByThread.delete(turn.threadId)
+    this.contextBytesByThread.delete(turn.threadId)
     for (const id of turn.pendingToolRpcIds) this.toolRequestOwners.delete(id)
     turn.pendingToolRpcIds.clear()
     if (error) turn.reject(error)
@@ -964,6 +1011,7 @@ export class ChatGptAppServerClient {
     this.pending.clear()
     for (const turn of this.activeTurns.values()) this.settleTurn(turn, error)
     this.allowedToolsByThread.clear()
+    this.contextBytesByThread.clear()
   }
 
   private emit(event: ChatGptAppServerEvent): void {

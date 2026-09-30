@@ -105,6 +105,15 @@
   color: var(--text-primary);
 }
 
+.set-nav-dot {
+  flex-shrink: 0;
+  width: 7px;
+  height: 7px;
+  margin-left: auto;
+  border-radius: 50%;
+  background: var(--danger);
+}
+
 .set-pane {
   flex: 1;
   min-width: 0;
@@ -112,6 +121,15 @@
   flex-direction: column;
   padding: 20px 24px;
   overflow-y: auto;
+  /* height of the sticky title row, so focus/scroll-into-view lands below it */
+  scroll-padding-top: 49px;
+}
+
+/* the pane scrolls, so rows must keep their natural height: .set-field's
+   explicit min-height would otherwise let flex shrink collapse tall rows
+   (multi-line stacks) below their content and overlap the next row */
+.set-pane > * {
+  flex-shrink: 0;
 }
 
 .set-pane-title {
@@ -170,6 +188,39 @@
   color: var(--text-secondary);
   font-size: 11px;
   line-height: 1.35;
+}
+
+/* title row pinned to the top of the scrolling pane so the test/save actions
+   and their result pill stay in view however long the form is */
+.set-pane-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin: 0 -28px 12px;
+  padding: 8px 28px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--surface);
+}
+
+.set-pane-head .set-pane-title {
+  flex-shrink: 0;
+  margin: 0;
+}
+
+.set-pane-actions {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.set-pane-actions .set-ai-status {
+  margin-right: 0;
 }
 
 .set-field {

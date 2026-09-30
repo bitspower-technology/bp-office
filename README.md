@@ -4,7 +4,7 @@
 
 NiuOffice is a free, open-source desktop office suite with local-first editing
 and optional AI assistance. It works with Word (`.docx`), Excel (`.xlsx`,
-`.xlsm`, `.xls`, `.csv`), PDF, and Markdown files and keeps those editors
+`.xlsm`, `.xls`, `.csv`, `.tsv`), PDF, Markdown, and HTML files and keeps those editors
 together in one tabbed application.
 
 > **OEM branch:** this branch is the source-only distributor template. It
@@ -31,11 +31,13 @@ together in one tabbed application.
 - Fully local PDF-to-Word and PDF-to-Excel conversion. PDF-to-PowerPoint is not
   included.
 - Plain Markdown editing with local Markdown-to-Word export.
+- HTML source editing, live preview, and local export.
 - Explorer drag-and-drop opens compatible files in new tabs and reuses an
   existing tab when the file is already open.
 - Light, dark, and system themes.
 - No Slides editor, Genspark account/cloud integration, network AI Search, or
-  usage telemetry.
+  usage telemetry. External MCP, command-line automation, and headless servers
+  are not included.
 
 ## Editions and maintained branches
 
@@ -43,8 +45,8 @@ NiuOffice has two maintained release tracks:
 
 - [`main`](https://github.com/Niuulh/NiuOffice/tree/main) is the personal
   edition. It includes OpenAI Endpoint and the optional ChatGPT subscription
-  connection. Tagged `main` releases publish the Windows installer and
-  portable executable.
+  connection. Tagged `main` releases publish Windows installer/portable builds
+  and Linux AppImage/RPM packages.
 - [`OEM`](https://github.com/Niuulh/NiuOffice/tree/OEM) is the distributable
   source edition. It exposes only OpenAI Endpoint and contains an OEM
   rebranding/update configuration guide. NiuOffice does not publish binaries
@@ -75,9 +77,9 @@ The status row in the bottom-left corner reports whether OpenAI Endpoint is
 connected, has no models, requires authentication, or is unreachable. ChatGPT
 subscription selection, OAuth IPC, and the Codex runtime are disabled and not
 packaged in this edition. NiuOffice permits up to 200 tool turns per run,
-restores up to 512 messages, and maintains a 1 MiB conversation budget
-(approximately 256K tokens) with compaction retaining the newest 384 KiB. The
-selected endpoint model's own context limit still applies.
+restores up to 512 messages, and caps estimated input context at 130,000 tokens
+(520,000 UTF-8 bytes, including instructions and tool schemas). The selected
+endpoint model's own context limit still applies.
 
 NiuOffice has no network search tool. Ordinary Ctrl+F, PDF/document search,
 Sheets find/replace, workbook inspection, and the local agent `search_text`
@@ -97,6 +99,8 @@ update feed is configured:
 | ----------------------- | ---------------------------------- |
 | Windows installer (x64) | `NiuOffice-Setup-<version>.exe`    |
 | Windows portable (x64)  | `NiuOffice-Portable-<version>.exe` |
+| Linux AppImage (x64)    | `NiuOffice-<version>-x64.AppImage` |
+| Fedora/RHEL RPM (x64)   | `niuoffice-<version>.x86_64.rpm`   |
 | Complete source archive | `NiuOffice-<version>-source.zip`   |
 | Update metadata         | `latest.yml`                       |
 | SHA-256 checksums       | `SHA256SUMS.txt`                   |
@@ -108,8 +112,10 @@ Installed personal-edition builds check the configured public GitHub Releases fe
 offer newer installer releases in the app. Releases are repository-wide, so
 the release workflow accepts only a tag whose commit is the current `main`
 commit. The feed and its assets must be readable without authentication; an
-access token is never embedded in NiuOffice. A private source repository must
-therefore publish updater assets in a separate public update repository.
+access token is never embedded in NiuOffice. The current release workflow
+requires the configured feed repository to be the same public repository as
+the source. Using a separate public asset repository requires an explicit
+workflow adaptation before building; do not merely change the URL afterward.
 
 Portable builds are deliberately manual-update-only. The existing
 `0.8.667-niu.3` installer also predates the updater feed metadata, so it cannot
@@ -124,6 +130,7 @@ manually once to enter the automatic-update track.
 | `apps/sheets`   | NiuOffice Sheets   | `.xlsx`, `.xlsm`, `.xls`, `.csv` |
 | `apps/pdf`      | NiuOffice PDF      | `.pdf`                           |
 | `apps/markdown` | NiuOffice Markdown | `.md`, `.markdown`               |
+| `apps/html`     | NiuOffice HTML     | `.html`, `.htm`                  |
 | `apps/shell`    | NiuOffice          | Tabbed desktop shell             |
 
 Standalone upstream Slides source and presentation-engine packages may remain
@@ -133,8 +140,8 @@ or packaged.
 
 ## Development
 
-NiuOffice is based on GenOffice v0.8.970
-(`93b8938c456eb1194ad8dc505ec5d1398f4e5654`) and preserves the internal
+NiuOffice is based on GenOffice v0.10.1467
+(`dfe2a6d954f7c6486ad08f09727cae91f175ff7a`) and preserves the internal
 `@genoffice/*` workspace names, `com.genoffice.app` bundle identifier, and
 `GenOffice` user-data directory for compatibility.
 
@@ -145,6 +152,9 @@ npm run typecheck
 npm run build:all
 npm run dist:win
 ```
+
+See [BUILD_RELEASE.md](BUILD_RELEASE.md) for Windows and Fedora builds,
+source delivery, package verification, and update-feed requirements.
 
 The Sheets application also needs a Rust toolchain (`cargo` on `PATH`) to
 build its native xlsx sidecar.

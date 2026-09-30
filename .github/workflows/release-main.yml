@@ -1,4 +1,4 @@
-name: Release main (Windows)
+name: Release main (Windows and Linux)
 
 # Binary releases belong exclusively to the main edition. The OEM branch is
 # source-only and cannot reach this workflow because every release is tied to
@@ -18,11 +18,17 @@ permissions:
   contents: write
 
 concurrency:
-  group: release-main-windows
+  group: release-main
   cancel-in-progress: false
 
 jobs:
+  linux:
+    uses: ./.github/workflows/build-packages.yml
+    with:
+      source_ref: ${{ inputs.release_tag || github.ref }}
+      linux_only: true
   release:
+    needs: linux
     runs-on: windows-2022
     timeout-minutes: 90
     steps:
@@ -165,6 +171,21 @@ jobs:
           npm run dist:win
           if ($LASTEXITCODE -ne 0) { throw 'Windows packaging failed.' }
 
+      - name: Audit packaged Windows resources and product boundaries
+        if: steps.preflight.outputs.action == 'upload'
+        shell: pwsh
+        run: |
+          node tools/audit-release.mjs apps/shell/release
+          if ($LASTEXITCODE -ne 0) { throw 'Windows packaged-product audit failed.' }
+
+      - name: Download validated Linux packages
+        if: steps.preflight.outputs.action == 'upload'
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          pattern: NiuOffice-linux-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/niuoffice-linux-release
+
       - name: Verify updater metadata and assemble release assets
         if: steps.preflight.outputs.action == 'upload'
         id: assets
@@ -196,7 +217,8 @@ jobs:
           if ($feed -notmatch "(?m)^version:\s*$escapedVersion\s*$") {
             throw "latest.yml does not declare version $env:RELEASE_VERSION."
           }
-          if ($feed -notmatch "(?m)^\s*(?:-\s+url|path):\s*['`\"]?$escapedSetup['`\"]?\s*$") {
+          $setupReferencePattern = '(?m)^\s*(?:-\s+url|path):\s*[''"]?{0}[''"]?\s*$' -f $escapedSetup
+          if ($feed -notmatch $setupReferencePattern) {
             throw "latest.yml does not reference the exact setup artifact $setupName."
           }
           if ($feed -match $escapedPortable) {
@@ -237,6 +259,37 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) {
             throw 'Unable to create the source archive from the release tag.'
           }
+
+          $linuxAssets = Join-Path $env:RUNNER_TEMP 'niuoffice-linux-release'
+          $linuxBuildPath = Join-Path $linuxAssets 'BUILD-linux.txt'
+          if (-not (Test-Path -LiteralPath $linuxBuildPath -PathType Leaf)) {
+            throw 'Validated Linux build provenance is missing.'
+          }
+          $releaseCommit = (git rev-parse 'HEAD^{commit}').Trim()
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to resolve the Windows build commit.' }
+          $tagCommit = (git rev-parse "$env:RELEASE_TAG^{commit}").Trim()
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to resolve the release tag commit.' }
+          if ($releaseCommit -cne $tagCommit) {
+            throw 'The Windows checkout no longer matches the release tag.'
+          }
+          $linuxBuild = Get-Content -LiteralPath $linuxBuildPath
+          $expectedLinuxFields = @{
+            Product = $env:ARTIFACT_SLUG
+            Version = $env:RELEASE_VERSION
+            Commit = $releaseCommit
+            Platform = 'linux'
+          }
+          foreach ($field in $expectedLinuxFields.GetEnumerator()) {
+            $fieldPrefix = "$($field.Key): "
+            $lines = @($linuxBuild | Where-Object { $_.StartsWith($fieldPrefix, [StringComparison]::Ordinal) })
+            if ($lines.Count -ne 1 -or $lines[0] -cne "$fieldPrefix$($field.Value)") {
+              throw "Linux build $($field.Key) does not match this exact Windows release checkout."
+            }
+          }
+          $appImages = @(Get-ChildItem -LiteralPath $linuxAssets -File -Filter '*.AppImage')
+          if ($appImages.Count -ne 1) { throw 'Expected exactly one validated Linux AppImage.' }
+          Get-ChildItem -LiteralPath $linuxAssets -File | Where-Object { $_.Name -notmatch '^SHA256SUMS|source\.zip$' } |
+            ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $assetDirectory }
 
           $hashLines = Get-ChildItem -LiteralPath $assetDirectory -File |
             Sort-Object Name |
@@ -305,10 +358,11 @@ jobs:
 
           $notesPath = Join-Path $env:RUNNER_TEMP 'NiuOffice-release-notes.md'
           @"
-          NiuOffice $env:RELEASE_VERSION for Windows.
+          NiuOffice $env:RELEASE_VERSION for Windows and Linux.
 
           - Setup executable with automatic updates from this public GitHub release feed
           - Portable executable (manual updates only)
+          - Linux x64 AppImage and Fedora/RHEL RPM
           - Complete tagged source archive
           - SHA-256 checksums for every uploaded asset
 

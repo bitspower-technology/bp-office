@@ -1,14 +1,19 @@
 import type { AgentMessage, AgentToolCall, AgentToolDef } from '@genoffice/agent-core'
 import { aiFetch } from '../fetch'
 import { httpBodyDetail } from '../http-error'
+import { opencodeSessionHeaders } from '../providers'
 import { modelEchoesReasoning } from '../registry'
 import type { AiChatResponse, AiProviderConfig } from '../types'
 import { createStreamWatchdog, type StreamWatchdog } from '../watchdog'
 import {
+  endpointUrl,
   jsonBodyInsteadOfSse,
   parseToolInput,
+  readCappedResponseText,
   sseErrorText,
   sseLines,
+  throwIfToolCountOverBudget,
+  throwIfToolJsonOverBudget,
   type StreamCallbacks,
 } from './shared'
 
@@ -82,7 +87,10 @@ function emitOpenAiJsonMessage(bodyText: string, cb: StreamCallbacks): void {
   if (msg.error) throw new Error(sseErrorText(msg.error, 'Model error'))
   const choice = msg.choices?.[0]
   let emitted = false
-  if (choice?.message?.reasoning_content) cb.onReasoningDelta?.(choice.message.reasoning_content)
+  if (choice?.message?.reasoning_content) {
+    emitted = true
+    cb.onReasoningDelta?.(choice.message.reasoning_content)
+  }
   if (choice?.message?.content) {
     emitted = true
     cb.onDelta(choice.message.content)
@@ -147,12 +155,13 @@ async function openAiCompatibleTurn(
     wd.touch()
     cb.onActivity?.()
   }
-  const response = await aiFetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
+  const response = await aiFetch(endpointUrl(baseUrl, 'chat/completions'), {
     method: 'POST',
     signal: wd.signal,
     headers: {
       'Content-Type': 'application/json',
       ...(config.apiKey?.trim() ? { Authorization: `Bearer ${config.apiKey.trim()}` } : {}),
+      ...opencodeSessionHeaders(baseUrl, cb.sessionId),
     },
     body: JSON.stringify({
       model: config.model,
@@ -176,9 +185,11 @@ async function openAiCompatibleTurn(
   // headers arrived: ping the renderer watchdog too, or a slow first chunk could trip it
   onBytes()
   if (!response.ok || !response.body) {
-    throw new Error(`HTTP ${response.status}: ${httpBodyDetail(await response.text())}`)
+    throw new Error(
+      `HTTP ${response.status}: ${httpBodyDetail(await readCappedResponseText(response, onBytes))}`,
+    )
   }
-  const jsonBody = await jsonBodyInsteadOfSse(response)
+  const jsonBody = await jsonBodyInsteadOfSse(response, onBytes)
   if (jsonBody !== null) {
     return emitOpenAiJsonMessage(jsonBody, cb)
   }
@@ -187,6 +198,7 @@ async function openAiCompatibleTurn(
   let stopReason: string | undefined
   let abnormalFinish: string | undefined
   let sawFinish = false
+  let sawDone = false
   let emitted = false
   const flushTools = () => {
     const entries = [...pendingTools.entries()].sort(([a], [b]) => a - b)
@@ -211,7 +223,10 @@ async function openAiCompatibleTurn(
     if (!line.startsWith('data:')) continue
     const payload = line.slice(5).trim()
     if (!payload) continue
-    if (payload === '[DONE]') break
+    if (payload === '[DONE]') {
+      sawDone = true
+      break
+    }
     // A truncated frame or a non-JSON keep-alive from a proxy should skip
     // that event, not kill the entire AI turn with a parser error.
     let event
@@ -240,12 +255,18 @@ async function openAiCompatibleTurn(
     const choice = event.choices?.[0]
     if (!choice) continue
     const reasoning = choice.delta?.reasoning_content ?? choice.delta?.reasoning
-    if (typeof reasoning === 'string' && reasoning) cb.onReasoningDelta?.(reasoning)
+    if (typeof reasoning === 'string' && reasoning) {
+      emitted = true
+      cb.onReasoningDelta?.(reasoning)
+    }
     if (choice.delta?.content) {
       emitted = true
       cb.onDelta(choice.delta.content)
     }
     for (const tc of choice.delta?.tool_calls ?? []) {
+      if (!pendingTools.has(tc.index)) {
+        throwIfToolCountOverBudget(pendingTools.size + 1, 'openai-compatible')
+      }
       const pending = pendingTools.get(tc.index) ?? {
         id: tc.id ?? crypto.randomUUID(),
         name: '',
@@ -262,7 +283,10 @@ async function openAiCompatibleTurn(
           ? tc.function.name
           : pending.name + tc.function.name
       }
-      if (tc.function?.arguments) pending.json += tc.function.arguments
+      if (tc.function?.arguments) {
+        pending.json += tc.function.arguments
+        throwIfToolJsonOverBudget(pending.json.length, 'openai-compatible')
+      }
       pendingTools.set(tc.index, pending)
     }
     if (choice.finish_reason) {
@@ -274,7 +298,21 @@ async function openAiCompatibleTurn(
       flushTools()
     }
   }
+  // No finish and no [DONE] with half-received arguments: the connection dropped
+  if (!sawFinish && !sawDone) {
+    const broken = [...pendingTools.values()].filter((p) => p.name && parseToolInput(p.json).error)
+    if (broken.length > 0) {
+      const received = broken.reduce((n, p) => n + p.json.length, 0)
+      throw new Error(
+        `The model stream closed while sending tool arguments (${received} chars received); the connection was dropped. ` +
+          'If this recurs on a large request (e.g. generating a whole document), ask for the output in several smaller parts.',
+      )
+    }
+  }
   flushTools()
+  if (!sawFinish && !sawDone && emitted) {
+    throw new Error('The model stream ended before a finish_reason or [DONE] marker')
+  }
   // e.g. finish_reason=content_filter with no output, or a stream with no
   // message framing at all (gateway soft-failure) — surface both instead of an
   // empty success; a genuine empty turn still carries finish_reason=stop
@@ -295,12 +333,13 @@ export async function chatOpenAiCompatible(
   user: string,
   options: OpenAiRequestOptions = {},
 ): Promise<AiChatResponse> {
-  const response = await aiFetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
+  const response = await aiFetch(endpointUrl(baseUrl, 'chat/completions'), {
     method: 'POST',
     signal: wd.signal,
     headers: {
       'Content-Type': 'application/json',
       ...(config.apiKey?.trim() ? { Authorization: `Bearer ${config.apiKey.trim()}` } : {}),
+      ...opencodeSessionHeaders(baseUrl),
     },
     body: JSON.stringify({
       model: config.model,
@@ -314,9 +353,24 @@ export async function chatOpenAiCompatible(
   })
   wd.touch()
   if (!response.ok) {
-    return { ok: false, error: `HTTP ${response.status}: ${httpBodyDetail(await response.text())}` }
+    return {
+      ok: false,
+      error: `HTTP ${response.status}: ${httpBodyDetail(await readCappedResponseText(response, () => wd.touch()))}`,
+    }
   }
-  const json = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> }
+  // A 200 with an HTML shell / empty / truncated body (gateway soft-failure)
+  // would make response.json() throw; return ok:false instead of leaking a
+  // raw SyntaxError to the caller.
+  const bodyText = await readCappedResponseText(response, () => wd.touch())
+  let json: { choices?: Array<{ message?: { content?: string } }> }
+  try {
+    json = JSON.parse(bodyText) as { choices?: Array<{ message?: { content?: string } }> }
+  } catch {
+    return {
+      ok: false,
+      error: `AI returned a non-JSON response: ${httpBodyDetail(bodyText)}`,
+    }
+  }
   const content = json.choices?.[0]?.message?.content
   if (!content) return { ok: false, error: 'AI returned an empty response' }
   return { ok: true, content }

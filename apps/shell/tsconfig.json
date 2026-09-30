@@ -18,6 +18,7 @@
     "electron.vite.config.ts",
     "src/**/*.ts",
     "src/**/*.tsx",
-    "../../packages/pdf2docx/src/bidi-js.d.ts"
+    "../../packages/pdf2docx/src/bidi-js.d.ts",
+    "../../packages/html2docx/src/raw.d.ts"
   ]
 }

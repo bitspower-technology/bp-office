@@ -1,22 +1,23 @@
 {
   "name": "@genoffice/shell",
   "productName": "NiuOffice",
-  "version": "0.8.970-niu.1",
+  "version": "0.10.1467-niu.1",
   "license": "Apache-2.0",
   "homepage": "https://github.com/Niuulh/NiuOffice",
   "private": true,
-  "description": "Unified NiuOffice shell hosting the Docs, Sheets, PDF, and Markdown editors",
+  "description": "Unified NiuOffice shell hosting Docs, Sheets, PDF, Markdown, and HTML editors",
   "main": "out/main/index.js",
   "desktopName": "genoffice.desktop",
   "scripts": {
     "dev": "electron-vite dev --watch",
     "build": "electron-vite build",
+    "notices": "node ../../tools/gen-third-party-notices.mjs",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "start": "electron-vite build && electron .",
-    "dist:mac": "electron-vite build && electron-builder --mac",
-    "dist:win": "electron-vite build && electron-builder --win",
-    "dist:linux": "electron-vite build && electron-builder --linux"
+    "dist:mac": "npm run notices && electron-vite build && electron-builder --mac",
+    "dist:win": "npm run notices && electron-vite build && electron-builder --win",
+    "dist:linux": "npm run notices && electron-vite build && electron-builder --linux"
   },
   "devDependencies": {
     "@genoffice/agent-core": "*",
@@ -27,6 +28,7 @@
     "@genoffice/i18n": "*",
     "@genoffice/sheets": "*",
     "@genoffice/ui": "*",
+    "@genoffice/xlsx-gateway": "*",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.0.4",
@@ -39,7 +41,8 @@
     "react-dom": "^19.2.4",
     "typescript": "^5.9.3",
     "vite": "^7.3.1",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.11",
+    "@genoffice/html": "*"
   },
   "author": "NiuOffice"
 }

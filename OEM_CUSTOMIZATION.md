@@ -1,5 +1,10 @@
 # OEM rebranding and update setup runbook
 
+Baseline: NiuOffice **0.10.1467-niu.1, OEM edition**, adapted from GenOffice
+v0.10.1467. Confirm the checked-out version and commit before editing. Main
+and OEM share this maintenance version; the edition/provider policy differs.
+A distributor chooses its own version/tag namespace before its first release.
+
 This document is an execution contract for an AI coding agent adapting the
 `OEM` branch for one distributor. Read the current repository before editing,
 make evidence-based changes, and stop if a required input is missing. Never
@@ -28,13 +33,25 @@ The finished OEM product must satisfy all of these conditions:
 - No API key, signing credential, repository token, or authenticated URL is
   committed, built into an executable, printed in CI output, or copied into a
   release note.
-- Slides, Genspark cloud integration, AI Search, and telemetry stay absent from
-  the shipped product.
+- Slides, Genspark cloud integration, network AI Search, telemetry, MCP,
+  headless/control servers, CLI bridges, and their setup UI/resources stay
+  absent from the shipped product. Local Find, workbook inspection, Home
+  local-file indexing, and ordinary editor tools remain available.
+- Ship exactly Docs, Sheets, PDF, Markdown, and the new HTML editor, with
+  required local export/preview functionality. HTML previewing is not a reason
+  to restore a headless server or external control listener.
+- The unsolicited “Enjoying NiuOffice / Star NiuOffice” invitation is removed.
+  Do not restore its UI, eligibility tracking, startup/upgrade scheduling, or
+  IPC. Ordinary user-requested Help/repository links remain available. Old
+  prompt settings are ignored, not destructively deleted from user profiles.
+- Preserve the estimated 130K-token context budget, 200 model/tool turns per
+  run, 512-message restoration, and old-history compaction. See the context
+  section below; these are not guarantees about a server model's tokenizer.
 - The independent application identity and user-data directory are chosen
   before the first release and are not changed afterward.
 - Installed builds update only from an anonymously readable public release
-  feed controlled by the distributor. Portable builds remain manual-update
-  only.
+  feed controlled by the distributor. Windows Setup and Linux AppImage may
+  auto-update; Windows Portable and Fedora RPM remain manual-update only.
 - Apache-2.0 attribution, `LICENSE`, `NOTICE`, third-party notices, font
   licenses, and historical legal attribution are preserved.
 
@@ -46,26 +63,26 @@ the conflict instead of weakening the invariant.
 Obtain and record the following values before changing source. Placeholders
 are not acceptable in a release commit.
 
-| Input                           | Requirement                                                                                       |
-| ------------------------------- | ------------------------------------------------------------------------------------------------- |
-| Product name                    | Exact user-facing desktop application name.                                                       |
-| AI name                         | Exact user-facing assistant name, normally `<Product> AI`.                                        |
-| Vendor/publisher                | Legal distributor or contributor name shown in package metadata.                                  |
-| Application ID                  | A vendor-owned, unique, reverse-DNS ID such as `com.example.product`.                             |
-| Artifact slug                   | URL-safe filename prefix matching `[A-Za-z0-9][A-Za-z0-9._-]*`; no spaces.                        |
-| Executable name                 | Stable, filesystem-safe executable basename, preferably lowercase.                                |
-| Desktop name                    | Stable Linux desktop ID, normally `<executable>.desktop`.                                         |
-| User-data directory             | Unique production directory under the OS application-data root.                                   |
-| Development user-data directory | Separate unique directory for development builds.                                                 |
-| Source repository               | Distributor-owned source fork URL.                                                                |
-| Public update repository        | GitHub owner/name whose Releases and assets are public without authentication.                    |
-| Release branch                  | Branch whose exact tip is allowed to produce client binaries.                                     |
-| Version and tag policy          | Valid SemVer plus an exact matching tag, for example `1.0.0-oem.1` and `v1.0.0-oem.1`.            |
-| Default endpoint URL            | OpenAI-compatible HTTP(S) base, normally ending in `/v1`; hosted services must use HTTPS.         |
-| API-key provisioning policy     | How each client receives and enters its unique key; do not request the key value for source work. |
-| Logo source                     | Trusted SVG/vector source, wordmark, palette, background treatment, and safe-zone rules.          |
-| Support/security URLs           | Public support, security-reporting, privacy, and community links.                                 |
-| Signing policy                  | Windows certificate owner and CI secret names, or an explicit unsigned-build decision.            |
+| Input                           | Requirement                                                                                         |
+| ------------------------------- | --------------------------------------------------------------------------------------------------- |
+| Product name                    | Exact user-facing desktop application name.                                                         |
+| AI name                         | Exact user-facing assistant name, normally `<Product> AI`.                                          |
+| Vendor/publisher                | Legal distributor or contributor name shown in package metadata.                                    |
+| Application ID                  | A vendor-owned, unique, reverse-DNS ID such as `com.example.product`.                               |
+| Artifact slug                   | URL-safe filename prefix matching `[A-Za-z0-9][A-Za-z0-9._-]*`; no spaces.                          |
+| Executable name                 | Stable, filesystem-safe executable basename, preferably lowercase.                                  |
+| Desktop name                    | Stable Linux desktop ID, normally `<executable>.desktop`.                                           |
+| User-data directory             | Unique production directory under the OS application-data root.                                     |
+| Development user-data directory | Separate unique directory for development builds.                                                   |
+| Source repository               | Distributor-owned public source/release repository URL.                                             |
+| Public update repository        | Same GitHub owner/name as the source/workflow repository; releases and assets anonymously readable. |
+| Release branch                  | Branch whose exact tip is allowed to produce client binaries.                                       |
+| Version and tag policy          | Valid SemVer plus an exact matching tag, for example `1.0.0-oem.1` and `v1.0.0-oem.1`.              |
+| Default endpoint URL            | OpenAI-compatible HTTP(S) base, normally ending in `/v1`; hosted services must use HTTPS.           |
+| API-key provisioning policy     | How each client receives and enters its unique key; do not request the key value for source work.   |
+| Logo source                     | Trusted SVG/vector source, wordmark, palette, background treatment, and safe-zone rules.            |
+| Support/security URLs           | Public support, security-reporting, privacy, and community links.                                   |
+| Signing policy                  | Windows certificate owner and CI secret names, or an explicit unsigned-build decision.              |
 
 The current settings implementation writes the endpoint key to
 `<userData>/ai-settings.json`. Do not describe this as encrypted storage. If
@@ -149,9 +166,23 @@ the user-facing package metadata separately:
   root version and internal workspace naming unless a concrete build reason
   requires changing them.
 - User-facing metadata in `apps/docs/package.json`, `apps/sheets/package.json`,
-  `apps/pdf/package.json`, and `apps/markdown/package.json` when applicable.
+  `apps/pdf/package.json`, `apps/markdown/package.json`, and
+  `apps/html/package.json` when applicable.
+- Synchronize `apps/shell/package.json.desktopName` with
+  `branding/product.json.desktopName`; central JSON does not rewrite the
+  source manifest automatically.
+- For an independent distributor's first release, explicitly change the
+  historical `deb.packageName` and `rpm.packageName` literals (`genoffice`) in
+  `apps/shell/electron-builder.cjs` to the approved stable lowercase Linux
+  package name. The defaults intentionally preserve NiuOffice's upgrade
+  identity and must not be changed on the upstream main/OEM maintenance
+  branches. Keep the client package name, executable basename, desktop ID,
+  install directory, and GNOME/KDE identity consistent. Verify built metadata,
+  not only filenames. This exception does not rename `@genoffice/*` packages.
 - `packages/electron-utils/src/github-menu.ts`, whose star/repository URL is
   currently a literal.
+- The shared About menu uses `branding/product.json.productName`; inspect its
+  localized labels, dialog and copy-to-clipboard text during visual QA.
 - `README.md`, `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, privacy
   text, support links, badges, and download examples.
 - Tests that deliberately assert product identity, artifact names, or URLs.
@@ -178,8 +209,10 @@ merging or rebranding:
   before one-shot or streaming execution.
 - `packages/ai-provider/src/protocols/openai-compatible.ts` places a configured
   key in the actual `/chat/completions` request headers.
-- Docs and Sheets main-process request handlers constrain renderer-supplied
-  settings again instead of trusting the renderer.
+- Every editor request path, including HTML, must apply the OEM edition
+  policy in the main-process/shared provider layer. Renderer-supplied settings
+  are untrusted. Preserve direct Docs/Sheets IPC guards and shared execution
+  guards used by PDF, Markdown, and HTML.
 - `apps/shell/src/main/index.ts`, `AiProviderPane.tsx`, and
   `packages/ai-provider/src/product-edition.ts` keep ChatGPT UI/IPC/runtime
   unavailable when the feature flag is false.
@@ -206,6 +239,24 @@ The application must not include a vendor-wide fallback key. Rotate or revoke
 keys at the endpoint service, not by publishing a new executable containing a
 replacement secret.
 
+## Context and tool limits
+
+`packages/agent-core/src/loop.ts` exports
+`EDITOR_AGENT_MAX_CONTEXT_TOKENS = 130_000`, the corresponding 520,000-byte
+budget, and `EDITOR_AGENT_MAX_TURNS = 200`. The estimator approximates four
+UTF-8 bytes per token, not the endpoint model's actual tokenizer. System
+instructions, history, tool definitions/results, and input must fit the
+outbound guard. A server may enforce a smaller real window or reserve output
+space; retain actionable errors instead of promising universal 130K support.
+
+Compaction retains up to the newest 384 KiB at a conversation boundary when
+history reaches its budget. Restoration is capped at 512 messages. Preserve
+the shared provider request guard and agent guard so direct chat, streaming,
+vision, and editor-tool rounds cannot bypass the cap. Keep 200-turn
+enforcement; do not describe it as unlimited calls or a billing allowance.
+Run budget/compaction/oversized-input/tool-result/restoration/turn-limit tests
+after changing providers or prompts.
+
 ## Replace the visual brand
 
 The current visual system is partly generated and partly hardcoded. Replacing
@@ -224,7 +275,7 @@ one SVG file is insufficient.
   correct `<title>`/ARIA relationship.
 - `packages/ui/src/icons.tsx`, function `NiuOfficeMark`, independently
   hardcodes the mark paths, gradients, view box, and ARIA label used by Docs,
-  Sheets, PDF, and Markdown AI surfaces. It must render the client mark. The
+  Sheets, PDF, Markdown, and HTML AI surfaces. It must render the client mark. The
   internal exported function name may remain `NiuOfficeMark`; renaming it is
   optional churn, not a branding requirement.
 - `apps/shell/src/renderer/src/assets/niuoffice-logo.svg` is the Home wordmark
@@ -266,21 +317,22 @@ The small blue **W** shown beside a document title in the shell tab strip is
 not the application logo and is not produced by
 `generate-brand-assets.py`. It is the inline `DocIcon` React component in
 `apps/shell/src/renderer/src/TabBar.tsx`. Rebranding only the application mark
-will therefore leave this icon unchanged. Audit all four shipped document
+will therefore leave this icon unchanged. Audit all five shipped document
 kinds as a single icon family:
 
 - `DocIcon` is used by `KIND_ICON.docs`.
 - `SheetIcon` is used by `KIND_ICON.sheets`.
 - `PdfIcon` is used by `KIND_ICON.pdf`.
 - `MarkdownIcon` is used by `KIND_ICON.markdown`.
+- `HtmlIcon` is used by `KIND_ICON.html` (the teal angle-bracket icon).
 
 Each component currently contains its own hardcoded SVG `viewBox`, paths,
 fills, background color, and explicit `width="16" height="16"`. Replace those
 values with the approved client document-kind artwork; changing
 `NiuOfficeMark`, `app-icon.png`, or the Home lockup does not affect them. Keep
-the icons decorative with `aria-hidden="true"`, preserve all four `KIND_ICON`
+the icons decorative with `aria-hidden="true"`, preserve all five `KIND_ICON`
 mappings, and do not add `SlideIcon` or a `slides` mapping. `HomeIcon` is a
-separate navigation glyph and is not one of the four document-kind marks.
+separate navigation glyph and is not one of the five document-kind marks.
 
 The wrapper is `.tab-icon` in
 `apps/shell/src/renderer/src/tabbar.css`. It currently supplies flex layout,
@@ -297,26 +349,29 @@ complete rebrand must update all of them:
 1. **Home quick-create and recent-file tiles.** Replace the self-contained
    SVG artwork in
    `apps/shell/src/renderer/src/assets/file-docx.svg`,
-   `file-xlsx.svg`, `file-pdf.svg`, and `file-md.svg`. `Home.tsx` imports these
-   files and maps them through `FILE_ICONS`; `markdown` deliberately reuses
-   `file-md.svg`. Preserve a square view box, transparent background where
+   `file-xlsx.svg`, `file-pdf.svg`, `file-md.svg`, and `file-html.svg`.
+   `Home.tsx` maps these through `FILE_ICONS`; `markdown` reuses `file-md.svg`
+   and `htm` reuses `file-html.svg`. Inspect XLS/CSV/TSV fallback tiles when
+   defining the complete spreadsheet family. Preserve a square view box, transparent background where
    intended, and SVG safety rules (no scripts, `foreignObject`, remote
    references, or imported executable content).
-2. **Native tab/overflow menus.** Replace the four 1x/2x pairs under
+2. **Native tab/overflow menus.** Replace the five 1x/2x pairs under
    `apps/shell/src/main/assets`: `menu-docx.png` plus
    `menu-docx@2x.png`, `menu-xlsx.png` plus `menu-xlsx@2x.png`,
-   `menu-pdf.png` plus `menu-pdf@2x.png`, and `menu-md.png` plus
-   `menu-md@2x.png`. They must be transparent RGBA PNGs at exactly 16x16 and
+   `menu-pdf.png` plus `menu-pdf@2x.png`, `menu-md.png` plus
+   `menu-md@2x.png`, and `menu-html.png` plus `menu-html@2x.png`. They must be transparent RGBA PNGs at exactly 16x16 and
    32x32 pixels. `apps/shell/src/main/index.ts` loads both representations via
    `menuIcons()` and maps shell kinds through `TAB_MENU_ICON` (`docs` to
-   `docx`, `sheets` to `xlsx`, `pdf` to `pdf`, and `markdown` to `md`). The
+   `docx`, `sheets` to `xlsx`, `pdf` to `pdf`, `markdown` to `md`, and `html`
+   to `html`). The
    separate `menu-home.png`/`menu-home@2x.png` pair belongs to Home navigation;
    replace it only if the client's approved system includes a branded Home
    glyph.
 3. **Explorer/Finder file associations.** Regenerate
-   `apps/shell/build/{docx,xlsx,pdf,md}.ico` and matching `.icns` files from the
-   four Home SVGs. `apps/shell/electron-builder.cjs` maps DOCX to `docx`, XLSX,
-   XLSM, XLS, and CSV to `xlsx`, PDF to `pdf`, and MD/Markdown to `md`. Do not
+   `apps/shell/build/{docx,xlsx,pdf,md,html}.ico` and matching `.icns` files
+   from the five Home SVGs. `apps/shell/electron-builder.cjs` maps DOCX to
+   `docx`, XLSX/XLSM/XLS/CSV/TSV to `xlsx`, PDF to `pdf`, MD/Markdown to `md`,
+   and HTML/HTM to `html`. Do not
    remove these `icon` fields: without them, Windows and macOS fall back to the
    generic application logo.
 
@@ -339,7 +394,7 @@ There must be no PPTX layer: no `file-pptx.svg`, `menu-pptx.png` or
 `menu-pptx@2x.png`, `pptx.ico`, `pptx.icns`, `SlideIcon`, `KIND_ICON.slides`,
 or PPTX file-association entry. Slides remains unshipped.
 
-For visual QA, open one DOCX, XLSX/CSV, PDF, and Markdown file together and
+For visual QA, open DOCX, XLSX/CSV/TSV, PDF, Markdown, and HTML/HTM files together and
 inspect their tab icons at normal and narrow tab widths in light and dark
 themes. Check Home quick-create and recent-file cards, the native tab overflow
 menu, and 100%, 125%, and 200% Windows display scaling. Install the validation
@@ -367,7 +422,7 @@ rg -n "NiuOffice AI|NiuOffice|Niuulh/NiuOffice" apps packages branding *.md pack
 
 At minimum, inspect these visible surfaces:
 
-- Shell Home, onboarding, settings, update window, star prompt, HTML titles,
+- Shell Home, onboarding, settings, update window, Help links, HTML titles,
   tab labels, and all shell locales under `apps/shell/src/renderer`.
 - Docs AI/ribbon locale files and prompts under
   `apps/docs/src/renderer`.
@@ -377,6 +432,10 @@ At minimum, inspect these visible surfaces:
   `apps/pdf/src/renderer/ai/pdf-skill.ts`.
 - Markdown ribbon, AI panel, HTML title, and
   `apps/markdown/src/renderer/ai/markdown-skill.ts`.
+- HTML `App.tsx`, `components/Ribbon.tsx`, `ai/AiPanel.tsx`, every locale,
+  document title, and `apps/html/src/renderer/ai/html-skill.ts`.
+- New shell `home-interface-strings.ts`, existing `strings.ts`, and
+  `ai-provider-strings.ts` under `apps/shell/src/renderer/src`.
 - `packages/ui/src/icons.tsx` accessibility text.
 
 Update every shipped locale, not just English. Update tests to the new intended
@@ -405,8 +464,10 @@ Never perform a repository-wide blind replacement. In particular:
 - Do not casually rename internal font families/files such as `NiuOffice Sans
 KR`, `NiuOffice PUA Blank`, or their WOFF2 files. They are document-rendering
   compatibility aliases and may have reserved-name/license implications.
-- Do not reintroduce Genspark, AI Search, Slides, `.pptx` associations, cloud
-  tools, analytics, or removed environment variables while resolving merges.
+- Do not reintroduce Genspark, network AI Search, Slides, `.pptx` associations,
+  cloud tools, analytics, MCP, headless/control servers, CLI bridges, or
+  removed environment variables while resolving merges. A test's headless
+  browser is not a shipped headless-server feature; retain safe test tooling.
 - Never reuse NiuOffice's app ID, user-data directory, repository, update feed,
   logo, signing identity, or release tag namespace for an independent client.
 
@@ -416,73 +477,131 @@ word, change only the visible occurrence and add a focused test.
 ## Configure the public update feed
 
 Electron-updater uses a generic provider baked by
-`apps/shell/electron-builder.cjs`. The final feed URL must be HTTPS, must not
-contain credentials/query/fragment, and must allow a signed-out client to
-download at least:
+`apps/shell/electron-builder.cjs`. With the stock release architecture, use
+**one distributor-owned public repository for source, workflows, tags, and
+release assets**. The workflow requires the configured repository to equal
+`GITHUB_REPOSITORY`; a scoped `GITHUB_TOKEN` cannot upload elsewhere.
 
-- `latest.yml`
-- `<ArtifactSlug>-Setup-<version>.exe`
-- the setup blockmap if differential download is later enabled
+The final URL must be HTTPS without credentials, query, or fragment:
 
-`latest.yml` must identify the exact setup filename and matching SHA-512 from
-the same release. It must never offer the portable executable. Upload the
-portable executable and `SHA256SUMS.txt` for manual downloads, but the portable
-launcher intentionally disables automatic updating.
+```text
+https://github.com/<owner>/<name>/releases/latest/download
+```
 
-GitHub branches are not update feeds. A release must be created from a tag
-whose commit is the exact authorized release-branch tip, and the GitHub Release
-must be public, published (not draft), non-prerelease for the stable channel,
-and selected as Latest. Test every feed URL in a signed-out browser or an
-unauthenticated HTTP client.
+The public Latest release must include both feeds and matching artifacts:
 
-A private GitHub repository cannot serve installed clients anonymously. Use a
-public distribution repository, or a separate public release repository with
-a dedicated CI publisher. A repository token may be held by CI to upload
-assets, but it must never enter `branding/product.json`,
-`NIUOFFICE_UPDATE_URL`, `app-update.yml`, application source, or an executable.
+| Asset                              | Purpose                                                |
+| ---------------------------------- | ------------------------------------------------------ |
+| `latest.yml`                       | Windows Setup update metadata only.                    |
+| `<Slug>-Setup-<version>.exe`       | Windows installed update/installer.                    |
+| `<Slug>-Portable-<version>.exe`    | Manual Windows download, never a feed target.          |
+| `latest-linux.yml`                 | Linux AppImage metadata for the AppImage/RPM pipeline. |
+| `<Slug>-<version>-x86_64.AppImage` | Linux direct download and AppImage updater target.     |
+| `<Slug>-<version>.x86_64.rpm`      | Fedora package, never an AppImage feed target.         |
+| `<Slug>-<version>-source.zip`      | Exact release-commit source archive.                   |
+| `SHA256SUMS.txt`                   | SHA-256 checksums of distributed files.                |
 
-`NIUOFFICE_UPDATE_URL` is an optional build-time override for an independently
-hosted generic feed. Prefer the repository-derived URL when using GitHub
-Releases. If an override is necessary, its validation requirements are the
-same and it must be stable across releases.
+For both feeds verify version, the exact filename in every `files[]` entry,
+legacy `path` if present, and SHA-512 against the actual Setup or AppImage.
+Never offer Portable or RPM in these feeds. Retain generated blockmaps when
+present; current clients request full downloads. Do not silently enable
+differential updating. For additional architectures, design/test matching
+metadata and native helpers; do not relabel an x64 package as arm64.
+
+Branches are not update feeds. Require a tag at the exact authorized
+release-branch tip, a public non-draft GitHub Release selected as Latest, and
+the GitHub prerelease flag off. Keep forward-only SemVer ordering even if the
+version contains `-oem.1`; verify actual `latest` channel metadata rather
+than assuming a suffix chooses the right channel.
+
+A private repository cannot serve anonymous installed clients. A different
+public asset repository or independent host requires a separately authorized
+publisher architecture, scoped CI credentials, revised repository guards,
+provenance tests, and two-version update acceptance. Changing a URL alone is
+insufficient. No token may enter product JSON, source, executables, or
+`app-update.yml`. `NIUOFFICE_UPDATE_URL` is an optional validated build-time
+override for an independent generic feed, not a workaround for private GitHub.
+Keep both platform builds on the same approved public, stable URL.
+
+The updater checks about 15 seconds after launch and every four hours while
+running. Help → Check for Updates runs a manual check. It is inactive in
+development, when updates are disabled, in Windows Portable, and in
+non-AppImage Linux installs. AppImage eligibility uses the actual launcher's
+`APPIMAGE` variable; do not fake that for RPM or extracted-folder installs.
+Downloads require user action; downloaded updates may install on normal quit.
+Test this behavior instead of promising silent background replacement.
 
 ## Adapt release automation in the distributor fork
 
-`.github/workflows/release-main.yml` belongs to the NiuOffice personal edition.
-It deliberately rejects `edition: oem`, requires ChatGPT support, requires the
-tag to equal NiuOffice `main`, and uses NiuOffice release titles. Do not weaken
-that workflow on the NiuOffice OEM branch.
+NiuOffice OEM stays **source-only**. Inherited workflows deliberately refuse
+OEM binary builds. Do not weaken them in `Niuulh/NiuOffice`; product JSON
+alone does not finish downstream release setup.
 
-In the downstream repository, copy it to a clearly client-owned workflow and
-adapt it with all of these fail-closed checks:
+In the distributor repository only:
 
-1. Trigger only the distributor's tag pattern or an explicitly supplied tag.
-2. Check out the tag with full history.
-3. Require the tag to match `v<apps/shell/package.json version>`.
-4. Require the tag commit to equal the current authorized downstream release
-   branch tip.
-5. Require `branding/product.json` to have `edition: oem`,
-   `chatgptSubscription: false`, `updates.enabled: true`, a safe artifact slug,
-   and the exact intended public update repository.
-6. Verify the configured repository is public before building.
-7. Run npm CI installation, product-boundary checks, formatting, lint,
-   typechecking, unit tests, builds, and the OEM negative gates.
-8. Build with the validated feed URL and with signing secrets supplied only by
-   GitHub Actions.
-9. Require the setup EXE, portable EXE, and `latest.yml`; validate that feed
-   version, filename, and hash agree and that packaged `app-update.yml` points
-   at the public generic feed.
-10. Audit the package for no Codex runtime, Slides module, Genspark resources,
-    or AI Search resources.
-11. Generate SHA-256 checksums and a source archive from the exact tag.
-12. Create a draft, upload the immutable asset set, then publish it as Latest
-    only after every check passes. Never overwrite assets of an already
-    published release.
+1. Copy `.github/workflows/release-main.yml` to a client release workflow and
+   `.github/workflows/build-packages.yml` to a client reusable package
+   workflow. Update the copied release job's `uses:` to the copied package
+   workflow. Keep inherited main-only workflows fail-closed or remove them
+   from the downstream fork after reviewing triggers.
+2. Adapt tag patterns/validation, branch refs, release titles, artifact
+   upload/download patterns, concurrency labels, output directories, and
+   provenance labels to approved client values. Remove the inherited
+   `codex/niuoffice-*` and `0.*-niu.*` push patterns from the copied package
+   workflow; use intended downstream events only.
+3. Replace the copied **main-edition** guards with equally strict **OEM**
+   guards: `edition === 'oem'`,
+   `features.chatgptSubscription === false`, enabled updates for public
+   releases, safe artifact slug, and the configured public repository exactly
+   equal to `GITHUB_REPOSITORY`. Never enable ChatGPT just to pass a guard.
+   Remove main-only signed-out ChatGPT/app-server/tool-host smoke steps from
+   the copied OEM workflow; do not install a Codex runtime just to run them.
+   Keep negative OEM runtime/dependency checks and endpoint integration tests.
+4. Require the tag to equal `v<apps/shell/package.json version>` and resolve
+   to the current authorized downstream release-branch tip. Re-fetch and
+   re-check immediately before publishing. Require a strictly newer release;
+   existing published assets stay immutable.
+5. Adapt/copy `tools/assemble-release.mjs`, which currently rejects OEM, for
+   the downstream product. Replace its main-only check with OEM/endpoint-only
+   and approved-repository validation, not no validation. Preserve a clean
+   committed tree, exact complete filenames, feed SHA-512 validation,
+   exact-commit source archive, `BUILD-<platform>.txt` provenance, and
+   checksums. Uncommitted source must never be labeled tagged source.
+6. Keep `tools/audit-release.mjs` active: it already keys required runtime
+   resources from the product flag and rejects OEM Codex. Continue requiring
+   exactly Docs, Sheets, PDF, Markdown, HTML, local helpers/WASM/licenses, and
+   absence of removed service wiring in compiled JavaScript and resources.
+   Adapt only genuinely brand-specific assertions.
+7. Keep `npm run check:oem-boundaries` and security tests. Its inherited
+   main-workflow checks must still pass (preserve that workflow's restrictions
+   or remove that inherited file). Add equivalent fail-closed tests for the
+   copied downstream workflows and assembler. Never disable the entire gate
+   because the OEM workflow differs from the personal workflow.
+8. Replace hardcoded Fedora smoke-test `NiuOffice-*.rpm`,
+   `/opt/NiuOffice`, and artifact-prefix literals with validated client
+   values. Derive install paths from the RPM when possible; productName and
+   executableName may differ. Retain x64 helper provenance and a Fedora
+   install/launch test.
+9. Verify public visibility, run full CI, and build Windows/Linux from the
+   **same exact commit**. Validate Linux provenance against the Windows
+   tag/version/commit, not merely artifact names or a job ID.
+10. Revalidate both feeds and actual SHA-512s after assembling all platforms.
+    Inspect packaged `app-update.yml` for the intended public generic URL.
+    Require Setup, Portable, AppImage, RPM, both feeds, source, and checksums
+    from the exact version. Fail on incomplete or mismatched sets.
+11. Create a draft; upload the complete set; publish as Latest only after all
+    gates and exact-branch/tag/forward-only rechecks pass. Never overwrite a
+    published release. Failed drafts can be reconciled carefully but are not
+    client update feeds.
 
-Update `.github/workflows/ci.yml` in the downstream repository so both its
-development branch and authorized release branch run CI. The NiuOffice OEM
-branch remains source-only; these downstream workflow instructions do not
-authorize publishing OEM binaries to the NiuOffice repository.
+Include downstream development/release branches in `.github/workflows/ci.yml`.
+Install dependencies on each native host; never copy Windows `node_modules`
+or helper binaries into Linux builds. Use the committed npm lockfile, pinned
+workflow actions, Node 22 at least the repository engine minimum, and Rust.
+
+These instructions do not authorize changing repository visibility, creating
+releases, provisioning secrets, or uploading executables. The distributor must
+authorize those actions. Upstream OEM publication remains source-only.
 
 ## Signing
 
@@ -534,7 +653,8 @@ Adapt brand-specific expectations in `apps/shell/tests/brand-assets.test.ts`,
 Preserve their security, package-content, feed, and compatibility assertions.
 Keep `tools/check-niuoffice-boundaries.mjs` functionally equivalent even if a
 downstream fork renames the script: it must continue rejecting removed cloud,
-search, Slides, analytics, and visible upstream branding surfaces.
+search, Slides, analytics, MCP/headless/control/CLI services, and visible
+upstream branding surfaces.
 
 Build a local Windows validation package only in the downstream fork:
 
@@ -549,13 +669,23 @@ Then verify:
   updates are enabled.
 - Portable starts normally but never schedules or offers automatic updates.
 - The executable, installer, taskbar, onboarding, Home, updater, Docs, Sheets,
-  PDF, and Markdown use the client art and copy in light and dark mode.
+  PDF, Markdown, and HTML use client art and copy in light and dark mode.
+- Five tab-icon components (including the blue W), five Home SVGs, five native
+  menu PNG pairs, and five file-association ICO/ICNS families were inspected
+  separately; changing the app logo alone is not evidence of this work.
 - The Home layout remains correct at `2048x1100` and `980x700`.
 - PE product metadata, icon resources, and signature match the client.
-- Packaged resources contain Docs, Sheets, PDF, Markdown, the xlsx sidecar,
-  PDF/OCR/WASM resources, and required licenses, but no Slides module,
-  `@openai/codex`, `native/codex*`, `@genspark/cli`, `packages/ai-search`, or
-  Genspark/AI Search runtime resources.
+- Packaged resources contain Docs, Sheets, PDF, Markdown, HTML, the xlsx
+  sidecar, PDF/OCR/WASM resources, and required licenses, but no Slides module,
+  `@openai/codex`, `native/codex*`, `@genspark/cli`, `packages/ai-search`, MCP,
+  headless/control-server/CLI resources, or Genspark/AI Search runtime wiring.
+- No external agent TCP listener, control socket, CLI discovery file,
+  server-startup switch, server setup UI, or editor control hook returns.
+- Local PDF→DOCX/XLSX, Find, Home local-file indexing, editor tools, and
+  validated drop/open remain functional. Cover HTML/HTM and TSV as well as
+  existing formats; reject PPTX and preserve attachment/image drop targets.
+- Oversized input receives an actionable estimated-130K-context error;
+  compaction/restoration and 200-turn limits remain enforced.
 - A persisted or renderer-supplied `chatgpt`, retained-provider, or unknown
   active provider is migrated/rejected in favor of OpenAI Endpoint.
 - Blank API keys make no network request. A valid per-client key appears as a
@@ -567,15 +697,78 @@ files, internal `@genoffice/*` package IDs, compatibility metadata, disabled
 shared source, and historical comments can legitimately contain old names;
 visible or packaged product surfaces cannot.
 
+## Linux and Fedora deployment
+
+Build Linux packages on a Linux x64 host with Node 22, npm, Rust/Cargo, and
+native build dependencies. The copied package workflow currently uses Ubuntu
+22.04 with rpm/rpmbuild, libfuse2, Xvfb, GTK/NSS/audio/GBM libraries and XML
+utilities, then validates RPM installation/launch in Fedora 44. A container
+smoke pass is not a substitute for an actual Fedora desktop test.
+
+After full validation, build the approved AppImage/RPM pair:
+
+```sh
+npm ci
+npm run build:all
+npm run notices
+cd apps/shell
+npx electron-builder --linux AppImage rpm --publish never
+cd ../..
+node tools/audit-release.mjs apps/shell/release
+```
+
+The Sheets build compiles its native spreadsheet sidecar. Do not package a
+Windows sidecar for Linux. Root `npm run dist:linux` uses every configured
+target (currently AppImage, DEB, RPM); use the explicit target command above
+if only AppImage and RPM are approved. Neither command authorizes publication.
+
+Deployment examples use placeholders. Substitute the exact client filenames
+and verify `SHA256SUMS.txt` before launching:
+
+```sh
+# Actual AppImage, in a directory writable by the desktop user:
+chmod +x "./ClientProduct-<version>-x86_64.AppImage"
+"./ClientProduct-<version>-x86_64.AppImage"
+
+# Fedora RPM: DNF resolves required native desktop dependencies.
+sudo dnf install "./ClientProduct-<version>.x86_64.rpm"
+```
+
+For a missing `libfuse.so.2`, query Fedora's package manager with
+`dnf provides '*/libfuse.so.2'` and install the matching trusted-repository
+package. Do not run the GUI as root, make privileged FUSE workarounds, or
+recommend `--no-sandbox` to end users. Extract-and-run can help diagnostics
+but is not the AppImage launcher/update path; treat it as manual-only.
+
+AppImage auto-update requires the actual launcher, its `APPIMAGE` variable,
+a writable destination, and public `latest-linux.yml`. RPM does not
+self-replace via electron-updater. Upgrade RPM with
+`sudo dnf install "./ClientProduct-<new-version>.x86_64.rpm"` or a separately
+configured, signed distributor DNF repository. A GitHub Release URL is not a
+DNF repository.
+
+Inspect `rpm -qip` and `rpm -qlp` before installation: package name,
+version, architecture, vendor, dependencies, install path, desktop entry,
+executable, icons, and licenses must match the client. After installation,
+verify GNOME/KDE launcher/taskbar association, file-opening and all five
+editors, light/dark mode, endpoint authentication, Wayland/X11 where supported,
+and safe upgrade/uninstall preserving documents/settings. Check the Linux
+icon set under `apps/shell/build/icons`, not only the Windows ICO.
+
+SHA-256 detects mismatches but is not a distributor signature. Document the
+Linux signing policy. RPM signing keys belong only in protected distributor
+tooling. Record actual Fedora desktop/container versions and test results.
+
 ## Mandatory two-version update smoke test
 
 Do not declare auto-update ready after inspecting only one build.
 
 1. Publish a signed or explicitly unsigned downstream version A from the exact
-   authorized release-branch tag. Confirm `latest.yml`, setup, portable, source,
-   and checksums are anonymously downloadable.
+   authorized release-branch tag. Confirm `latest.yml`, `latest-linux.yml`,
+   Setup, Portable, AppImage, RPM, source, and checksums are anonymously
+   downloadable and mutually consistent.
 2. Install version A with the setup executable. Configure a test endpoint and a
-   unique test-client API key. Verify all four editors can perform an AI request
+   unique test-client API key. Verify all five editors can perform an AI request
    and the endpoint observes the Bearer header.
 3. Create strictly newer version B without changing app ID, executable name,
    user-data directory, artifact slug, feed, or signing identity. Publish it
@@ -588,9 +781,13 @@ Do not declare auto-update ready after inspecting only one build.
    a tool call; confirm every request still has the Bearer header.
 6. Launch portable version A separately and confirm it does not show or apply
    the NSIS update. Downloading a new portable build remains a manual action.
-7. Confirm version B does not offer version A and the updater never permits a
+7. Repeat the A→B update using the actual AppImage launcher as a normal Fedora
+   desktop user. Confirm `latest-linux.yml` updates AppImage only and keeps
+   settings. Install RPM A separately, confirm no AppImage updater is active,
+   and upgrade to RPM B through DNF while preserving settings.
+8. Confirm version B does not offer version A and the updater never permits a
    downgrade.
-8. Repeat once with the endpoint offline, with an invalid key, and with a valid
+9. Repeat once with the endpoint offline, with an invalid key, and with a valid
    key. The UI must distinguish connection and authentication failures without
    exposing the key.
 
@@ -610,7 +807,12 @@ Before handing the downstream source to its owner, report all of the following:
 - Endpoint URL and key-provisioning method, but never the key.
 - Test/build commands run and their results.
 - Visual QA surfaces and resolutions checked.
-- Archive negative-scan results.
+- Archive negative-scan results, including compiled service wiring and no
+  OEM Codex runtime.
+- Windows/Linux provenance matching the exact source commit, actual feed
+  SHA-512 checks, and SHA-256 asset checksums.
+- Fedora desktop and RPM/AppImage results, distinguished from container-only
+  CI smoke tests.
 - Two-version updater smoke-test result, or a clearly assigned distributor
   action if releases were not authorized yet.
 - Any intentionally retained internal compatibility names and why they remain.

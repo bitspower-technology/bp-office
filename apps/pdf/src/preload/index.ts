@@ -1,3 +1,4 @@
+import type { AiPanelPrefs } from '@genoffice/ui'
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { Lang } from '@genoffice/i18n'
 import type { AiSettings, AiStreamChunk } from '@genoffice/ai-provider'
@@ -25,6 +26,7 @@ const api: PdfApi = {
   consumePending: () => ipcRenderer.invoke(PDF_CHANNELS.consumePending),
   readFile: (path) => ipcRenderer.invoke(PDF_CHANNELS.readFile, path),
   save: (request) => ipcRenderer.invoke(PDF_CHANNELS.save, request),
+  requestRedactionCopy: (path) => ipcRenderer.invoke(PDF_CHANNELS.requestRedactionCopy, path),
   autoRename: (path, baseName) => ipcRenderer.invoke(PDF_CHANNELS.autoRename, path, baseName),
   isUntitled: (path) => ipcRenderer.invoke(PDF_CHANNELS.isUntitled, path),
   validateTextEdits: (request) => ipcRenderer.invoke(PDF_CHANNELS.validateTextEdits, request),
@@ -77,6 +79,11 @@ const api: PdfApi = {
     ipcRenderer.on(PDF_CHANNELS.printRequest, listener)
     return () => ipcRenderer.removeListener(PDF_CHANNELS.printRequest, listener)
   },
+  onFileRenamed: (handler) => {
+    const listener = (_e: Electron.IpcRendererEvent, newPath: string) => handler(newPath)
+    ipcRenderer.on(PDF_CHANNELS.fileRenamed, listener)
+    return () => ipcRenderer.removeListener(PDF_CHANNELS.fileRenamed, listener)
+  },
   getLanguage: () => ipcRenderer.invoke(PDF_CHANNELS.getLanguage),
   onLanguageChanged: (handler) => {
     const listener = (_e: Electron.IpcRendererEvent, lang: Lang) => handler(lang)
@@ -91,6 +98,13 @@ const api: PdfApi = {
   },
   openDroppedFiles: (files) =>
     ipcRenderer.invoke(OPEN_DROPPED_PATHS_CHANNEL, localPathsForDroppedFiles(files)),
+  getAiPanelPrefs: () => ipcRenderer.invoke(PDF_CHANNELS.getAiPanelPrefs),
+  setAiPanelPrefs: (patch) => ipcRenderer.invoke('app:set-ai-panel-prefs', patch),
+  onAiPanelPrefsChanged: (handler) => {
+    const listener = (_event: Electron.IpcRendererEvent, prefs: AiPanelPrefs) => handler(prefs)
+    ipcRenderer.on(PDF_CHANNELS.aiPanelPrefsChanged, listener)
+    return () => ipcRenderer.removeListener(PDF_CHANNELS.aiPanelPrefsChanged, listener)
+  },
   onChromePressed: (handler) => {
     const listener = () => handler()
     ipcRenderer.on('app:chrome-pressed', listener)
@@ -114,7 +128,7 @@ const api: PdfApi = {
 }
 
 // Shared project chat store (registered app-wide by the shell's main init):
-// AI PDF conversations persist per file, like Docs/Sheets (alpha ledger r142)
+// AI PDF conversations persist per file, like Docs/Sheets
 const projectApi = {
   resolveChat: (args: { filePath: string | null; tempChatId?: string }) =>
     ipcRenderer.invoke('project:resolveChat', args),

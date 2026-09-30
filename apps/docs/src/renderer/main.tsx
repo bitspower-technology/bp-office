@@ -7,11 +7,20 @@ import '@genoffice/ui/tokens.css'
 import '@genoffice/ui/screentip.css'
 import '@genoffice/ui/color-picker.css'
 import '@genoffice/ui/dropdown.css'
+import '@genoffice/ui/ribbon-collapse.css'
+import '@genoffice/ui/markdown.css'
+import '@genoffice/ui/ai-panel-prefs.css'
+import '@genoffice/ui/ai-scope-quote.css'
+import '@genoffice/ui/image-viewer.css'
 import './styles.css'
 import './fonts/fonts.css'
-import { installFileDropOpen, installScreenTips } from '@genoffice/ui'
+import { applyAiPanelPrefs, installFileDropOpen, installScreenTips } from '@genoffice/ui'
+import { setAltChunkHtmlConverter } from '@genoffice/docx-engine'
 
 installScreenTips()
+if (window.desktop?.convertAltChunkHtml) {
+  setAltChunkHtmlConverter((html) => window.desktop.convertAltChunkHtml(html))
+}
 installFileDropOpen((files) => window.desktop?.openDroppedFiles(files))
 
 function applyTheme(theme: UiTheme): void {
@@ -36,6 +45,11 @@ async function bootstrap(): Promise<void> {
   document.documentElement.lang = htmlLang(lang)
   applyTheme(theme)
   window.desktop?.onThemeChanged(applyTheme)
+  void window.desktop
+    ?.getAiPanelPrefs?.()
+    .then(applyAiPanelPrefs)
+    .catch(() => {})
+  window.desktop?.onAiPanelPrefsChanged?.(applyAiPanelPrefs)
   createRoot(document.getElementById('root')!).render(
     <LocaleProvider initial={lang}>
       <App />

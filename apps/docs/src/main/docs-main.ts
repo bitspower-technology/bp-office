@@ -1,5 +1,7 @@
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
+import { handOffBytes } from './byte-handoff'
 import {
+  appendFileSync,
   existsSync,
   mkdirSync,
   readdirSync,
@@ -8,8 +10,20 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs'
-import { copyFile, mkdir, readFile, readdir, stat, unlink, writeFile } from 'node:fs/promises'
+import {
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  unlink,
+  writeFile,
+} from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import {
   BrowserWindow,
   Menu,
@@ -20,6 +34,7 @@ import {
   ipcMain,
   nativeImage,
   net,
+  session,
   shell,
   webContents,
 } from 'electron'
@@ -30,13 +45,24 @@ import {
   contextMenuLabels,
   fetchRemoteImage,
   installContextMenu,
+  setContextMenuInterceptor,
   installNavigationGuard,
   printHtmlToPdf,
   safeExternalUrl,
+  saveAsSuggestion,
+  saveImageFromUrl,
   showOpenDialogWithMemory,
   showSaveDialogWithMemory,
+  aboutMenuItem,
+  checkUpdatesMenuItem,
   toggleDevToolsItem,
   windowMenuTemplate,
+  installRendererProtocol,
+  registerRendererScheme,
+  rendererUrl,
+  MAX_REMOTE_IMAGE_BYTES,
+  readBodyCapped,
+  writeJsonAtomic,
 } from '@genoffice/electron-utils'
 import { configureMetricsCache, familyVerticalMetrics } from '@genoffice/font-metrics'
 import { createI18n, getUiLang, normalizeLang, setUiLang } from '@genoffice/i18n'
@@ -49,6 +75,8 @@ import type {
   WebContents,
 } from 'electron'
 import { parseFileToText } from '@genoffice/file-parse'
+import { convertHtmlToDocx } from '../../../../packages/html2docx/src'
+import { ElectronBrowserDriver } from '../../../../packages/html2docx/src/drivers/electron'
 import {
   AI_PROVIDERS,
   AiTimeoutError,
@@ -58,6 +86,8 @@ import {
   constrainAiSettingsToProduct,
   defaultAiSettings,
   resolveAiSettings,
+  maxOutputTokensOf,
+  setAiUserAgent,
   setRescueFetch,
   streamForProvider,
   type AiChatRequest,
@@ -75,16 +105,30 @@ import type {
   AttachmentImageResult,
   AttachmentMeta,
   AttachmentReadResult,
+  ContextMenuRequest,
   CreateDocumentRequest,
   CreateDocumentResult,
   DecryptOpenResult,
   DocsTabInfo,
   MenuCommand,
   OpenDocxResult,
+  SpellLanguages,
 } from '../shared/ipc'
 import { ATTACHMENT_IMAGE_EXTS } from '../shared/ipc'
+import { ClickClaims } from '../shared/context-menu-claims'
 import { findDocxPath } from '../shared/open-file'
 import { atomicWriteFile, looksLikeZip } from './atomic-write'
+import {
+  adoptLazyMediaHashes,
+  forgetLazyMediaOwner,
+  materializeLazyDocx,
+  moveLazyMediaSource,
+  openLazyDocx,
+  pointLazyMediaAt,
+  readLazyMedia,
+  registerLazyMediaProtocol,
+} from './lazy-media'
+import { inlineLazyMediaInHtml } from './lazy-media-inline'
 import {
   commitDocPasswordSave,
   currentDocPasswordIntentRevision,
@@ -104,7 +148,10 @@ import {
   snapshotDocPassword,
 } from './docx-encryption'
 import { isExternallyModified, type DiskFileState } from './external-change'
+import { copyImageDisplaySize, validCopyImageDataUrl } from './copy-image-guard'
+import { printScaleOption, validPrintDim, validPrintScale } from './print-args'
 import { initDocsAutoUpdater } from './updater'
+import { registerZoteroIpc, teardownZoteroIpc } from './zotero-ipc'
 
 /**
  * Docs main-process logic as an embeddable module: no top-level side effects.
@@ -140,6 +187,8 @@ const tMain = createI18n({
     filterSupported: '支持的文件',
     filterAll: '所有文件',
     dlgExportPdf: '导出为 PDF',
+    dlgExportHtml: '导出为 HTML',
+    dlgPickExportDir: '选择导出目录',
     errUnsupportedExt: '暂不支持 .{ext} 类型',
     errNotFile: '不是文件',
     errTooLarge: '超过 {mb}MB 上限',
@@ -163,6 +212,8 @@ const tMain = createI18n({
     menuSaveAs: '另存为…',
     menuPageSetup: '页面设置…',
     menuExportPdf: '导出为 PDF…',
+    menuExportHtml: '导出为 HTML…',
+    menuExportImages: '导出为图片…',
     menuPrint: '打印…',
     menuEdit: '编辑',
     menuUndo: '撤销',
@@ -172,8 +223,10 @@ const tMain = createI18n({
     menuPaste: '粘贴',
     menuPasteMatch: '粘贴并匹配格式',
     menuFindReplace: '查找和替换…',
+    menuGoTo: '定位…',
     menuSelectAll: '全选',
     menuView: '视图',
+    menuZoom: '缩放',
     menuZoomIn: '放大',
     menuZoomOut: '缩小',
     menuZoom100: '实际大小 (100%)',
@@ -183,7 +236,7 @@ const tMain = createI18n({
     menuDarkMode: '深色模式',
     menuFullscreen: '进入全屏',
     menuInsert: '插入',
-    menuInsertTable: '表格(3×3)',
+    menuInsertTable: '表格…',
     menuInsertImage: '图片…',
     menuInsertPageBreak: '分页符',
     menuInsertLink: '超链接…',
@@ -201,7 +254,38 @@ const tMain = createI18n({
     menuFont: '字体…',
     menuParagraph: '段落…',
     menuTools: '工具',
+    menuTable: '表格',
+    menuTableInsert: '插入',
+    menuTableInsertTable: '表格…',
+    menuTableColsLeft: '在左侧插入列',
+    menuTableColsRight: '在右侧插入列',
+    menuTableRowsAbove: '在上方插入行',
+    menuTableRowsBelow: '在下方插入行',
+    menuTableCells: '单元格…',
+    menuTableDelete: '删除',
+    menuTableDeleteTable: '表格',
+    menuTableDeleteColumns: '列',
+    menuTableDeleteRows: '行',
+    menuTableSelect: '选择',
+    menuTableSelectCell: '单元格',
+    menuTableSelectColumn: '列',
+    menuTableSelectRow: '行',
+    menuTableSelectTable: '表格',
+    menuTableMergeCells: '合并单元格',
+    menuTableSplitCells: '拆分单元格…',
+    menuTableSplitTable: '拆分表格',
+    menuTableAutoFit: '自动调整',
+    menuTableAutoFitContents: '根据内容自动调整表格',
+    menuTableAutoFitWindow: '根据窗口自动调整表格',
+    menuTableFixedWidth: '固定列宽',
+    menuTableDistributeRows: '平均分布各行',
+    menuTableDistributeColumns: '平均分布各列',
+    menuTableRepeatHeader: '重复标题行',
+    menuTableGridlines: '查看网格线',
+    menuTableProperties: '表格属性…',
     menuWordCount: '字数统计…',
+    menuAutoCorrect: '自动更正选项…',
+    menuPreferences: '偏好设置…',
     menuAiProofread: 'AI 校对',
     menuWindow: '窗口',
     menuHelp: '帮助',
@@ -233,6 +317,8 @@ const tMain = createI18n({
     filterSupported: 'Supported Files',
     filterAll: 'All Files',
     dlgExportPdf: 'Export as PDF',
+    dlgExportHtml: 'Export as HTML',
+    dlgPickExportDir: 'Choose Export Folder',
     errUnsupportedExt: '.{ext} files are not supported',
     errNotFile: 'not a file',
     errTooLarge: 'exceeds the {mb}MB limit',
@@ -256,6 +342,8 @@ const tMain = createI18n({
     menuSaveAs: 'Save As…',
     menuPageSetup: 'Page Setup…',
     menuExportPdf: 'Export as PDF…',
+    menuExportHtml: 'Export as HTML…',
+    menuExportImages: 'Export as Images…',
     menuPrint: 'Print…',
     menuEdit: 'Edit',
     menuUndo: 'Undo',
@@ -265,8 +353,10 @@ const tMain = createI18n({
     menuPaste: 'Paste',
     menuPasteMatch: 'Paste and Match Style',
     menuFindReplace: 'Find and Replace…',
+    menuGoTo: 'Go To…',
     menuSelectAll: 'Select All',
     menuView: 'View',
+    menuZoom: 'Zoom',
     menuZoomIn: 'Zoom In',
     menuZoomOut: 'Zoom Out',
     menuZoom100: 'Actual Size (100%)',
@@ -276,7 +366,7 @@ const tMain = createI18n({
     menuDarkMode: 'Dark Mode',
     menuFullscreen: 'Enter Full Screen',
     menuInsert: 'Insert',
-    menuInsertTable: 'Table (3×3)',
+    menuInsertTable: 'Table…',
     menuInsertImage: 'Image…',
     menuInsertPageBreak: 'Page Break',
     menuInsertLink: 'Hyperlink…',
@@ -294,7 +384,38 @@ const tMain = createI18n({
     menuFont: 'Font…',
     menuParagraph: 'Paragraph…',
     menuTools: 'Tools',
+    menuTable: 'Table',
+    menuTableInsert: 'Insert',
+    menuTableInsertTable: 'Table…',
+    menuTableColsLeft: 'Columns to the Left',
+    menuTableColsRight: 'Columns to the Right',
+    menuTableRowsAbove: 'Rows Above',
+    menuTableRowsBelow: 'Rows Below',
+    menuTableCells: 'Cells…',
+    menuTableDelete: 'Delete',
+    menuTableDeleteTable: 'Table',
+    menuTableDeleteColumns: 'Columns',
+    menuTableDeleteRows: 'Rows',
+    menuTableSelect: 'Select',
+    menuTableSelectCell: 'Cell',
+    menuTableSelectColumn: 'Column',
+    menuTableSelectRow: 'Row',
+    menuTableSelectTable: 'Table',
+    menuTableMergeCells: 'Merge Cells',
+    menuTableSplitCells: 'Split Cells…',
+    menuTableSplitTable: 'Split Table',
+    menuTableAutoFit: 'AutoFit and Distribute',
+    menuTableAutoFitContents: 'AutoFit to Contents',
+    menuTableAutoFitWindow: 'AutoFit to Window',
+    menuTableFixedWidth: 'Fixed Column Width',
+    menuTableDistributeRows: 'Distribute Rows Evenly',
+    menuTableDistributeColumns: 'Distribute Columns Evenly',
+    menuTableRepeatHeader: 'Repeat Header Rows',
+    menuTableGridlines: 'View Gridlines',
+    menuTableProperties: 'Table Properties…',
     menuWordCount: 'Word Count…',
+    menuAutoCorrect: 'AutoCorrect Options…',
+    menuPreferences: 'Preferences…',
     menuAiProofread: 'AI Proofread',
     menuWindow: 'Window',
     menuHelp: 'Help',
@@ -325,6 +446,8 @@ const tMain = createI18n({
     filterSupported: 'サポートされているファイル',
     filterAll: 'すべてのファイル',
     dlgExportPdf: 'PDF としてエクスポート',
+    dlgExportHtml: 'HTML としてエクスポート',
+    dlgPickExportDir: 'エクスポート先フォルダーの選択',
     errUnsupportedExt: '.{ext} 形式には対応していません',
     errNotFile: 'ファイルではありません',
     errTooLarge: '{mb}MB の上限を超えています',
@@ -349,6 +472,8 @@ const tMain = createI18n({
     menuSaveAs: '名前を付けて保存…',
     menuPageSetup: 'ページ設定…',
     menuExportPdf: 'PDF としてエクスポート…',
+    menuExportHtml: 'HTML としてエクスポート…',
+    menuExportImages: '画像としてエクスポート…',
     menuPrint: '印刷…',
     menuEdit: '編集',
     menuUndo: '元に戻す',
@@ -358,8 +483,10 @@ const tMain = createI18n({
     menuPaste: '貼り付け',
     menuPasteMatch: '貼り付けて書式を合わせる',
     menuFindReplace: '検索と置換…',
+    menuGoTo: 'ジャンプ…',
     menuSelectAll: 'すべて選択',
     menuView: '表示',
+    menuZoom: 'ズーム',
     menuZoomIn: '拡大',
     menuZoomOut: '縮小',
     menuZoom100: '実際のサイズ (100%)',
@@ -369,7 +496,7 @@ const tMain = createI18n({
     menuDarkMode: 'ダークモード',
     menuFullscreen: 'フルスクリーンにする',
     menuInsert: '挿入',
-    menuInsertTable: '表 (3×3)',
+    menuInsertTable: '表…',
     menuInsertImage: '画像…',
     menuInsertPageBreak: '改ページ',
     menuInsertLink: 'ハイパーリンク…',
@@ -387,7 +514,38 @@ const tMain = createI18n({
     menuFont: 'フォント…',
     menuParagraph: '段落…',
     menuTools: 'ツール',
+    menuTable: '表',
+    menuTableInsert: '挿入',
+    menuTableInsertTable: '表…',
+    menuTableColsLeft: '左に列',
+    menuTableColsRight: '右に列',
+    menuTableRowsAbove: '上に行',
+    menuTableRowsBelow: '下に行',
+    menuTableCells: 'セル…',
+    menuTableDelete: '削除',
+    menuTableDeleteTable: '表',
+    menuTableDeleteColumns: '列',
+    menuTableDeleteRows: '行',
+    menuTableSelect: '選択',
+    menuTableSelectCell: 'セル',
+    menuTableSelectColumn: '列',
+    menuTableSelectRow: '行',
+    menuTableSelectTable: '表',
+    menuTableMergeCells: 'セルの結合',
+    menuTableSplitCells: 'セルの分割…',
+    menuTableSplitTable: '表の分割',
+    menuTableAutoFit: '自動調整',
+    menuTableAutoFitContents: '文字列の幅に自動調整',
+    menuTableAutoFitWindow: 'ウィンドウ幅に自動調整',
+    menuTableFixedWidth: '列の幅を固定する',
+    menuTableDistributeRows: '行の高さを揃える',
+    menuTableDistributeColumns: '列の幅を揃える',
+    menuTableRepeatHeader: 'タイトル行の繰り返し',
+    menuTableGridlines: 'グリッド線の表示',
+    menuTableProperties: '表のプロパティ…',
     menuWordCount: '文字カウント…',
+    menuAutoCorrect: 'オートコレクトのオプション…',
+    menuPreferences: '環境設定…',
     menuAiProofread: 'AI 校正',
     menuWindow: 'ウィンドウ',
     menuHelp: 'ヘルプ',
@@ -419,6 +577,8 @@ const tMain = createI18n({
     filterSupported: '지원되는 파일',
     filterAll: '모든 파일',
     dlgExportPdf: 'PDF로 내보내기',
+    dlgExportHtml: 'HTML로 내보내기',
+    dlgPickExportDir: '내보낼 폴더 선택',
     errUnsupportedExt: '.{ext} 형식은 지원되지 않습니다',
     errNotFile: '파일이 아닙니다',
     errTooLarge: '{mb}MB 제한을 초과했습니다',
@@ -443,6 +603,8 @@ const tMain = createI18n({
     menuSaveAs: '다른 이름으로 저장…',
     menuPageSetup: '페이지 설정…',
     menuExportPdf: 'PDF로 내보내기…',
+    menuExportHtml: 'HTML로 내보내기…',
+    menuExportImages: '이미지로 내보내기…',
     menuPrint: '인쇄…',
     menuEdit: '편집',
     menuUndo: '실행 취소',
@@ -452,8 +614,10 @@ const tMain = createI18n({
     menuPaste: '붙여넣기',
     menuPasteMatch: '서식 맞춰 붙여넣기',
     menuFindReplace: '찾기 및 바꾸기…',
+    menuGoTo: '이동…',
     menuSelectAll: '모두 선택',
     menuView: '보기',
+    menuZoom: '확대/축소',
     menuZoomIn: '확대',
     menuZoomOut: '축소',
     menuZoom100: '실제 크기(100%)',
@@ -463,7 +627,7 @@ const tMain = createI18n({
     menuDarkMode: '다크 모드',
     menuFullscreen: '전체 화면 시작',
     menuInsert: '삽입',
-    menuInsertTable: '표(3×3)',
+    menuInsertTable: '표…',
     menuInsertImage: '그림…',
     menuInsertPageBreak: '페이지 나누기',
     menuInsertLink: '하이퍼링크…',
@@ -481,7 +645,38 @@ const tMain = createI18n({
     menuFont: '글꼴…',
     menuParagraph: '단락…',
     menuTools: '도구',
+    menuTable: '표',
+    menuTableInsert: '삽입',
+    menuTableInsertTable: '표…',
+    menuTableColsLeft: '왼쪽에 열',
+    menuTableColsRight: '오른쪽에 열',
+    menuTableRowsAbove: '위에 행',
+    menuTableRowsBelow: '아래에 행',
+    menuTableCells: '셀…',
+    menuTableDelete: '삭제',
+    menuTableDeleteTable: '표',
+    menuTableDeleteColumns: '열',
+    menuTableDeleteRows: '행',
+    menuTableSelect: '선택',
+    menuTableSelectCell: '셀',
+    menuTableSelectColumn: '열',
+    menuTableSelectRow: '행',
+    menuTableSelectTable: '표',
+    menuTableMergeCells: '셀 병합',
+    menuTableSplitCells: '셀 분할…',
+    menuTableSplitTable: '표 분할',
+    menuTableAutoFit: '자동 맞춤 및 분배',
+    menuTableAutoFitContents: '내용에 자동 맞춤',
+    menuTableAutoFitWindow: '창에 자동 맞춤',
+    menuTableFixedWidth: '열 너비 고정',
+    menuTableDistributeRows: '행 균등 분배',
+    menuTableDistributeColumns: '열 균등 분배',
+    menuTableRepeatHeader: '머리글 행 반복',
+    menuTableGridlines: '눈금선 보기',
+    menuTableProperties: '표 속성…',
     menuWordCount: '단어 개수…',
+    menuAutoCorrect: '자동 고침 옵션…',
+    menuPreferences: '기본 설정…',
     menuAiProofread: 'AI 교정',
     menuWindow: '창',
     menuHelp: '도움말',
@@ -514,6 +709,8 @@ const tMain = createI18n({
     filterSupported: 'Fichiers pris en charge',
     filterAll: 'Tous les fichiers',
     dlgExportPdf: 'Exporter au format PDF',
+    dlgExportHtml: 'Exporter au format HTML',
+    dlgPickExportDir: "Choisir le dossier d'exportation",
     errUnsupportedExt: 'les fichiers .{ext} ne sont pas pris en charge',
     errNotFile: "n'est pas un fichier",
     errTooLarge: 'dépasse la limite de {mb} Mo',
@@ -538,6 +735,8 @@ const tMain = createI18n({
     menuSaveAs: 'Enregistrer sous…',
     menuPageSetup: 'Mise en page…',
     menuExportPdf: 'Exporter au format PDF…',
+    menuExportHtml: 'Exporter au format HTML…',
+    menuExportImages: 'Exporter en images…',
     menuPrint: 'Imprimer…',
     menuEdit: 'Édition',
     menuUndo: 'Annuler',
@@ -547,8 +746,10 @@ const tMain = createI18n({
     menuPaste: 'Coller',
     menuPasteMatch: 'Coller et adapter le style',
     menuFindReplace: 'Rechercher et remplacer…',
+    menuGoTo: 'Atteindre…',
     menuSelectAll: 'Tout sélectionner',
     menuView: 'Affichage',
+    menuZoom: 'Zoom',
     menuZoomIn: 'Zoom avant',
     menuZoomOut: 'Zoom arrière',
     menuZoom100: 'Taille réelle (100 %)',
@@ -558,7 +759,7 @@ const tMain = createI18n({
     menuDarkMode: 'Mode sombre',
     menuFullscreen: 'Activer le mode plein écran',
     menuInsert: 'Insertion',
-    menuInsertTable: 'Tableau (3×3)',
+    menuInsertTable: 'Tableau…',
     menuInsertImage: 'Image…',
     menuInsertPageBreak: 'Saut de page',
     menuInsertLink: 'Lien hypertexte…',
@@ -576,7 +777,38 @@ const tMain = createI18n({
     menuFont: 'Police…',
     menuParagraph: 'Paragraphe…',
     menuTools: 'Outils',
+    menuTable: 'Tableau',
+    menuTableInsert: 'Insérer',
+    menuTableInsertTable: 'Tableau…',
+    menuTableColsLeft: 'Colonnes à gauche',
+    menuTableColsRight: 'Colonnes à droite',
+    menuTableRowsAbove: 'Lignes au-dessus',
+    menuTableRowsBelow: 'Lignes en dessous',
+    menuTableCells: 'Cellules…',
+    menuTableDelete: 'Supprimer',
+    menuTableDeleteTable: 'Tableau',
+    menuTableDeleteColumns: 'Colonnes',
+    menuTableDeleteRows: 'Lignes',
+    menuTableSelect: 'Sélectionner',
+    menuTableSelectCell: 'Cellule',
+    menuTableSelectColumn: 'Colonne',
+    menuTableSelectRow: 'Ligne',
+    menuTableSelectTable: 'Tableau',
+    menuTableMergeCells: 'Fusionner les cellules',
+    menuTableSplitCells: 'Fractionner les cellules…',
+    menuTableSplitTable: 'Fractionner le tableau',
+    menuTableAutoFit: 'Ajustement automatique',
+    menuTableAutoFitContents: 'Ajuster au contenu',
+    menuTableAutoFitWindow: 'Ajuster à la fenêtre',
+    menuTableFixedWidth: 'Largeur de colonne fixe',
+    menuTableDistributeRows: 'Uniformiser la hauteur des lignes',
+    menuTableDistributeColumns: 'Uniformiser la largeur des colonnes',
+    menuTableRepeatHeader: 'Répéter les lignes d’en-tête',
+    menuTableGridlines: 'Afficher le quadrillage',
+    menuTableProperties: 'Propriétés du tableau…',
     menuWordCount: 'Statistiques…',
+    menuAutoCorrect: 'Options de correction automatique…',
+    menuPreferences: 'Préférences…',
     menuAiProofread: 'Relecture IA',
     menuWindow: 'Fenêtre',
     menuHelp: 'Aide',
@@ -609,6 +841,8 @@ const tMain = createI18n({
     filterSupported: 'Unterstützte Dateien',
     filterAll: 'Alle Dateien',
     dlgExportPdf: 'Als PDF exportieren',
+    dlgExportHtml: 'Als HTML exportieren',
+    dlgPickExportDir: 'Exportordner auswählen',
     errUnsupportedExt: '.{ext}-Dateien werden nicht unterstützt',
     errNotFile: 'keine Datei',
     errTooLarge: 'überschreitet das Limit von {mb} MB',
@@ -633,6 +867,8 @@ const tMain = createI18n({
     menuSaveAs: 'Speichern unter…',
     menuPageSetup: 'Seite einrichten…',
     menuExportPdf: 'Als PDF exportieren…',
+    menuExportHtml: 'Als HTML exportieren…',
+    menuExportImages: 'Als Bilder exportieren…',
     menuPrint: 'Drucken…',
     menuEdit: 'Bearbeiten',
     menuUndo: 'Rückgängig',
@@ -642,8 +878,10 @@ const tMain = createI18n({
     menuPaste: 'Einfügen',
     menuPasteMatch: 'Einfügen und Stil anpassen',
     menuFindReplace: 'Suchen und Ersetzen…',
+    menuGoTo: 'Gehe zu…',
     menuSelectAll: 'Alles auswählen',
     menuView: 'Ansicht',
+    menuZoom: 'Zoom',
     menuZoomIn: 'Vergrößern',
     menuZoomOut: 'Verkleinern',
     menuZoom100: 'Originalgröße (100 %)',
@@ -653,7 +891,7 @@ const tMain = createI18n({
     menuDarkMode: 'Dunkelmodus',
     menuFullscreen: 'Vollbild ein',
     menuInsert: 'Einfügen',
-    menuInsertTable: 'Tabelle (3×3)',
+    menuInsertTable: 'Tabelle…',
     menuInsertImage: 'Bild…',
     menuInsertPageBreak: 'Seitenumbruch',
     menuInsertLink: 'Hyperlink…',
@@ -671,7 +909,38 @@ const tMain = createI18n({
     menuFont: 'Schriftart…',
     menuParagraph: 'Absatz…',
     menuTools: 'Extras',
+    menuTable: 'Tabelle',
+    menuTableInsert: 'Einfügen',
+    menuTableInsertTable: 'Tabelle…',
+    menuTableColsLeft: 'Spalten links',
+    menuTableColsRight: 'Spalten rechts',
+    menuTableRowsAbove: 'Zeilen oberhalb',
+    menuTableRowsBelow: 'Zeilen unterhalb',
+    menuTableCells: 'Zellen…',
+    menuTableDelete: 'Löschen',
+    menuTableDeleteTable: 'Tabelle',
+    menuTableDeleteColumns: 'Spalten',
+    menuTableDeleteRows: 'Zeilen',
+    menuTableSelect: 'Auswählen',
+    menuTableSelectCell: 'Zelle',
+    menuTableSelectColumn: 'Spalte',
+    menuTableSelectRow: 'Zeile',
+    menuTableSelectTable: 'Tabelle',
+    menuTableMergeCells: 'Zellen verbinden',
+    menuTableSplitCells: 'Zellen teilen…',
+    menuTableSplitTable: 'Tabelle teilen',
+    menuTableAutoFit: 'AutoAnpassen und Verteilen',
+    menuTableAutoFitContents: 'An Inhalt anpassen',
+    menuTableAutoFitWindow: 'An Fenster anpassen',
+    menuTableFixedWidth: 'Feste Spaltenbreite',
+    menuTableDistributeRows: 'Zeilen gleichmäßig verteilen',
+    menuTableDistributeColumns: 'Spalten gleichmäßig verteilen',
+    menuTableRepeatHeader: 'Überschriftenzeilen wiederholen',
+    menuTableGridlines: 'Gitternetzlinien anzeigen',
+    menuTableProperties: 'Tabelleneigenschaften…',
     menuWordCount: 'Wörter zählen…',
+    menuAutoCorrect: 'AutoKorrektur-Optionen…',
+    menuPreferences: 'Einstellungen…',
     menuAiProofread: 'KI-Korrektur',
     menuWindow: 'Fenster',
     menuHelp: 'Hilfe',
@@ -703,6 +972,8 @@ const tMain = createI18n({
     filterSupported: 'Archivos compatibles',
     filterAll: 'Todos los archivos',
     dlgExportPdf: 'Exportar como PDF',
+    dlgExportHtml: 'Exportar como HTML',
+    dlgPickExportDir: 'Elegir carpeta de exportación',
     errUnsupportedExt: 'los archivos .{ext} no son compatibles',
     errNotFile: 'no es un archivo',
     errTooLarge: 'supera el límite de {mb} MB',
@@ -728,6 +999,8 @@ const tMain = createI18n({
     menuSaveAs: 'Guardar como…',
     menuPageSetup: 'Configurar página…',
     menuExportPdf: 'Exportar como PDF…',
+    menuExportHtml: 'Exportar como HTML…',
+    menuExportImages: 'Exportar como imágenes…',
     menuPrint: 'Imprimir…',
     menuEdit: 'Edición',
     menuUndo: 'Deshacer',
@@ -737,8 +1010,10 @@ const tMain = createI18n({
     menuPaste: 'Pegar',
     menuPasteMatch: 'Pegar con el mismo estilo',
     menuFindReplace: 'Buscar y reemplazar…',
+    menuGoTo: 'Ir a…',
     menuSelectAll: 'Seleccionar todo',
     menuView: 'Ver',
+    menuZoom: 'Zoom',
     menuZoomIn: 'Acercar',
     menuZoomOut: 'Alejar',
     menuZoom100: 'Tamaño real (100 %)',
@@ -748,7 +1023,7 @@ const tMain = createI18n({
     menuDarkMode: 'Modo oscuro',
     menuFullscreen: 'Usar pantalla completa',
     menuInsert: 'Insertar',
-    menuInsertTable: 'Tabla (3×3)',
+    menuInsertTable: 'Tabla…',
     menuInsertImage: 'Imagen…',
     menuInsertPageBreak: 'Salto de página',
     menuInsertLink: 'Hipervínculo…',
@@ -766,7 +1041,38 @@ const tMain = createI18n({
     menuFont: 'Fuente…',
     menuParagraph: 'Párrafo…',
     menuTools: 'Herramientas',
+    menuTable: 'Tabla',
+    menuTableInsert: 'Insertar',
+    menuTableInsertTable: 'Tabla…',
+    menuTableColsLeft: 'Columnas a la izquierda',
+    menuTableColsRight: 'Columnas a la derecha',
+    menuTableRowsAbove: 'Filas arriba',
+    menuTableRowsBelow: 'Filas abajo',
+    menuTableCells: 'Celdas…',
+    menuTableDelete: 'Eliminar',
+    menuTableDeleteTable: 'Tabla',
+    menuTableDeleteColumns: 'Columnas',
+    menuTableDeleteRows: 'Filas',
+    menuTableSelect: 'Seleccionar',
+    menuTableSelectCell: 'Celda',
+    menuTableSelectColumn: 'Columna',
+    menuTableSelectRow: 'Fila',
+    menuTableSelectTable: 'Tabla',
+    menuTableMergeCells: 'Combinar celdas',
+    menuTableSplitCells: 'Dividir celdas…',
+    menuTableSplitTable: 'Dividir tabla',
+    menuTableAutoFit: 'Autoajustar y distribuir',
+    menuTableAutoFitContents: 'Autoajustar al contenido',
+    menuTableAutoFitWindow: 'Autoajustar a la ventana',
+    menuTableFixedWidth: 'Ancho de columna fijo',
+    menuTableDistributeRows: 'Distribuir filas uniformemente',
+    menuTableDistributeColumns: 'Distribuir columnas uniformemente',
+    menuTableRepeatHeader: 'Repetir filas de encabezado',
+    menuTableGridlines: 'Ver líneas de cuadrícula',
+    menuTableProperties: 'Propiedades de tabla…',
     menuWordCount: 'Contar palabras…',
+    menuAutoCorrect: 'Opciones de autocorrección…',
+    menuPreferences: 'Preferencias…',
     menuAiProofread: 'Corrección con IA',
     menuWindow: 'Ventana',
     menuHelp: 'Ayuda',
@@ -797,6 +1103,8 @@ const tMain = createI18n({
     filterSupported: 'ไฟล์ที่รองรับ',
     filterAll: 'ไฟล์ทั้งหมด',
     dlgExportPdf: 'ส่งออกเป็น PDF',
+    dlgExportHtml: 'ส่งออกเป็น HTML',
+    dlgPickExportDir: 'เลือกโฟลเดอร์ส่งออก',
     errUnsupportedExt: 'ไม่รองรับไฟล์ .{ext}',
     errNotFile: 'ไม่ใช่ไฟล์',
     errTooLarge: 'เกินขีดจำกัด {mb}MB',
@@ -821,6 +1129,8 @@ const tMain = createI18n({
     menuSaveAs: 'บันทึกเป็น…',
     menuPageSetup: 'ตั้งค่าหน้ากระดาษ…',
     menuExportPdf: 'ส่งออกเป็น PDF…',
+    menuExportHtml: 'ส่งออกเป็น HTML…',
+    menuExportImages: 'ส่งออกเป็นรูปภาพ…',
     menuPrint: 'พิมพ์…',
     menuEdit: 'แก้ไข',
     menuUndo: 'เลิกทำ',
@@ -830,8 +1140,10 @@ const tMain = createI18n({
     menuPaste: 'วาง',
     menuPasteMatch: 'วางแบบจับคู่ลักษณะ',
     menuFindReplace: 'ค้นหาและแทนที่…',
+    menuGoTo: 'ไปที่…',
     menuSelectAll: 'เลือกทั้งหมด',
     menuView: 'มุมมอง',
+    menuZoom: 'ซูม',
     menuZoomIn: 'ขยาย',
     menuZoomOut: 'ย่อ',
     menuZoom100: 'ขนาดจริง (100%)',
@@ -841,7 +1153,7 @@ const tMain = createI18n({
     menuDarkMode: 'โหมดมืด',
     menuFullscreen: 'เข้าสู่โหมดเต็มหน้าจอ',
     menuInsert: 'แทรก',
-    menuInsertTable: 'ตาราง (3×3)',
+    menuInsertTable: 'ตาราง…',
     menuInsertImage: 'รูปภาพ…',
     menuInsertPageBreak: 'ตัวแบ่งหน้า',
     menuInsertLink: 'ไฮเปอร์ลิงก์…',
@@ -859,7 +1171,38 @@ const tMain = createI18n({
     menuFont: 'ฟอนต์…',
     menuParagraph: 'ย่อหน้า…',
     menuTools: 'เครื่องมือ',
+    menuTable: 'ตาราง',
+    menuTableInsert: 'แทรก',
+    menuTableInsertTable: 'ตาราง…',
+    menuTableColsLeft: 'คอลัมน์ทางซ้าย',
+    menuTableColsRight: 'คอลัมน์ทางขวา',
+    menuTableRowsAbove: 'แถวด้านบน',
+    menuTableRowsBelow: 'แถวด้านล่าง',
+    menuTableCells: 'เซลล์…',
+    menuTableDelete: 'ลบ',
+    menuTableDeleteTable: 'ตาราง',
+    menuTableDeleteColumns: 'คอลัมน์',
+    menuTableDeleteRows: 'แถว',
+    menuTableSelect: 'เลือก',
+    menuTableSelectCell: 'เซลล์',
+    menuTableSelectColumn: 'คอลัมน์',
+    menuTableSelectRow: 'แถว',
+    menuTableSelectTable: 'ตาราง',
+    menuTableMergeCells: 'ผสานเซลล์',
+    menuTableSplitCells: 'แยกเซลล์…',
+    menuTableSplitTable: 'แยกตาราง',
+    menuTableAutoFit: 'ปรับพอดีอัตโนมัติ',
+    menuTableAutoFitContents: 'ปรับพอดีกับเนื้อหา',
+    menuTableAutoFitWindow: 'ปรับพอดีกับหน้าต่าง',
+    menuTableFixedWidth: 'ความกว้างคอลัมน์คงที่',
+    menuTableDistributeRows: 'กระจายแถวเท่ากัน',
+    menuTableDistributeColumns: 'กระจายคอลัมน์เท่ากัน',
+    menuTableRepeatHeader: 'ทำซ้ำแถวส่วนหัว',
+    menuTableGridlines: 'แสดงเส้นตาราง',
+    menuTableProperties: 'คุณสมบัติตาราง…',
     menuWordCount: 'นับจำนวนคำ…',
+    menuAutoCorrect: 'ตัวเลือกการแก้ไขอัตโนมัติ…',
+    menuPreferences: 'การตั้งค่า…',
     menuAiProofread: 'พิสูจน์อักษรด้วย AI',
     menuWindow: 'หน้าต่าง',
     menuHelp: 'วิธีใช้',
@@ -891,6 +1234,8 @@ const tMain = createI18n({
     filterSupported: 'File yang Didukung',
     filterAll: 'Semua File',
     dlgExportPdf: 'Ekspor sebagai PDF',
+    dlgExportHtml: 'Ekspor sebagai HTML',
+    dlgPickExportDir: 'Pilih Folder Ekspor',
     errUnsupportedExt: 'file .{ext} tidak didukung',
     errNotFile: 'bukan file',
     errTooLarge: 'melebihi batas {mb}MB',
@@ -915,6 +1260,8 @@ const tMain = createI18n({
     menuSaveAs: 'Simpan Sebagai…',
     menuPageSetup: 'Penyetelan Halaman…',
     menuExportPdf: 'Ekspor sebagai PDF…',
+    menuExportHtml: 'Ekspor sebagai HTML…',
+    menuExportImages: 'Ekspor sebagai gambar…',
     menuPrint: 'Cetak…',
     menuEdit: 'Edit',
     menuUndo: 'Urungkan',
@@ -924,8 +1271,10 @@ const tMain = createI18n({
     menuPaste: 'Tempel',
     menuPasteMatch: 'Tempel dan Samakan Gaya',
     menuFindReplace: 'Temukan dan Ganti…',
+    menuGoTo: 'Pergi ke…',
     menuSelectAll: 'Pilih Semua',
     menuView: 'Tampilan',
+    menuZoom: 'Zoom',
     menuZoomIn: 'Perbesar',
     menuZoomOut: 'Perkecil',
     menuZoom100: 'Ukuran Sebenarnya (100%)',
@@ -935,7 +1284,7 @@ const tMain = createI18n({
     menuDarkMode: 'Mode Gelap',
     menuFullscreen: 'Masuk Layar Penuh',
     menuInsert: 'Sisipkan',
-    menuInsertTable: 'Tabel (3×3)',
+    menuInsertTable: 'Tabel…',
     menuInsertImage: 'Gambar…',
     menuInsertPageBreak: 'Pemisah Halaman',
     menuInsertLink: 'Hyperlink…',
@@ -953,7 +1302,38 @@ const tMain = createI18n({
     menuFont: 'Font…',
     menuParagraph: 'Paragraf…',
     menuTools: 'Alat',
+    menuTable: 'Tabel',
+    menuTableInsert: 'Sisipkan',
+    menuTableInsertTable: 'Tabel…',
+    menuTableColsLeft: 'Kolom di Kiri',
+    menuTableColsRight: 'Kolom di Kanan',
+    menuTableRowsAbove: 'Baris di Atas',
+    menuTableRowsBelow: 'Baris di Bawah',
+    menuTableCells: 'Sel…',
+    menuTableDelete: 'Hapus',
+    menuTableDeleteTable: 'Tabel',
+    menuTableDeleteColumns: 'Kolom',
+    menuTableDeleteRows: 'Baris',
+    menuTableSelect: 'Pilih',
+    menuTableSelectCell: 'Sel',
+    menuTableSelectColumn: 'Kolom',
+    menuTableSelectRow: 'Baris',
+    menuTableSelectTable: 'Tabel',
+    menuTableMergeCells: 'Gabungkan Sel',
+    menuTableSplitCells: 'Pisahkan Sel…',
+    menuTableSplitTable: 'Pisahkan Tabel',
+    menuTableAutoFit: 'Paskan Otomatis',
+    menuTableAutoFitContents: 'Paskan ke Konten',
+    menuTableAutoFitWindow: 'Paskan ke Jendela',
+    menuTableFixedWidth: 'Lebar Kolom Tetap',
+    menuTableDistributeRows: 'Distribusikan Baris Merata',
+    menuTableDistributeColumns: 'Distribusikan Kolom Merata',
+    menuTableRepeatHeader: 'Ulangi Baris Header',
+    menuTableGridlines: 'Lihat Garis Kisi',
+    menuTableProperties: 'Properti Tabel…',
     menuWordCount: 'Hitungan Kata…',
+    menuAutoCorrect: 'Opsi Koreksi Otomatis…',
+    menuPreferences: 'Preferensi…',
     menuAiProofread: 'Koreksi AI',
     menuWindow: 'Jendela',
     menuHelp: 'Bantuan',
@@ -985,6 +1365,8 @@ const tMain = createI18n({
     filterSupported: 'Поддерживаемые файлы',
     filterAll: 'Все файлы',
     dlgExportPdf: 'Экспорт в PDF',
+    dlgExportHtml: 'Экспорт в HTML',
+    dlgPickExportDir: 'Выбор папки для экспорта',
     errUnsupportedExt: 'файлы .{ext} не поддерживаются',
     errNotFile: 'не является файлом',
     errTooLarge: 'превышает лимит {mb} МБ',
@@ -1009,6 +1391,8 @@ const tMain = createI18n({
     menuSaveAs: 'Сохранить как…',
     menuPageSetup: 'Параметры страницы…',
     menuExportPdf: 'Экспорт в PDF…',
+    menuExportHtml: 'Экспорт в HTML…',
+    menuExportImages: 'Экспорт в изображения…',
     menuPrint: 'Печать…',
     menuEdit: 'Правка',
     menuUndo: 'Отменить',
@@ -1018,8 +1402,10 @@ const tMain = createI18n({
     menuPaste: 'Вставить',
     menuPasteMatch: 'Вставить и согласовать стиль',
     menuFindReplace: 'Найти и заменить…',
+    menuGoTo: 'Перейти…',
     menuSelectAll: 'Выделить все',
     menuView: 'Вид',
+    menuZoom: 'Масштаб',
     menuZoomIn: 'Увеличить',
     menuZoomOut: 'Уменьшить',
     menuZoom100: 'Фактический размер (100%)',
@@ -1029,7 +1415,7 @@ const tMain = createI18n({
     menuDarkMode: 'Темный режим',
     menuFullscreen: 'Перейти в полноэкранный режим',
     menuInsert: 'Вставка',
-    menuInsertTable: 'Таблица (3×3)',
+    menuInsertTable: 'Таблица…',
     menuInsertImage: 'Рисунок…',
     menuInsertPageBreak: 'Разрыв страницы',
     menuInsertLink: 'Гиперссылка…',
@@ -1047,7 +1433,38 @@ const tMain = createI18n({
     menuFont: 'Шрифт…',
     menuParagraph: 'Абзац…',
     menuTools: 'Сервис',
+    menuTable: 'Таблица',
+    menuTableInsert: 'Вставить',
+    menuTableInsertTable: 'Таблица…',
+    menuTableColsLeft: 'Столбцы слева',
+    menuTableColsRight: 'Столбцы справа',
+    menuTableRowsAbove: 'Строки выше',
+    menuTableRowsBelow: 'Строки ниже',
+    menuTableCells: 'Ячейки…',
+    menuTableDelete: 'Удалить',
+    menuTableDeleteTable: 'Таблицу',
+    menuTableDeleteColumns: 'Столбцы',
+    menuTableDeleteRows: 'Строки',
+    menuTableSelect: 'Выделить',
+    menuTableSelectCell: 'Ячейку',
+    menuTableSelectColumn: 'Столбец',
+    menuTableSelectRow: 'Строку',
+    menuTableSelectTable: 'Таблицу',
+    menuTableMergeCells: 'Объединить ячейки',
+    menuTableSplitCells: 'Разделить ячейки…',
+    menuTableSplitTable: 'Разделить таблицу',
+    menuTableAutoFit: 'Автоподбор',
+    menuTableAutoFitContents: 'По содержимому',
+    menuTableAutoFitWindow: 'По ширине окна',
+    menuTableFixedWidth: 'Фиксированная ширина столбца',
+    menuTableDistributeRows: 'Выровнять высоту строк',
+    menuTableDistributeColumns: 'Выровнять ширину столбцов',
+    menuTableRepeatHeader: 'Повторять строки заголовков',
+    menuTableGridlines: 'Отображать сетку',
+    menuTableProperties: 'Свойства таблицы…',
     menuWordCount: 'Статистика…',
+    menuAutoCorrect: 'Параметры автозамены…',
+    menuPreferences: 'Параметры…',
     menuAiProofread: 'ИИ-корректура',
     menuWindow: 'Окно',
     menuHelp: 'Справка',
@@ -1079,6 +1496,8 @@ const tMain = createI18n({
     filterSupported: 'الملفات المدعومة',
     filterAll: 'كل الملفات',
     dlgExportPdf: 'تصدير بتنسيق PDF',
+    dlgExportHtml: 'تصدير بتنسيق HTML',
+    dlgPickExportDir: 'اختيار مجلد التصدير',
     errUnsupportedExt: 'ملفات .{ext} غير مدعومة',
     errNotFile: 'ليس ملفًا',
     errTooLarge: 'يتجاوز الحد {mb}MB',
@@ -1103,6 +1522,8 @@ const tMain = createI18n({
     menuSaveAs: 'حفظ باسم…',
     menuPageSetup: 'إعداد الصفحة…',
     menuExportPdf: 'تصدير بتنسيق PDF…',
+    menuExportHtml: 'تصدير بتنسيق HTML…',
+    menuExportImages: 'تصدير كصور…',
     menuPrint: 'طباعة…',
     menuEdit: 'تحرير',
     menuUndo: 'تراجع',
@@ -1112,8 +1533,10 @@ const tMain = createI18n({
     menuPaste: 'لصق',
     menuPasteMatch: 'لصق مع مطابقة النمط',
     menuFindReplace: 'بحث واستبدال…',
+    menuGoTo: 'الانتقال إلى…',
     menuSelectAll: 'تحديد الكل',
     menuView: 'عرض',
+    menuZoom: 'تكبير/تصغير',
     menuZoomIn: 'تكبير',
     menuZoomOut: 'تصغير',
     menuZoom100: 'الحجم الفعلي (100%)',
@@ -1123,7 +1546,7 @@ const tMain = createI18n({
     menuDarkMode: 'الوضع الداكن',
     menuFullscreen: 'الدخول إلى ملء الشاشة',
     menuInsert: 'إدراج',
-    menuInsertTable: 'جدول (3×3)',
+    menuInsertTable: 'جدول…',
     menuInsertImage: 'صورة…',
     menuInsertPageBreak: 'فاصل صفحات',
     menuInsertLink: 'ارتباط تشعبي…',
@@ -1141,7 +1564,38 @@ const tMain = createI18n({
     menuFont: 'الخط…',
     menuParagraph: 'فقرة…',
     menuTools: 'أدوات',
+    menuTable: 'جدول',
+    menuTableInsert: 'إدراج',
+    menuTableInsertTable: 'جدول…',
+    menuTableColsLeft: 'أعمدة إلى اليسار',
+    menuTableColsRight: 'أعمدة إلى اليمين',
+    menuTableRowsAbove: 'صفوف أعلى',
+    menuTableRowsBelow: 'صفوف أسفل',
+    menuTableCells: 'خلايا…',
+    menuTableDelete: 'حذف',
+    menuTableDeleteTable: 'الجدول',
+    menuTableDeleteColumns: 'الأعمدة',
+    menuTableDeleteRows: 'الصفوف',
+    menuTableSelect: 'تحديد',
+    menuTableSelectCell: 'الخلية',
+    menuTableSelectColumn: 'العمود',
+    menuTableSelectRow: 'الصف',
+    menuTableSelectTable: 'الجدول',
+    menuTableMergeCells: 'دمج الخلايا',
+    menuTableSplitCells: 'تقسيم الخلايا…',
+    menuTableSplitTable: 'تقسيم الجدول',
+    menuTableAutoFit: 'احتواء تلقائي',
+    menuTableAutoFitContents: 'احتواء تلقائي للمحتويات',
+    menuTableAutoFitWindow: 'احتواء تلقائي للنافذة',
+    menuTableFixedWidth: 'عرض عمود ثابت',
+    menuTableDistributeRows: 'توزيع الصفوف بالتساوي',
+    menuTableDistributeColumns: 'توزيع الأعمدة بالتساوي',
+    menuTableRepeatHeader: 'تكرار صفوف الرأس',
+    menuTableGridlines: 'عرض خطوط الشبكة',
+    menuTableProperties: 'خصائص الجدول…',
     menuWordCount: 'عدد الكلمات…',
+    menuAutoCorrect: 'خيارات التصحيح التلقائي…',
+    menuPreferences: 'التفضيلات…',
     menuAiProofread: 'تدقيق بالذكاء الاصطناعي',
     menuWindow: 'نافذة',
     menuHelp: 'تعليمات',
@@ -1173,6 +1627,8 @@ const tMain = createI18n({
     filterSupported: 'Arquivos Compatíveis',
     filterAll: 'Todos os Arquivos',
     dlgExportPdf: 'Exportar como PDF',
+    dlgExportHtml: 'Exportar como HTML',
+    dlgPickExportDir: 'Escolher Pasta de Exportação',
     errUnsupportedExt: 'arquivos .{ext} não são suportados',
     errNotFile: 'não é um arquivo',
     errTooLarge: 'excede o limite de {mb}MB',
@@ -1197,6 +1653,8 @@ const tMain = createI18n({
     menuSaveAs: 'Salvar Como…',
     menuPageSetup: 'Configurar Página…',
     menuExportPdf: 'Exportar como PDF…',
+    menuExportHtml: 'Exportar como HTML…',
+    menuExportImages: 'Exportar como imagens…',
     menuPrint: 'Imprimir…',
     menuEdit: 'Editar',
     menuUndo: 'Desfazer',
@@ -1206,8 +1664,10 @@ const tMain = createI18n({
     menuPaste: 'Colar',
     menuPasteMatch: 'Colar com a Mesma Formatação',
     menuFindReplace: 'Localizar e Substituir…',
+    menuGoTo: 'Ir para…',
     menuSelectAll: 'Selecionar Tudo',
     menuView: 'Exibir',
+    menuZoom: 'Zoom',
     menuZoomIn: 'Ampliar',
     menuZoomOut: 'Reduzir',
     menuZoom100: 'Tamanho Real (100%)',
@@ -1217,7 +1677,7 @@ const tMain = createI18n({
     menuDarkMode: 'Modo Escuro',
     menuFullscreen: 'Entrar em Tela Cheia',
     menuInsert: 'Inserir',
-    menuInsertTable: 'Tabela (3×3)',
+    menuInsertTable: 'Tabela…',
     menuInsertImage: 'Imagem…',
     menuInsertPageBreak: 'Quebra de Página',
     menuInsertLink: 'Hiperlink…',
@@ -1235,7 +1695,38 @@ const tMain = createI18n({
     menuFont: 'Fonte…',
     menuParagraph: 'Parágrafo…',
     menuTools: 'Ferramentas',
+    menuTable: 'Tabela',
+    menuTableInsert: 'Inserir',
+    menuTableInsertTable: 'Tabela…',
+    menuTableColsLeft: 'Colunas à esquerda',
+    menuTableColsRight: 'Colunas à direita',
+    menuTableRowsAbove: 'Linhas acima',
+    menuTableRowsBelow: 'Linhas abaixo',
+    menuTableCells: 'Células…',
+    menuTableDelete: 'Excluir',
+    menuTableDeleteTable: 'Tabela',
+    menuTableDeleteColumns: 'Colunas',
+    menuTableDeleteRows: 'Linhas',
+    menuTableSelect: 'Selecionar',
+    menuTableSelectCell: 'Célula',
+    menuTableSelectColumn: 'Coluna',
+    menuTableSelectRow: 'Linha',
+    menuTableSelectTable: 'Tabela',
+    menuTableMergeCells: 'Mesclar células',
+    menuTableSplitCells: 'Dividir células…',
+    menuTableSplitTable: 'Dividir tabela',
+    menuTableAutoFit: 'AutoAjuste',
+    menuTableAutoFitContents: 'AutoAjustar ao conteúdo',
+    menuTableAutoFitWindow: 'AutoAjustar à janela',
+    menuTableFixedWidth: 'Largura de coluna fixa',
+    menuTableDistributeRows: 'Distribuir linhas uniformemente',
+    menuTableDistributeColumns: 'Distribuir colunas uniformemente',
+    menuTableRepeatHeader: 'Repetir linhas de cabeçalho',
+    menuTableGridlines: 'Ver linhas de grade',
+    menuTableProperties: 'Propriedades da tabela…',
     menuWordCount: 'Contagem de Palavras…',
+    menuAutoCorrect: 'Opções de Correção Automática…',
+    menuPreferences: 'Preferências…',
     menuAiProofread: 'Revisão com IA',
     menuWindow: 'Janela',
     menuHelp: 'Ajuda',
@@ -1267,6 +1758,8 @@ const tMain = createI18n({
     filterSupported: 'File supportati',
     filterAll: 'Tutti i file',
     dlgExportPdf: 'Esporta come PDF',
+    dlgExportHtml: 'Esporta come HTML',
+    dlgPickExportDir: 'Scegli la cartella di esportazione',
     errUnsupportedExt: 'i file .{ext} non sono supportati',
     errNotFile: 'non è un file',
     errTooLarge: 'supera il limite di {mb} MB',
@@ -1291,6 +1784,8 @@ const tMain = createI18n({
     menuSaveAs: 'Salva con nome…',
     menuPageSetup: 'Imposta pagina…',
     menuExportPdf: 'Esporta come PDF…',
+    menuExportHtml: 'Esporta come HTML…',
+    menuExportImages: 'Esporta come immagini…',
     menuPrint: 'Stampa…',
     menuEdit: 'Modifica',
     menuUndo: 'Annulla',
@@ -1300,8 +1795,10 @@ const tMain = createI18n({
     menuPaste: 'Incolla',
     menuPasteMatch: 'Incolla e adatta lo stile',
     menuFindReplace: 'Trova e sostituisci…',
+    menuGoTo: 'Vai a…',
     menuSelectAll: 'Seleziona tutto',
     menuView: 'Visualizza',
+    menuZoom: 'Zoom',
     menuZoomIn: 'Ingrandisci',
     menuZoomOut: 'Riduci',
     menuZoom100: 'Dimensioni effettive (100%)',
@@ -1311,7 +1808,7 @@ const tMain = createI18n({
     menuDarkMode: 'Modalità scura',
     menuFullscreen: 'Attiva schermo intero',
     menuInsert: 'Inserisci',
-    menuInsertTable: 'Tabella (3×3)',
+    menuInsertTable: 'Tabella…',
     menuInsertImage: 'Immagine…',
     menuInsertPageBreak: 'Interruzione di pagina',
     menuInsertLink: 'Collegamento ipertestuale…',
@@ -1329,7 +1826,38 @@ const tMain = createI18n({
     menuFont: 'Carattere…',
     menuParagraph: 'Paragrafo…',
     menuTools: 'Strumenti',
+    menuTable: 'Tabella',
+    menuTableInsert: 'Inserisci',
+    menuTableInsertTable: 'Tabella…',
+    menuTableColsLeft: 'Colonne a sinistra',
+    menuTableColsRight: 'Colonne a destra',
+    menuTableRowsAbove: 'Righe sopra',
+    menuTableRowsBelow: 'Righe sotto',
+    menuTableCells: 'Celle…',
+    menuTableDelete: 'Elimina',
+    menuTableDeleteTable: 'Tabella',
+    menuTableDeleteColumns: 'Colonne',
+    menuTableDeleteRows: 'Righe',
+    menuTableSelect: 'Seleziona',
+    menuTableSelectCell: 'Cella',
+    menuTableSelectColumn: 'Colonna',
+    menuTableSelectRow: 'Riga',
+    menuTableSelectTable: 'Tabella',
+    menuTableMergeCells: 'Unisci celle',
+    menuTableSplitCells: 'Dividi celle…',
+    menuTableSplitTable: 'Dividi tabella',
+    menuTableAutoFit: 'Adatta e distribuisci',
+    menuTableAutoFitContents: 'Adatta al contenuto',
+    menuTableAutoFitWindow: 'Adatta alla finestra',
+    menuTableFixedWidth: 'Larghezza colonna fissa',
+    menuTableDistributeRows: 'Distribuisci righe uniformemente',
+    menuTableDistributeColumns: 'Distribuisci colonne uniformemente',
+    menuTableRepeatHeader: 'Ripeti righe di intestazione',
+    menuTableGridlines: 'Mostra griglia',
+    menuTableProperties: 'Proprietà tabella…',
     menuWordCount: 'Conteggio parole…',
+    menuAutoCorrect: 'Opzioni correzione automatica…',
+    menuPreferences: 'Preferenze…',
     menuAiProofread: 'Correzione IA',
     menuWindow: 'Finestra',
     menuHelp: 'Aiuto',
@@ -1361,6 +1889,8 @@ const tMain = createI18n({
     filterSupported: 'Obsługiwane pliki',
     filterAll: 'Wszystkie pliki',
     dlgExportPdf: 'Eksportuj jako PDF',
+    dlgExportHtml: 'Eksportuj jako HTML',
+    dlgPickExportDir: 'Wybierz folder eksportu',
     errUnsupportedExt: 'pliki .{ext} nie są obsługiwane',
     errNotFile: 'to nie jest plik',
     errTooLarge: 'przekracza limit {mb} MB',
@@ -1385,6 +1915,8 @@ const tMain = createI18n({
     menuSaveAs: 'Zapisz jako…',
     menuPageSetup: 'Ustawienia strony…',
     menuExportPdf: 'Eksportuj jako PDF…',
+    menuExportHtml: 'Eksportuj jako HTML…',
+    menuExportImages: 'Eksportuj jako obrazy…',
     menuPrint: 'Drukuj…',
     menuEdit: 'Edycja',
     menuUndo: 'Cofnij',
@@ -1394,8 +1926,10 @@ const tMain = createI18n({
     menuPaste: 'Wklej',
     menuPasteMatch: 'Wklej i dopasuj styl',
     menuFindReplace: 'Znajdź i zamień…',
+    menuGoTo: 'Przejdź do…',
     menuSelectAll: 'Zaznacz wszystko',
     menuView: 'Widok',
+    menuZoom: 'Powiększenie',
     menuZoomIn: 'Powiększ',
     menuZoomOut: 'Pomniejsz',
     menuZoom100: 'Rzeczywisty rozmiar (100%)',
@@ -1405,7 +1939,7 @@ const tMain = createI18n({
     menuDarkMode: 'Tryb ciemny',
     menuFullscreen: 'Przejdź do pełnego ekranu',
     menuInsert: 'Wstaw',
-    menuInsertTable: 'Tabela (3×3)',
+    menuInsertTable: 'Tabela…',
     menuInsertImage: 'Obraz…',
     menuInsertPageBreak: 'Podział strony',
     menuInsertLink: 'Hiperłącze…',
@@ -1423,12 +1957,174 @@ const tMain = createI18n({
     menuFont: 'Czcionka…',
     menuParagraph: 'Akapit…',
     menuTools: 'Narzędzia',
+    menuTable: 'Tabela',
+    menuTableInsert: 'Wstaw',
+    menuTableInsertTable: 'Tabela…',
+    menuTableColsLeft: 'Kolumny z lewej',
+    menuTableColsRight: 'Kolumny z prawej',
+    menuTableRowsAbove: 'Wiersze powyżej',
+    menuTableRowsBelow: 'Wiersze poniżej',
+    menuTableCells: 'Komórki…',
+    menuTableDelete: 'Usuń',
+    menuTableDeleteTable: 'Tabela',
+    menuTableDeleteColumns: 'Kolumny',
+    menuTableDeleteRows: 'Wiersze',
+    menuTableSelect: 'Zaznacz',
+    menuTableSelectCell: 'Komórka',
+    menuTableSelectColumn: 'Kolumna',
+    menuTableSelectRow: 'Wiersz',
+    menuTableSelectTable: 'Tabela',
+    menuTableMergeCells: 'Scal komórki',
+    menuTableSplitCells: 'Podziel komórki…',
+    menuTableSplitTable: 'Podziel tabelę',
+    menuTableAutoFit: 'Autodopasowanie',
+    menuTableAutoFitContents: 'Dopasuj do zawartości',
+    menuTableAutoFitWindow: 'Dopasuj do okna',
+    menuTableFixedWidth: 'Stała szerokość kolumny',
+    menuTableDistributeRows: 'Rozłóż wiersze równomiernie',
+    menuTableDistributeColumns: 'Rozłóż kolumny równomiernie',
+    menuTableRepeatHeader: 'Powtórz wiersze nagłówka',
+    menuTableGridlines: 'Wyświetl linie siatki',
+    menuTableProperties: 'Właściwości tabeli…',
     menuWordCount: 'Statystyka wyrazów…',
+    menuAutoCorrect: 'Opcje Autokorekty…',
+    menuPreferences: 'Preferencje…',
     menuAiProofread: 'Korekta AI',
     menuWindow: 'Okno',
     menuHelp: 'Pomoc',
     menuShortcuts: 'Skróty klawiaturowe',
     menuDocsHelp: 'Pomoc NiuOffice Docs',
+  },
+  cs: {
+    dlgOpenDoc: 'Otevřít dokument',
+    filterWord: 'Dokumenty Wordu',
+    dlgSaveAs: 'Uložit jako',
+    closeUnsavedMsg: 'Tento dokument obsahuje neuložené změny.',
+    closeUnsavedDetail: 'Chcete je před zavřením uložit?',
+    closeNoReplyMsg: 'Dokument neodpovídá a může obsahovat neuložené změny.',
+    closeNoReplyDetail: 'Přesto zavřít? Neuložené změny budou ztraceny.',
+    btnCloseAnyway: 'Přesto zavřít',
+    autosaveFoundTitle: 'Nalezena obnovená verze',
+    autosaveFoundBody:
+      'Z poslední relace existují neuložené změny. Obnovit automaticky uloženou verzi?',
+    autosaveRestore: 'Obnovit',
+    autosaveDiscard: 'Zahodit',
+    btnDontSave: 'Neukládat',
+    btnCancel: 'Zrušit',
+    extModifiedMsg: 'Soubor byl změněn jiným programem.',
+    extModifiedDetail: 'Přesto uložit a přepsat změny na disku?',
+    btnOverwrite: 'Přepsat',
+    dlgInsertImage: 'Vložit obrázek',
+    filterImages: 'Obrázky',
+    dlgAddAttachment: 'Přidat přílohy',
+    filterSupported: 'Podporované soubory',
+    filterAll: 'Všechny soubory',
+    dlgExportPdf: 'Exportovat jako PDF',
+    dlgExportHtml: 'Exportovat jako HTML',
+    dlgPickExportDir: 'Zvolte složku pro export',
+    errUnsupportedExt: 'soubory .{ext} nejsou podporovány',
+    errNotFile: 'není soubor',
+    errTooLarge: 'překračuje limit {mb} MB',
+    errImageTooLarge: 'obrázek překračuje limit 5 MB',
+    errUnreadable: 'nelze přečíst',
+    errFileTooLarge: 'Soubor překračuje limit velikosti',
+    errParseFailed: 'Soubor se nepodařilo zpracovat',
+    errImageNoText:
+      'Obrázkové přílohy neobsahují text; obrázek se odesílá spolu se zprávou uživatele',
+    errNotImage: 'nepodporovaný typ obrázku',
+    errNoApiKey: 'Pro {provider} není nakonfigurován žádný klíč API',
+    errAiBusy: 'Služba AI je právě zaneprázdněna — zkuste to prosím za chvíli znovu',
+    errNoModel: 'Není nakonfigurován název modelu',
+    menuFile: 'Soubor',
+    menuNewDoc: 'Nový dokument',
+    menuNewWindow: 'Nové okno',
+    menuOpen: 'Otevřít…',
+    menuOpenRecent: 'Otevřít poslední',
+    menuNoRecent: 'Žádné poslední dokumenty',
+    menuClose: 'Zavřít',
+    menuSave: 'Uložit',
+    menuSaveAs: 'Uložit jako…',
+    menuPageSetup: 'Vzhled stránky…',
+    menuExportPdf: 'Exportovat jako PDF…',
+    menuExportHtml: 'Exportovat jako HTML…',
+    menuExportImages: 'Exportovat jako obrázky…',
+    menuPrint: 'Tisk…',
+    menuEdit: 'Úpravy',
+    menuUndo: 'Zpět',
+    menuRedo: 'Znovu',
+    menuCut: 'Vyjmout',
+    menuCopy: 'Kopírovat',
+    menuPaste: 'Vložit',
+    menuPasteMatch: 'Vložit a přizpůsobit styl',
+    menuFindReplace: 'Najít a nahradit…',
+    menuGoTo: 'Přejít na…',
+    menuSelectAll: 'Vybrat vše',
+    menuView: 'Zobrazení',
+    menuZoom: 'Lupa',
+    menuZoomIn: 'Zvětšit',
+    menuZoomOut: 'Zmenšit',
+    menuZoom100: 'Skutečná velikost (100 %)',
+    menuPageWidth: 'Šířka stránky',
+    menuWholePage: 'Celá stránka',
+    menuAiSidebar: 'Boční panel AI',
+    menuDarkMode: 'Tmavý režim',
+    menuFullscreen: 'Přejít na celou obrazovku',
+    menuInsert: 'Vložení',
+    menuInsertTable: 'Tabulka…',
+    menuInsertImage: 'Obrázek…',
+    menuInsertPageBreak: 'Konec stránky',
+    menuInsertLink: 'Hypertextový odkaz…',
+    menuInsertEquation: 'Rovnice…',
+    menuComment: 'Komentář',
+    menuFormat: 'Formát',
+    menuBold: 'Tučné',
+    menuItalic: 'Kurzíva',
+    menuUnderline: 'Podtržení',
+    menuAlign: 'Zarovnat',
+    menuAlignLeft: 'Zarovnat vlevo',
+    menuAlignCenter: 'Zarovnat na střed',
+    menuAlignRight: 'Zarovnat vpravo',
+    menuAlignJustify: 'Zarovnat do bloku',
+    menuFont: 'Písmo…',
+    menuParagraph: 'Odstavec…',
+    menuTools: 'Nástroje',
+    menuTable: 'Tabulka',
+    menuTableInsert: 'Vložit',
+    menuTableInsertTable: 'Tabulka…',
+    menuTableColsLeft: 'Sloupce vlevo',
+    menuTableColsRight: 'Sloupce vpravo',
+    menuTableRowsAbove: 'Řádky nad',
+    menuTableRowsBelow: 'Řádky pod',
+    menuTableCells: 'Buňky…',
+    menuTableDelete: 'Odstranit',
+    menuTableDeleteTable: 'Tabulka',
+    menuTableDeleteColumns: 'Sloupce',
+    menuTableDeleteRows: 'Řádky',
+    menuTableSelect: 'Vybrat',
+    menuTableSelectCell: 'Buňka',
+    menuTableSelectColumn: 'Sloupec',
+    menuTableSelectRow: 'Řádek',
+    menuTableSelectTable: 'Tabulka',
+    menuTableMergeCells: 'Sloučit buňky',
+    menuTableSplitCells: 'Rozdělit buňky…',
+    menuTableSplitTable: 'Rozdělit tabulku',
+    menuTableAutoFit: 'Přizpůsobit',
+    menuTableAutoFitContents: 'Přizpůsobit obsahu',
+    menuTableAutoFitWindow: 'Přizpůsobit oknu',
+    menuTableFixedWidth: 'Pevná šířka sloupce',
+    menuTableDistributeRows: 'Rozdělit řádky rovnoměrně',
+    menuTableDistributeColumns: 'Rozdělit sloupce rovnoměrně',
+    menuTableRepeatHeader: 'Opakovat řádky záhlaví',
+    menuTableGridlines: 'Zobrazit mřížku',
+    menuTableProperties: 'Vlastnosti tabulky…',
+    menuWordCount: 'Počet slov…',
+    menuAutoCorrect: 'Možnosti automatických oprav…',
+    menuPreferences: 'Předvolby…',
+    menuAiProofread: 'Korektura AI',
+    menuWindow: 'Okno',
+    menuHelp: 'Nápověda',
+    menuShortcuts: 'Klávesové zkratky',
+    menuDocsHelp: 'Nápověda NiuOffice Docs',
   },
   nl: {
     dlgOpenDoc: 'Document openen',
@@ -1455,6 +2151,8 @@ const tMain = createI18n({
     filterSupported: 'Ondersteunde bestanden',
     filterAll: 'Alle bestanden',
     dlgExportPdf: 'Exporteren als PDF',
+    dlgExportHtml: 'Exporteren als HTML',
+    dlgPickExportDir: 'Exportmap kiezen',
     errUnsupportedExt: '.{ext}-bestanden worden niet ondersteund',
     errNotFile: 'geen bestand',
     errTooLarge: 'overschrijdt de limiet van {mb} MB',
@@ -1479,6 +2177,8 @@ const tMain = createI18n({
     menuSaveAs: 'Opslaan als…',
     menuPageSetup: 'Pagina-instelling…',
     menuExportPdf: 'Exporteren als PDF…',
+    menuExportHtml: 'Exporteren als HTML…',
+    menuExportImages: 'Exporteren als afbeeldingen…',
     menuPrint: 'Afdrukken…',
     menuEdit: 'Bewerken',
     menuUndo: 'Ongedaan maken',
@@ -1488,8 +2188,10 @@ const tMain = createI18n({
     menuPaste: 'Plakken',
     menuPasteMatch: 'Plakken met dezelfde stijl',
     menuFindReplace: 'Zoeken en vervangen…',
+    menuGoTo: 'Ga naar…',
     menuSelectAll: 'Alles selecteren',
     menuView: 'Beeld',
+    menuZoom: 'Zoomen',
     menuZoomIn: 'Inzoomen',
     menuZoomOut: 'Uitzoomen',
     menuZoom100: 'Ware grootte (100%)',
@@ -1499,7 +2201,7 @@ const tMain = createI18n({
     menuDarkMode: 'Donkere modus',
     menuFullscreen: 'Schermvullende weergave',
     menuInsert: 'Invoegen',
-    menuInsertTable: 'Tabel (3×3)',
+    menuInsertTable: 'Tabel…',
     menuInsertImage: 'Afbeelding…',
     menuInsertPageBreak: 'Pagina-einde',
     menuInsertLink: 'Hyperlink…',
@@ -1517,7 +2219,38 @@ const tMain = createI18n({
     menuFont: 'Lettertype…',
     menuParagraph: 'Alinea…',
     menuTools: 'Extra',
+    menuTable: 'Tabel',
+    menuTableInsert: 'Invoegen',
+    menuTableInsertTable: 'Tabel…',
+    menuTableColsLeft: 'Kolommen links',
+    menuTableColsRight: 'Kolommen rechts',
+    menuTableRowsAbove: 'Rijen boven',
+    menuTableRowsBelow: 'Rijen onder',
+    menuTableCells: 'Cellen…',
+    menuTableDelete: 'Verwijderen',
+    menuTableDeleteTable: 'Tabel',
+    menuTableDeleteColumns: 'Kolommen',
+    menuTableDeleteRows: 'Rijen',
+    menuTableSelect: 'Selecteren',
+    menuTableSelectCell: 'Cel',
+    menuTableSelectColumn: 'Kolom',
+    menuTableSelectRow: 'Rij',
+    menuTableSelectTable: 'Tabel',
+    menuTableMergeCells: 'Cellen samenvoegen',
+    menuTableSplitCells: 'Cellen splitsen…',
+    menuTableSplitTable: 'Tabel splitsen',
+    menuTableAutoFit: 'AutoAanpassen',
+    menuTableAutoFitContents: 'Aanpassen aan inhoud',
+    menuTableAutoFitWindow: 'Aanpassen aan venster',
+    menuTableFixedWidth: 'Vaste kolombreedte',
+    menuTableDistributeRows: 'Rijen gelijkmatig verdelen',
+    menuTableDistributeColumns: 'Kolommen gelijkmatig verdelen',
+    menuTableRepeatHeader: 'Koprijen herhalen',
+    menuTableGridlines: 'Rasterlijnen weergeven',
+    menuTableProperties: 'Tabeleigenschappen…',
     menuWordCount: 'Woorden tellen…',
+    menuAutoCorrect: 'AutoCorrectie-opties…',
+    menuPreferences: 'Voorkeuren…',
     menuAiProofread: 'AI-proeflezen',
     menuWindow: 'Venster',
     menuHelp: 'Help',
@@ -1549,6 +2282,8 @@ const tMain = createI18n({
     filterSupported: 'Fail yang Disokong',
     filterAll: 'Semua Fail',
     dlgExportPdf: 'Eksport sebagai PDF',
+    dlgExportHtml: 'Eksport sebagai HTML',
+    dlgPickExportDir: 'Pilih Folder Eksport',
     errUnsupportedExt: 'fail .{ext} tidak disokong',
     errNotFile: 'bukan fail',
     errTooLarge: 'melebihi had {mb}MB',
@@ -1573,6 +2308,8 @@ const tMain = createI18n({
     menuSaveAs: 'Simpan Sebagai…',
     menuPageSetup: 'Persediaan Halaman…',
     menuExportPdf: 'Eksport sebagai PDF…',
+    menuExportHtml: 'Eksport sebagai HTML…',
+    menuExportImages: 'Eksport sebagai imej…',
     menuPrint: 'Cetak…',
     menuEdit: 'Edit',
     menuUndo: 'Buat Asal',
@@ -1582,8 +2319,10 @@ const tMain = createI18n({
     menuPaste: 'Tampal',
     menuPasteMatch: 'Tampal dan Padankan Gaya',
     menuFindReplace: 'Cari dan Ganti…',
+    menuGoTo: 'Pergi ke…',
     menuSelectAll: 'Pilih Semua',
     menuView: 'Lihat',
+    menuZoom: 'Zum',
     menuZoomIn: 'Zum Masuk',
     menuZoomOut: 'Zum Keluar',
     menuZoom100: 'Saiz Sebenar (100%)',
@@ -1593,7 +2332,7 @@ const tMain = createI18n({
     menuDarkMode: 'Mod Gelap',
     menuFullscreen: 'Masuk Skrin Penuh',
     menuInsert: 'Sisip',
-    menuInsertTable: 'Jadual (3×3)',
+    menuInsertTable: 'Jadual…',
     menuInsertImage: 'Imej…',
     menuInsertPageBreak: 'Pemisah Halaman',
     menuInsertLink: 'Hiperpautan…',
@@ -1611,7 +2350,38 @@ const tMain = createI18n({
     menuFont: 'Fon…',
     menuParagraph: 'Perenggan…',
     menuTools: 'Alat',
+    menuTable: 'Jadual',
+    menuTableInsert: 'Sisipkan',
+    menuTableInsertTable: 'Jadual…',
+    menuTableColsLeft: 'Lajur di Kiri',
+    menuTableColsRight: 'Lajur di Kanan',
+    menuTableRowsAbove: 'Baris di Atas',
+    menuTableRowsBelow: 'Baris di Bawah',
+    menuTableCells: 'Sel…',
+    menuTableDelete: 'Padam',
+    menuTableDeleteTable: 'Jadual',
+    menuTableDeleteColumns: 'Lajur',
+    menuTableDeleteRows: 'Baris',
+    menuTableSelect: 'Pilih',
+    menuTableSelectCell: 'Sel',
+    menuTableSelectColumn: 'Lajur',
+    menuTableSelectRow: 'Baris',
+    menuTableSelectTable: 'Jadual',
+    menuTableMergeCells: 'Cantum Sel',
+    menuTableSplitCells: 'Pisahkan Sel…',
+    menuTableSplitTable: 'Pisahkan Jadual',
+    menuTableAutoFit: 'Autopadan',
+    menuTableAutoFitContents: 'Padan kepada Kandungan',
+    menuTableAutoFitWindow: 'Padan kepada Tetingkap',
+    menuTableFixedWidth: 'Lebar Lajur Tetap',
+    menuTableDistributeRows: 'Agihkan Baris Sama Rata',
+    menuTableDistributeColumns: 'Agihkan Lajur Sama Rata',
+    menuTableRepeatHeader: 'Ulang Baris Pengepala',
+    menuTableGridlines: 'Lihat Garis Grid',
+    menuTableProperties: 'Sifat Jadual…',
     menuWordCount: 'Kiraan Perkataan…',
+    menuAutoCorrect: 'Pilihan AutoBetul…',
+    menuPreferences: 'Keutamaan…',
     menuAiProofread: 'Pembacaan Pruf AI',
     menuWindow: 'Tetingkap',
     menuHelp: 'Bantuan',
@@ -1642,6 +2412,8 @@ const tMain = createI18n({
     filterSupported: 'קבצים נתמכים',
     filterAll: 'כל הקבצים',
     dlgExportPdf: 'ייצוא כ-PDF',
+    dlgExportHtml: 'ייצוא כ-HTML',
+    dlgPickExportDir: 'בחירת תיקיית ייצוא',
     errUnsupportedExt: 'קובצי .{ext} אינם נתמכים',
     errNotFile: 'אינו קובץ',
     errTooLarge: 'חורג מהמגבלה של {mb}MB',
@@ -1666,6 +2438,8 @@ const tMain = createI18n({
     menuSaveAs: 'שמירה בשם…',
     menuPageSetup: 'הגדרת עמוד…',
     menuExportPdf: 'ייצוא כ-PDF…',
+    menuExportHtml: 'ייצוא כ-HTML…',
+    menuExportImages: 'ייצוא כתמונות…',
     menuPrint: 'הדפסה…',
     menuEdit: 'עריכה',
     menuUndo: 'בטל',
@@ -1675,8 +2449,10 @@ const tMain = createI18n({
     menuPaste: 'הדבק',
     menuPasteMatch: 'הדבק והתאם סגנון',
     menuFindReplace: 'חיפוש והחלפה…',
+    menuGoTo: 'עבור אל…',
     menuSelectAll: 'בחר הכול',
     menuView: 'תצוגה',
+    menuZoom: 'זום',
     menuZoomIn: 'התקרבות',
     menuZoomOut: 'התרחקות',
     menuZoom100: 'גודל אמיתי (100%)',
@@ -1686,7 +2462,7 @@ const tMain = createI18n({
     menuDarkMode: 'מצב כהה',
     menuFullscreen: 'מעבר למסך מלא',
     menuInsert: 'הוספה',
-    menuInsertTable: 'טבלה (3×3)',
+    menuInsertTable: 'טבלה…',
     menuInsertImage: 'תמונה…',
     menuInsertPageBreak: 'מעבר עמוד',
     menuInsertLink: 'היפר-קישור…',
@@ -1704,7 +2480,38 @@ const tMain = createI18n({
     menuFont: 'גופן…',
     menuParagraph: 'פסקה…',
     menuTools: 'כלים',
+    menuTable: 'טבלה',
+    menuTableInsert: 'הוסף',
+    menuTableInsertTable: 'טבלה…',
+    menuTableColsLeft: 'עמודות משמאל',
+    menuTableColsRight: 'עמודות מימין',
+    menuTableRowsAbove: 'שורות מעל',
+    menuTableRowsBelow: 'שורות מתחת',
+    menuTableCells: 'תאים…',
+    menuTableDelete: 'מחק',
+    menuTableDeleteTable: 'טבלה',
+    menuTableDeleteColumns: 'עמודות',
+    menuTableDeleteRows: 'שורות',
+    menuTableSelect: 'בחר',
+    menuTableSelectCell: 'תא',
+    menuTableSelectColumn: 'עמודה',
+    menuTableSelectRow: 'שורה',
+    menuTableSelectTable: 'טבלה',
+    menuTableMergeCells: 'מזג תאים',
+    menuTableSplitCells: 'פצל תאים…',
+    menuTableSplitTable: 'פצל טבלה',
+    menuTableAutoFit: 'התאמה אוטומטית',
+    menuTableAutoFitContents: 'התאם לתוכן',
+    menuTableAutoFitWindow: 'התאם לחלון',
+    menuTableFixedWidth: 'רוחב עמודה קבוע',
+    menuTableDistributeRows: 'פזר שורות באופן שווה',
+    menuTableDistributeColumns: 'פזר עמודות באופן שווה',
+    menuTableRepeatHeader: 'חזור על שורות כותרת',
+    menuTableGridlines: 'הצג קווי רשת',
+    menuTableProperties: 'מאפייני טבלה…',
     menuWordCount: 'ספירת מילים…',
+    menuAutoCorrect: 'אפשרויות תיקון אוטומטי…',
+    menuPreferences: 'העדפות…',
     menuAiProofread: 'הגהת AI',
     menuWindow: 'חלון',
     menuHelp: 'עזרה',
@@ -1736,6 +2543,8 @@ const tMain = createI18n({
     filterSupported: 'समर्थित फ़ाइलें',
     filterAll: 'सभी फ़ाइलें',
     dlgExportPdf: 'PDF के रूप में निर्यात करें',
+    dlgExportHtml: 'HTML के रूप में निर्यात करें',
+    dlgPickExportDir: 'निर्यात फ़ोल्डर चुनें',
     errUnsupportedExt: '.{ext} फ़ाइलें समर्थित नहीं हैं',
     errNotFile: 'फ़ाइल नहीं है',
     errTooLarge: '{mb}MB की सीमा से अधिक है',
@@ -1760,6 +2569,8 @@ const tMain = createI18n({
     menuSaveAs: 'इस रूप में सहेजें…',
     menuPageSetup: 'पृष्ठ सेटअप…',
     menuExportPdf: 'PDF के रूप में निर्यात करें…',
+    menuExportHtml: 'HTML के रूप में निर्यात करें…',
+    menuExportImages: 'छवियों के रूप में निर्यात…',
     menuPrint: 'प्रिंट करें…',
     menuEdit: 'संपादन',
     menuUndo: 'पूर्ववत करें',
@@ -1769,8 +2580,10 @@ const tMain = createI18n({
     menuPaste: 'चिपकाएँ',
     menuPasteMatch: 'चिपकाएँ और शैली मिलाएँ',
     menuFindReplace: 'ढूँढें और बदलें…',
+    menuGoTo: 'यहाँ जाएँ…',
     menuSelectAll: 'सभी चुनें',
     menuView: 'दृश्य',
+    menuZoom: 'ज़ूम',
     menuZoomIn: 'ज़ूम इन',
     menuZoomOut: 'ज़ूम आउट',
     menuZoom100: 'वास्तविक आकार (100%)',
@@ -1780,7 +2593,7 @@ const tMain = createI18n({
     menuDarkMode: 'डार्क मोड',
     menuFullscreen: 'पूर्ण स्क्रीन में जाएँ',
     menuInsert: 'सम्मिलित करें',
-    menuInsertTable: 'तालिका (3×3)',
+    menuInsertTable: 'तालिका…',
     menuInsertImage: 'छवि…',
     menuInsertPageBreak: 'पृष्ठ विराम',
     menuInsertLink: 'हाइपरलिंक…',
@@ -1798,7 +2611,38 @@ const tMain = createI18n({
     menuFont: 'फ़ॉन्ट…',
     menuParagraph: 'अनुच्छेद…',
     menuTools: 'उपकरण',
+    menuTable: 'तालिका',
+    menuTableInsert: 'सम्मिलित करें',
+    menuTableInsertTable: 'तालिका…',
+    menuTableColsLeft: 'बाईं ओर स्तंभ',
+    menuTableColsRight: 'दाईं ओर स्तंभ',
+    menuTableRowsAbove: 'ऊपर पंक्तियाँ',
+    menuTableRowsBelow: 'नीचे पंक्तियाँ',
+    menuTableCells: 'कक्ष…',
+    menuTableDelete: 'हटाएँ',
+    menuTableDeleteTable: 'तालिका',
+    menuTableDeleteColumns: 'स्तंभ',
+    menuTableDeleteRows: 'पंक्तियाँ',
+    menuTableSelect: 'चुनें',
+    menuTableSelectCell: 'कक्ष',
+    menuTableSelectColumn: 'स्तंभ',
+    menuTableSelectRow: 'पंक्ति',
+    menuTableSelectTable: 'तालिका',
+    menuTableMergeCells: 'कक्ष मर्ज करें',
+    menuTableSplitCells: 'कक्ष विभाजित करें…',
+    menuTableSplitTable: 'तालिका विभाजित करें',
+    menuTableAutoFit: 'स्वतः फ़िट',
+    menuTableAutoFitContents: 'सामग्री के अनुसार फ़िट',
+    menuTableAutoFitWindow: 'विंडो के अनुसार फ़िट',
+    menuTableFixedWidth: 'निश्चित स्तंभ चौड़ाई',
+    menuTableDistributeRows: 'पंक्तियाँ समान रूप से बाँटें',
+    menuTableDistributeColumns: 'स्तंभ समान रूप से बाँटें',
+    menuTableRepeatHeader: 'शीर्ष पंक्तियाँ दोहराएँ',
+    menuTableGridlines: 'ग्रिडलाइन देखें',
+    menuTableProperties: 'तालिका गुण…',
     menuWordCount: 'शब्द गणना…',
+    menuAutoCorrect: 'स्वतः सुधार विकल्प…',
+    menuPreferences: 'प्राथमिकताएँ…',
     menuAiProofread: 'AI प्रूफ़रीडिंग',
     menuWindow: 'विंडो',
     menuHelp: 'सहायता',
@@ -1829,6 +2673,8 @@ const tMain = createI18n({
     filterSupported: '支援的檔案',
     filterAll: '所有檔案',
     dlgExportPdf: '匯出為 PDF',
+    dlgExportHtml: '匯出為 HTML',
+    dlgPickExportDir: '選擇匯出目錄',
     errUnsupportedExt: '暫不支援 .{ext} 類型',
     errNotFile: '不是檔案',
     errTooLarge: '超過 {mb}MB 上限',
@@ -1852,6 +2698,8 @@ const tMain = createI18n({
     menuSaveAs: '另存新檔…',
     menuPageSetup: '版面設定…',
     menuExportPdf: '匯出為 PDF…',
+    menuExportHtml: '匯出為 HTML…',
+    menuExportImages: '匯出為圖片…',
     menuPrint: '列印…',
     menuEdit: '編輯',
     menuUndo: '復原',
@@ -1861,8 +2709,10 @@ const tMain = createI18n({
     menuPaste: '貼上',
     menuPasteMatch: '貼上並符合格式',
     menuFindReplace: '尋找與取代…',
+    menuGoTo: '定位…',
     menuSelectAll: '全選',
     menuView: '檢視',
+    menuZoom: '縮放',
     menuZoomIn: '放大',
     menuZoomOut: '縮小',
     menuZoom100: '實際大小 (100%)',
@@ -1872,7 +2722,7 @@ const tMain = createI18n({
     menuDarkMode: '深色模式',
     menuFullscreen: '進入全螢幕',
     menuInsert: '插入',
-    menuInsertTable: '表格(3×3)',
+    menuInsertTable: '表格…',
     menuInsertImage: '圖片…',
     menuInsertPageBreak: '分頁符號',
     menuInsertLink: '超連結…',
@@ -1890,7 +2740,38 @@ const tMain = createI18n({
     menuFont: '字型…',
     menuParagraph: '段落…',
     menuTools: '工具',
+    menuTable: '表格',
+    menuTableInsert: '插入',
+    menuTableInsertTable: '表格…',
+    menuTableColsLeft: '在左側插入欄',
+    menuTableColsRight: '在右側插入欄',
+    menuTableRowsAbove: '在上方插入列',
+    menuTableRowsBelow: '在下方插入列',
+    menuTableCells: '儲存格…',
+    menuTableDelete: '刪除',
+    menuTableDeleteTable: '表格',
+    menuTableDeleteColumns: '欄',
+    menuTableDeleteRows: '列',
+    menuTableSelect: '選取',
+    menuTableSelectCell: '儲存格',
+    menuTableSelectColumn: '欄',
+    menuTableSelectRow: '列',
+    menuTableSelectTable: '表格',
+    menuTableMergeCells: '合併儲存格',
+    menuTableSplitCells: '分割儲存格…',
+    menuTableSplitTable: '拆分表格',
+    menuTableAutoFit: '自動調整',
+    menuTableAutoFitContents: '根據內容自動調整',
+    menuTableAutoFitWindow: '根據視窗自動調整',
+    menuTableFixedWidth: '固定欄寬',
+    menuTableDistributeRows: '平均分佈各列',
+    menuTableDistributeColumns: '平均分佈各欄',
+    menuTableRepeatHeader: '重複標題列',
+    menuTableGridlines: '檢視格線',
+    menuTableProperties: '表格屬性…',
     menuWordCount: '字數統計…',
+    menuAutoCorrect: '自動校正選項…',
+    menuPreferences: '偏好設定…',
     menuAiProofread: 'AI 校對',
     menuWindow: '視窗',
     menuHelp: '說明',
@@ -1953,6 +2834,21 @@ export function setDocsShellWindow(win: BrowserWindow | null): void {
   docsShellWindow = win
 }
 
+/** the window hosting a tab's WebContentsView when BrowserWindow.fromWebContents
+ *  cannot tell (detached "Open in New Window" editors) */
+let hostWindowHook: ((wc: WebContents) => BrowserWindow | undefined) | null = null
+export function setDocsHostWindowHook(
+  fn: ((wc: WebContents) => BrowserWindow | undefined) | null,
+): void {
+  hostWindowHook = fn
+}
+
+function hostWindowFor(wc: WebContents | null | undefined): BrowserWindow | undefined {
+  const own = wc && (hostWindowHook?.(wc) ?? BrowserWindow.fromWebContents(wc))
+  if (own && !own.isDestroyed()) return own
+  return docsShellWindow && !docsShellWindow.isDestroyed() ? docsShellWindow : undefined
+}
+
 /** injected by the shell in tab mode: resolves the webContents of the currently active docs tab,
  * used for menu-command forwarding where there is no IpcMainInvokeEvent to key off of. */
 let activeDocsResolver: (() => WebContents | null) | null = null
@@ -1965,9 +2861,10 @@ function activeDocsWebContents(): WebContents | null {
   return BrowserWindow.getFocusedWindow()?.webContents ?? mainWindow?.webContents ?? null
 }
 
-/** dialog parent for the calling tab (standalone mode falls back to its own BrowserWindow) */
+/** dialog parent for the calling tab: the sender's own window when it has one
+ *  (standalone mode, detached "Open in New Window" editors), else the shell window */
 function dialogParent(event: IpcMainInvokeEvent): BrowserWindow | undefined {
-  return docsShellWindow ?? BrowserWindow.fromWebContents(event.sender) ?? undefined
+  return hostWindowFor(event.sender)
 }
 
 async function openDialog(event: IpcMainInvokeEvent, options: OpenDialogOptions) {
@@ -1995,6 +2892,22 @@ export function uniquePathIn(dir: string, fileName: string): string {
   return candidate
 }
 
+/**
+ * An encrypted file the window holds no password for does not become a
+ * document yet: loadDocx hands back a password marker with no side effects and
+ * the renderer runs the replace guard once the password decrypted it
+ * (submitDocPwd). Guarding here as well would prompt twice, and a Don't Save
+ * answer would drop the recovery copy before anything replaced the document.
+ */
+async function opensAsPasswordPrompt(filePath: string, wcId: number): Promise<boolean> {
+  if (docPasswordFor(wcId, filePath)) return false
+  try {
+    return isEncryptedDocx(await readFile(filePath))
+  } catch {
+    return false
+  }
+}
+
 export function openExternalDocx(filePath: string | null): void {
   if (!filePath || !/\.docx$/i.test(filePath)) return
   const win = BrowserWindow.getFocusedWindow() ?? mainWindow
@@ -2002,7 +2915,17 @@ export function openExternalDocx(filePath: string | null): void {
     pendingOpenPath = filePath
     return
   }
-  void loadDocx(filePath, win.webContents.id)
+  void (async () => {
+    const wcId = win.webContents.id
+    if (
+      rendererReady &&
+      !(await opensAsPasswordPrompt(filePath, wcId)) &&
+      !(await requestDocsClose(win.webContents, win))
+    ) {
+      return
+    }
+    return loadDocx(filePath, wcId)
+  })()
     .then((result) => {
       if (!result || win.isDestroyed()) return
       if (win.isMinimized()) win.restore()
@@ -2026,11 +2949,6 @@ function readJson<T>(path: string, fallback: T): T {
   return fallback
 }
 
-function writeJson(path: string, value: unknown): void {
-  mkdirSync(join(path, '..'), { recursive: true })
-  writeFileSync(path, JSON.stringify(value, null, 2))
-}
-
 // ---- recent files ----
 
 const RECENT_PATH = () => userDataPath('recent.json')
@@ -2044,13 +2962,20 @@ function pushRecent(filePath: string): void {
   // rebuild when the file is already at the head of the list
   if (recent[0] === filePath) return
   const next = [filePath, ...recent.filter((p) => p !== filePath)].slice(0, RECENT_LIMIT)
-  writeJson(RECENT_PATH(), next)
+  try {
+    writeJsonAtomic(RECENT_PATH(), next)
+  } catch (err) {
+    // the document itself is already saved; a lost recents entry must not fail the save
+    console.warn('[docs] recent.json write failed:', err)
+  }
   buildDocsMenu() // keep File > Open Recent in sync
 }
 
-/** unified recents for the shell home screen (paths only; type = extension) */
+/** unified recents for the shell home screen (paths only; type = extension).
+ *  No existence filter: a transiently unavailable path (disconnected drive,
+ *  pending mount) must stay listed — the stat layer flags it instead (r158) */
 export function readRecentFiles(): string[] {
-  return readJson<string[]>(RECENT_PATH(), []).filter((p) => existsSync(p))
+  return readJson<string[]>(RECENT_PATH(), [])
 }
 
 export function recordRecentFile(filePath: string): void {
@@ -2060,7 +2985,7 @@ export function recordRecentFile(filePath: string): void {
 export function removeRecentFiles(filePaths: string[]): void {
   const drop = new Set(filePaths)
   const recent = readJson<string[]>(RECENT_PATH(), [])
-  writeJson(
+  writeJsonAtomic(
     RECENT_PATH(),
     recent.filter((p) => !drop.has(p)),
   )
@@ -2083,19 +3008,20 @@ export function docsFileRenamed(wc: WebContents, oldPath: string, newPath: strin
   // an encrypted document's password must follow the path, or the next save
   // finds no password under the new name and silently writes plaintext
   renameDocPassword(wc.id, oldPath, newPath)
+  moveLazyMediaSource(oldPath, newPath)
   wc.send('docs:renamed', { oldPath, newPath })
 }
 
 /** keep a renamed file at its old position in the recent/starred lists */
 export function replaceRecentFile(oldPath: string, newPath: string): void {
   const recent = readJson<string[]>(RECENT_PATH(), [])
-  writeJson(
+  writeJsonAtomic(
     RECENT_PATH(),
     recent.map((p) => (p === oldPath ? newPath : p)),
   )
   const starred = readJson<string[]>(STARRED_PATH(), [])
   if (starred.includes(oldPath)) {
-    writeJson(
+    writeJsonAtomic(
       STARRED_PATH(),
       starred.map((p) => (p === oldPath ? newPath : p)),
     )
@@ -2107,8 +3033,11 @@ export function replaceRecentFile(oldPath: string, newPath: string): void {
 
 const STARRED_PATH = () => userDataPath('starred.json')
 
+/** No existence filter, same rationale as readRecentFiles: a transiently
+ *  unavailable starred file must keep its star and its Starred-view row —
+ *  filtering here also desynced the star state shown on recents rows (r158) */
 export function readStarredFiles(): string[] {
-  return readJson<string[]>(STARRED_PATH(), []).filter((p) => existsSync(p))
+  return readJson<string[]>(STARRED_PATH(), [])
 }
 
 export function toggleStarredFile(filePath: string): void {
@@ -2116,19 +3045,29 @@ export function toggleStarredFile(filePath: string): void {
   const next = starred.includes(filePath)
     ? starred.filter((p) => p !== filePath)
     : [...starred, filePath]
-  writeJson(STARRED_PATH(), next)
+  writeJsonAtomic(STARRED_PATH(), next)
+}
+
+/** Bulk unstar (in-app delete, or removing an unavailable entry from the
+ *  recents list): the star must not outlive the row it pointed at (r158) */
+export function removeStarredFiles(filePaths: string[]): void {
+  const drop = new Set(filePaths)
+  if (drop.size === 0) return
+  const starred = readJson<string[]>(STARRED_PATH(), [])
+  const next = starred.filter((p) => !drop.has(p))
+  if (next.length !== starred.length) writeJsonAtomic(STARRED_PATH(), next)
 }
 
 // ---- original archive (pass-through base: original file archived by content hash) ----
 
-async function archiveOriginal(filePath: string, bytes: Buffer): Promise<string> {
-  const hash = sha256Hex(bytes)
+async function archiveOriginal(filePath: string, hash: string, size: number): Promise<void> {
+  // a copy larger than the whole cap would only evict every other original
+  if (size > ORIGINALS_MAX_BYTES) return
   const dir = userDataPath('originals')
   await mkdir(dir, { recursive: true })
   const target = join(dir, `${hash}.docx`)
   if (!existsSync(target)) await copyFile(filePath, target)
   void pruneOriginals(dir)
-  return hash
 }
 
 const ORIGINALS_MAX_BYTES = 500 * 1024 * 1024
@@ -2188,20 +3127,48 @@ function allowPdfWrite(wcId: number, filePath: string): void {
   pdfWritablePaths.set(wcId, set)
 }
 
-// Fidelity-harness escape hatch: headless runs have no save dialog to authorize
-// paths, so an explicitly configured directory (set only by our test scripts)
-// is treated as pre-authorized for PDF export.
-const testExportDir = process.env.GENOFFICE_TEST_EXPORT_DIR || null
-
 function canPdfWrite(wcId: number, filePath: string): boolean {
-  if (testExportDir && filePath.startsWith(testExportDir + '/')) return true
   return pdfWritablePaths.get(wcId)?.has(filePath) === true
 }
 
+// Export as images runs the regular PDF export against a temp file: that file must
+// not be revealed like a user export, and only the tab that asked may read it back
+// (or write PNGs into the folder it picked).
+const imageExportTemps = new Map<number, Set<string>>()
+const imageExportDirs = new Map<number, Set<string>>()
+
+function isImageExportTemp(wcId: number, filePath: string): boolean {
+  return imageExportTemps.get(wcId)?.has(filePath) === true
+}
+
+// Word's Ignore All lasts for the document session. Chromium has no
+// per-document skip list, so the word sits in the custom dictionary while a
+// renderer holds it and leaves when the last holder goes; the journal pulls
+// crash-orphaned words back out on the next start.
+const SPELL_IGNORED_PATH = () => userDataPath('spell-ignored.json')
+const spellIgnored = new Map<string, Set<number>>()
+const journalIgnoredWords = () => writeJsonAtomic(SPELL_IGNORED_PATH(), [...spellIgnored.keys()])
+
+function releaseSpellIgnores(wcId: number): void {
+  let changed = false
+  for (const [word, holders] of spellIgnored) {
+    if (!holders.delete(wcId) || holders.size > 0) continue
+    spellIgnored.delete(word)
+    session.defaultSession.removeWordFromSpellCheckerDictionary(word)
+    changed = true
+  }
+  if (changed) journalIgnoredWords()
+}
+
 function dropDocWriter(wcId: number): void {
+  releaseSpellIgnores(wcId)
   docWritablePaths.delete(wcId)
   pdfWritablePaths.delete(wcId)
+  for (const p of imageExportTemps.get(wcId) ?? []) void rm(p, { force: true })
+  imageExportTemps.delete(wcId)
+  imageExportDirs.delete(wcId)
   docDiskStates.delete(wcId)
+  forgetLazyMediaOwner(wcId)
   // Destroyed renderers count as torn down too: window-close paths never run
   // teardownDocsRenderer, but an in-flight save handler resuming after the
   // destruction must still fail its re-check (wcIds are never reused, so the
@@ -2215,11 +3182,11 @@ const docDiskStates = new Map<number, Map<string, DiskFileState>>()
 
 const sha256Hex = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex')
 
-async function rememberDiskState(wcId: number, filePath: string, bytes: Buffer): Promise<void> {
+async function rememberDiskState(wcId: number, filePath: string, hash: string): Promise<void> {
   try {
     const s = await stat(filePath)
     const states = docDiskStates.get(wcId) ?? new Map<string, DiskFileState>()
-    states.set(filePath, { mtimeMs: s.mtimeMs, size: s.size, hash: sha256Hex(bytes) })
+    states.set(filePath, { mtimeMs: s.mtimeMs, size: s.size, hash })
     docDiskStates.set(wcId, states)
   } catch {
     /* unstatable target: skip tracking; the next save simply won't flag a conflict */
@@ -2246,7 +3213,10 @@ async function diskChangedExternally(wcId: number, filePath: string): Promise<bo
  * workaround), so the orphan must lose write access and stop its timers — otherwise
  * its 30s recovery loop resurrects content the user already discarded. */
 export function teardownDocsRenderer(contents: WebContents): void {
+  teardownZoteroIpc(contents)
   tornDownWcIds.add(contents.id)
+  releaseSpellIgnores(contents.id)
+  forgetLazyMediaOwner(contents.id)
   // Sweep recovery copies for this renderer's documents: every non-crash close
   // either saved (docs:save already cleared it) or explicitly discarded, so a
   // copy still on disk here is a leftover from an in-flight recovery write.
@@ -2328,6 +3298,16 @@ async function maybeRecoverDocBytes(
   return { bytes: original, recovered: false }
 }
 
+// Word's own .docx ceiling
+const MAX_OPEN_BYTES = 512 * 1024 * 1024
+
+async function showOpenError(wcId: number, detail: string): Promise<void> {
+  const parent = hostWindowFor(webContents.fromId(wcId)) ?? mainWindow
+  const options = { type: 'error' as const, message: tm('dlgOpenDoc'), detail }
+  if (parent && !parent.isDestroyed()) await dialog.showMessageBox(parent, options)
+  else await dialog.showMessageBox(options)
+}
+
 async function loadDocx(
   filePath: string,
   wcId: number,
@@ -2335,7 +3315,14 @@ async function loadDocx(
 ): Promise<OpenDocxResult> {
   if (typeof filePath !== 'string' || !/\.docx$/i.test(filePath)) return null
   if (!existsSync(filePath)) return null
-  const original = await readFile(filePath)
+  const size = (await stat(filePath)).size
+  const lazy = await openLazyDocx(filePath, wcId)
+  if ((lazy?.bytes.length ?? size) > MAX_OPEN_BYTES) {
+    const mb = MAX_OPEN_BYTES / 1024 / 1024
+    await showOpenError(wcId, `${basename(filePath)}: ${tm('errTooLarge', { mb })}`)
+    return null
+  }
+  const original = lazy?.bytes ?? (await readFile(filePath))
   // Password-protected docx (ECMA-376 CFB container): without a password, hand
   // back a marker — the renderer prompts and retries via docs:open-decrypt.
   // No side effects (recents/write grant) until the password checks out.
@@ -2351,7 +3338,8 @@ async function loadDocx(
   }
   // the archive keeps the on-disk original as-is (encrypted ones included: they
   // reopen with the user's password), so a bad save never loses the source file
-  const hash = await archiveOriginal(filePath, original)
+  const hash = lazy?.hash ?? sha256Hex(original)
+  await archiveOriginal(filePath, hash, size)
   const recovery = await maybeRecoverDocBytes(filePath, plainBytes)
   let bytes = recovery.bytes
   let recovered = recovery.recovered
@@ -2365,16 +3353,17 @@ async function loadDocx(
       recovered = false
     }
   }
+  if (recovered) await adoptLazyMediaHashes(bytes, filePath, wcId)
   pushRecent(filePath)
   allowDocWrite(wcId, filePath)
   if (fileOpenedHook) fileOpenedHook(wcId, filePath)
   markDiskEncrypted(wcId, filePath, encrypted)
   // record the on-disk file, not the recovery copy: what matters is what save would overwrite
-  await rememberDiskState(wcId, filePath, original)
+  await rememberDiskState(wcId, filePath, hash)
   return {
     path: filePath,
     name: basename(filePath),
-    data: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
+    dataUrl: handOffBytes(bytes),
     hash,
     encrypted,
     recovered: recovered || undefined,
@@ -2648,14 +3637,14 @@ function waitForAiToolResult(
  * sheets' standalone AI handlers use the same channel names.
  */
 export function registerAiIpc(): void {
-  ipcMain.handle('ai:get-settings', (): AiSettings => {
+  ipcMain.handle('ai:get-settings', async (): Promise<AiSettings> => {
     const stored = readJson<Partial<AiSettings> & LegacyAiSettings>(SETTINGS_PATH(), {})
     return constrainAiSettingsToProduct(resolveAiSettings(stored, defaultAiSettings()))
   })
 
   ipcMain.handle('ai:set-settings', (_event, settings: AiSettings) => {
     const resolved = constrainAiSettingsToProduct(resolveAiSettings(settings, defaultAiSettings()))
-    writeJson(SETTINGS_PATH(), resolved)
+    writeJsonAtomic(SETTINGS_PATH(), resolved)
     for (const contents of webContents.getAllWebContents()) {
       if (!contents.isDestroyed()) contents.send('ai:settings-changed', resolved)
     }
@@ -2668,7 +3657,7 @@ export function registerAiIpc(): void {
       throw new Error('Invalid AI request id.')
     }
     const tools = request.tools ?? []
-    const maxTokens = request.maxTokens ?? 8192
+    const maxTokens = request.maxTokens ?? maxOutputTokensOf(settings)
     const provider = settings.provider
     const config = settings.providers?.[provider]
     let terminalSent = false
@@ -2800,7 +3789,7 @@ export function registerAiIpc(): void {
         // fetchRemoteImage adds CDN-friendly headers and transient-error retries.
         const resp = await fetchRemoteImage(String(url))
         if (!resp || !resp.ok) return null
-        const buf = Buffer.from(await resp.arrayBuffer())
+        const buf = Buffer.from(await readBodyCapped(resp, MAX_REMOTE_IMAGE_BYTES))
         const ct = resp.headers.get('content-type') ?? ''
         const mime = ct.includes('png')
           ? 'image/png'
@@ -2860,15 +3849,19 @@ function getProjectStore(): ProjectStore {
  * Fired when a save lands on a new path (save-as / first silent save). The shell
  * uses it to sync the tab title/path, record recents and apply a pending project —
  * same contract as the sheets/slides opened hooks. Never called standalone.
+ * Returns the final path when the shell filed the new file into a Home folder.
  */
-let fileSavedHook: ((wc: WebContents, filePath: string) => void) | null = null
+let fileSavedHook: ((wc: WebContents, filePath: string) => string | void) | null = null
 
-export function setDocsFileSavedHook(hook: (wc: WebContents, filePath: string) => void): void {
+export function setDocsFileSavedHook(
+  hook: (wc: WebContents, filePath: string) => string | void,
+): void {
   fileSavedHook = hook
 }
 
-function notifyFileSaved(wc: WebContents, filePath: string): void {
-  if (fileSavedHook) fileSavedHook(wc, filePath)
+function notifyFileSaved(wc: WebContents, filePath: string): string {
+  const moved = fileSavedHook ? fileSavedHook(wc, filePath) : undefined
+  return typeof moved === 'string' && moved ? moved : filePath
 }
 
 /**
@@ -2898,6 +3891,14 @@ export function setSessionPathResolver(
 }
 
 /** After a file is renamed/moved on disk, sync project-store (fileMap/chatIdByPath re-key accordingly; history follows the file). */
+export function projectFilePaths(): string[] {
+  try {
+    return getProjectStore().knownFilePaths()
+  } catch {
+    return []
+  }
+}
+
 export function projectFileRenamed(oldPath: string, newPath: string): void {
   try {
     getProjectStore().fileRenamed(oldPath, newPath)
@@ -2952,8 +3953,19 @@ export function registerProjectIpc(): void {
           output?: string
         }>
         attachments?: Array<{ name: string; path?: string; ext?: string; sizeBytes?: number }>
+        scope?: { label: string; text?: string }
       },
     ) => {
+      if (args.role !== 'user' && args.role !== 'assistant') {
+        throw new Error(`Invalid chat role: ${String(args.role)}`)
+      }
+      if (typeof args.text !== 'string' || args.text.length > 200_000) {
+        throw new Error('Invalid chat text: must be a string up to 200000 chars')
+      }
+      if (args.tools && !Array.isArray(args.tools)) throw new Error('Invalid chat tools')
+      if (args.attachments && !Array.isArray(args.attachments)) {
+        throw new Error('Invalid chat attachments')
+      }
       const store = getProjectStore()
       const msg: Parameters<ProjectStore['appendChatMessage']>[2] = {
         role: args.role,
@@ -2961,6 +3973,8 @@ export function registerProjectIpc(): void {
       }
       if (args.tools) msg.tools = args.tools
       if (args.attachments) msg.attachments = args.attachments
+      if (args.scope) msg.scope = args.scope
+
       store.appendChatMessage(args.projectId, args.chatId, msg)
     },
   )
@@ -3006,56 +4020,35 @@ export function registerProjectIpc(): void {
       return { projectId: args.projectId, chatId: args.newChatId ?? args.tempChatId }
     },
   )
-
-  // ── P1 extension IPC ─────────────────────────────────────
-
-  /** List all projects (with file count + last-active time) */
-  ipcMain.handle('project:list', () => {
-    return getProjectStore().listProjectsSummary()
-  })
-
-  /** List existing files belonging to one project */
-  ipcMain.handle('project:files', (_event, args: { projectId: string }) => {
-    return getProjectStore().listProjectFiles(args.projectId)
-  })
-
-  /** Create a project */
-  ipcMain.handle('project:create', (_event, args: { name: string }) => {
-    const store = getProjectStore()
-    const data = store.createProject(args.name)
-    // returns ProjectSummary shape
-    return store.listProjectsSummary().find((s) => s.id === data.id) ?? data
-  })
-
-  /** Rename a project */
-  ipcMain.handle('project:rename', (_event, args: { id: string; name: string }) => {
-    getProjectStore().renameProject(args.id, args.name)
-  })
-
-  /** Soft-delete a project */
-  ipcMain.handle('project:delete', (_event, args: { id: string }) => {
-    getProjectStore().deleteProject(args.id)
-  })
-
-  /** Move a file into the given project */
-  ipcMain.handle('project:moveFile', (_event, args: { filePath: string; projectId: string }) => {
-    getProjectStore().moveFileToProject(args.filePath, args.projectId)
-  })
-
-  /** Get the project timeline */
-  ipcMain.handle('project:timeline', (_event, args: { projectId: string; limit?: number }) => {
-    return getProjectStore().getProjectTimeline(args.projectId, args.limit ?? 20)
-  })
 }
+
+/** A4 at 96dpi, as the HTML app exports */
+const ALT_CHUNK_VIEWPORT = { width: 794, height: 1123, deviceScaleFactor: 2 }
+const ALT_CHUNK_HTML_MAX_CHARS = 64 * 1024 * 1024
+
+/** an encrypted save leaves no plain file to serve lazy pictures from: the
+ *  renderer takes the materialized document back and leaves lazy mode */
+const reissuedDoc = (
+  encrypted: boolean,
+  hashes: Set<string>,
+  plain: Buffer,
+): { dataUrl?: string } => (encrypted && hashes.size > 0 ? { dataUrl: handOffBytes(plain) } : {})
 
 /** document/attachment/window IPC (everything except the AI proxy above) */
 export function registerDocsIpc(): void {
+  registerZoteroIpc()
+  void app.whenReady().then(registerLazyMediaProtocol)
   // Node fetch (undici) direct connections get reset under VPN/tun setups; retry over Chromium's stack
   setRescueFetch((url, init) => net.fetch(url, init))
+  setAiUserAgent(`NiuOffice/${app.getVersion()}`)
 
   // shared with the other editor modules — last (identical) registration wins
   ipcMain.removeHandler('app:get-language')
   ipcMain.handle('app:get-language', () => getUiLang())
+  ipcMain.handle('docs:confirm-document-replace', (event) =>
+    requestDocsClose(event.sender, dialogParent(event)),
+  )
+  ipcMain.handle('docs:system-locale', () => app.getSystemLocale())
 
   configureMetricsCache(userDataPath('font-metrics'))
   ipcMain.handle('docs:font-metrics', (_event, family: string) =>
@@ -3073,6 +4066,32 @@ export function registerDocsIpc(): void {
   })
 
   ipcMain.handle('docs:open-path', (event, filePath: string) => loadDocx(filePath, event.sender.id))
+
+  // w:altChunk HTML: the same html2docx chain as the HTML app's export, in a
+  // hidden window; the renderer parses the result and shows its blocks
+  ipcMain.handle('docs:altchunk-html-to-docx', async (_event, html: unknown) => {
+    if (typeof html !== 'string' || !html.trim() || html.length > ALT_CHUNK_HTML_MAX_CHARS) {
+      return null
+    }
+    const workDir = await mkdtemp(join(tmpdir(), 'genoffice-altchunk-'))
+    let driver: ElectronBrowserDriver | null = null
+    try {
+      const htmlPath = join(workDir, 'chunk.html')
+      // the BOM outranks a stale <meta charset> left in the decoded markup
+      await writeFile(htmlPath, `\ufeff${html}`, 'utf8')
+      driver = await ElectronBrowserDriver.create(ALT_CHUNK_VIEWPORT)
+      const { docx } = await convertHtmlToDocx({ url: pathToFileURL(htmlPath).href }, driver, {
+        naturalTableWidth: true,
+      })
+      return docx
+    } catch (err) {
+      console.warn('[docs] altChunk conversion failed:', err)
+      return null
+    } finally {
+      await driver?.close()
+      await rm(workDir, { recursive: true, force: true }).catch(() => {})
+    }
+  })
 
   // Review > Protect > Encrypt with Password: set/clear the open password.
   // Takes effect on the next save (docs:save / save-as / save-new all consult the store).
@@ -3201,19 +4220,24 @@ export function registerDocsIpc(): void {
         // Snapshot desired state: the disk password remains unchanged until the
         // atomic write succeeds, and a newer ribbon intent survives this save.
         const passwordState = snapshotDocPassword(event.sender.id, filePath)
-        const bytes = passwordState.password
-          ? encryptDocx(Buffer.from(data), passwordState.password)
-          : Buffer.from(data)
+        const { bytes: plain, hashes } = await materializeLazyDocx(Buffer.from(data))
+        const bytes = passwordState.password ? encryptDocx(plain, passwordState.password) : plain
         await atomicWriteFile(filePath, bytes)
         // Teardown may have cleared all in-memory secrets while the atomic
         // write was pending. Never resurrect state for an orphaned renderer.
         if (tornDownWcIds.has(event.sender.id)) {
           return { ok: false, error: 'save target is not an opened document' }
         }
-        await rememberDiskState(event.sender.id, filePath, bytes)
+        await rememberDiskState(event.sender.id, filePath, sha256Hex(bytes))
         if (tornDownWcIds.has(event.sender.id)) {
           return { ok: false, error: 'save target is not an opened document' }
         }
+        pointLazyMediaAt(
+          hashes,
+          filePath,
+          event.sender.id,
+          passwordState.password ? plain : undefined,
+        )
         // Commit immediately after the final await: intents received during
         // post-write bookkeeping are included, with no later async race.
         const passwordIntentPending = commitDocPasswordSave(
@@ -3223,7 +4247,11 @@ export function registerDocsIpc(): void {
         )
         clearRecoveryCopy(filePath)
         pushRecent(filePath)
-        return { ok: true, passwordIntentPending }
+        return {
+          ok: true,
+          passwordIntentPending,
+          ...reissuedDoc(!!passwordState.password, hashes, plain),
+        }
       } catch (err) {
         return { ok: false, error: String(err) }
       }
@@ -3264,6 +4292,126 @@ export function registerDocsIpc(): void {
     }
   })
 
+  // Blink only respells an editable as a consequence of real (trusted) typing
+  // of a word-committing character inside it: attribute flips, focus cycles,
+  // script selection moves, execCommand edits, fresh DOM nodes, synthetic
+  // clicks/arrow keys — and even a typed zero-width space — all leave existing
+  // typos unmarked (each verified pixel-by-pixel).
+  // Type one trusted space; the RENDERER removes it again by script (a
+  // trusted Backspace would work too, but its deletion re-suppresses the
+  // caret paragraph and that line stays unmarked) with ProseMirror's DOM
+  // observer paused, so the round trip never becomes a transaction.
+  // spell-diag trace (intermittent squiggle loss, platform-bound
+  // and unreproducible on demand) — a tiny always-on log support can ask for.
+  // Size-capped: over 256KB the file restarts from its last half.
+  ipcMain.on('docs:spell-diag', (_event, line: unknown) => {
+    if (typeof line !== 'string' || line.length > 500) return
+    try {
+      const path = userDataPath('spell-diag.log')
+      if (existsSync(path) && statSync(path).size > 256 * 1024) {
+        const tail = readFileSync(path, 'utf-8').slice(-128 * 1024)
+        writeFileSync(path, tail.slice(tail.indexOf('\n') + 1))
+      }
+      appendFileSync(path, `${new Date().toISOString()} ${line}\n`)
+    } catch {
+      // diagnostics must never break the app
+    }
+  })
+
+  // The document body draws its own React context menu, but Chromium's
+  // misspelling + suggestions for the clicked word only surface in the main
+  // process `context-menu` event. The renderer claims each body right-click
+  // synchronously from its DOM handler, i.e. before Blink requests the menu,
+  // so claims and events arrive in the same order: a claimed click gets its
+  // data forwarded and no native menu, anything else (header/footer surfaces,
+  // inputs) pops the native menu as before.
+  const ctxMenuClaims = new Map<number, ClickClaims>()
+  ipcMain.on('docs:context-menu-claim', (event, seq: unknown) => {
+    event.returnValue = true
+    if (typeof seq !== 'number') return
+    let claims = ctxMenuClaims.get(event.sender.id)
+    if (!claims) {
+      claims = new ClickClaims()
+      ctxMenuClaims.set(event.sender.id, claims)
+    }
+    claims.claim(seq, Date.now())
+  })
+  ipcMain.on('docs:context-menu-arm', (event) => {
+    const wc = event.sender
+    setContextMenuInterceptor(app, wc, (contents, params) => {
+      if (contents.isDestroyed() || tornDownWcIds.has(contents.id)) return Promise.resolve(false)
+      const seq = ctxMenuClaims.get(contents.id)?.take(Date.now()) ?? null
+      if (seq !== null) {
+        const request: ContextMenuRequest = {
+          seq,
+          misspelledWord: params.misspelledWord,
+          suggestions: params.dictionarySuggestions,
+        }
+        contents.send('docs:context-menu', request)
+      }
+      return Promise.resolve(seq !== null)
+    })
+    wc.once('destroyed', () => {
+      setContextMenuInterceptor(app, wc, null)
+      ctxMenuClaims.delete(wc.id)
+    })
+  })
+  void app.whenReady().then(() => {
+    const orphans = readJson<string[]>(SPELL_IGNORED_PATH(), [])
+    for (const w of orphans) session.defaultSession.removeWordFromSpellCheckerDictionary(w)
+    if (orphans.length) journalIgnoredWords()
+  })
+  ipcMain.handle('docs:spell-ignore-word', (event, word: unknown) => {
+    if (typeof word !== 'string' || !word.trim()) return false
+    const w = word.trim()
+    let holders = spellIgnored.get(w)
+    if (!holders) {
+      holders = new Set()
+      spellIgnored.set(w, holders)
+      journalIgnoredWords()
+    }
+    holders.add(event.sender.id)
+    return event.sender.session.addWordToSpellCheckerDictionary(w)
+  })
+  ipcMain.handle('docs:spell-add-word', (event, word: unknown) => {
+    if (typeof word !== 'string' || !word.trim()) return false
+    const w = word.trim()
+    if (spellIgnored.delete(w)) journalIgnoredWords()
+    return event.sender.session.addWordToSpellCheckerDictionary(w)
+  })
+  ipcMain.handle('docs:spell-replace', (event, word: unknown) => {
+    if (typeof word === 'string' && word) event.sender.replaceMisspelling(word)
+  })
+  ipcMain.handle('docs:spell-languages', (event): SpellLanguages => {
+    const session = event.sender.session
+    return {
+      active: session.getSpellCheckerLanguages(),
+      available: session.availableSpellCheckerLanguages,
+    }
+  })
+  ipcMain.handle('docs:spell-set-languages', (event, langs: unknown): SpellLanguages => {
+    const session = event.sender.session
+    const available = new Set(session.availableSpellCheckerLanguages)
+    const next = Array.isArray(langs)
+      ? langs.filter((l): l is string => typeof l === 'string' && available.has(l))
+      : []
+    if (next.length) session.setSpellCheckerLanguages(next)
+    return { active: session.getSpellCheckerLanguages(), available: [...available] }
+  })
+
+  ipcMain.handle('docs:respell-kick', async (event) => {
+    const wc = event.sender
+    if (tornDownWcIds.has(wc.id) || wc.isDestroyed()) return
+    wc.focus()
+    // Blink only respells after a user activation, and only a keydown grants one
+    wc.sendInputEvent({ type: 'keyDown', keyCode: 'Space' })
+    wc.sendInputEvent({ type: 'char', keyCode: ' ' })
+    wc.sendInputEvent({ type: 'keyUp', keyCode: 'Space' })
+    // resolve only after the input pipeline has delivered the keystroke, so
+    // the caller can scrub the space it produced
+    await new Promise((r) => setTimeout(r, 120))
+  })
+
   ipcMain.handle(
     'docs:save-as',
     async (event, defaultName: string, data: ArrayBuffer, sourcePath?: string | null) => {
@@ -3271,7 +4419,10 @@ export function registerDocsIpc(): void {
       if (tornDownWcIds.has(event.sender.id)) return { ok: false }
       const result = await saveDialog(event, {
         title: tm('dlgSaveAs'),
-        defaultPath: defaultName,
+        defaultPath: saveAsSuggestion(
+          typeof sourcePath === 'string' ? sourcePath : null,
+          defaultName,
+        ),
         filters: [{ name: tm('filterWord'), extensions: ['docx'] }],
       })
       if (result.canceled || !result.filePath) return { ok: false }
@@ -3283,13 +4434,18 @@ export function registerDocsIpc(): void {
           event.sender.id,
           typeof sourcePath === 'string' && sourcePath ? sourcePath : null,
         )
-        const bytes = passwordState.password
-          ? encryptDocx(Buffer.from(data), passwordState.password)
-          : Buffer.from(data)
+        const { bytes: plain, hashes } = await materializeLazyDocx(Buffer.from(data))
+        const bytes = passwordState.password ? encryptDocx(plain, passwordState.password) : plain
         await atomicWriteFile(result.filePath, bytes)
         if (tornDownWcIds.has(event.sender.id)) return { ok: false }
         allowDocWrite(event.sender.id, result.filePath)
-        await rememberDiskState(event.sender.id, result.filePath, bytes)
+        await rememberDiskState(event.sender.id, result.filePath, sha256Hex(bytes))
+        pointLazyMediaAt(
+          hashes,
+          result.filePath,
+          event.sender.id,
+          passwordState.password ? plain : undefined,
+        )
         if (tornDownWcIds.has(event.sender.id)) return { ok: false }
         const passwordIntentPending = commitDocPasswordSave(
           event.sender.id,
@@ -3297,8 +4453,15 @@ export function registerDocsIpc(): void {
           result.filePath,
         )
         pushRecent(result.filePath)
-        notifyFileSaved(event.sender, result.filePath)
-        return { ok: true, path: result.filePath, passwordIntentPending }
+        // the renderer has no path yet to match a rename notification against,
+        // so the reply must carry the path it may save to next
+        const savedPath = notifyFileSaved(event.sender, result.filePath)
+        return {
+          ok: true,
+          path: savedPath,
+          passwordIntentPending,
+          ...reissuedDoc(!!passwordState.password, hashes, plain),
+        }
       } catch (err) {
         return { ok: false, error: String(err) }
       }
@@ -3312,9 +4475,8 @@ export function registerDocsIpc(): void {
       if (tornDownWcIds.has(event.sender.id)) return { ok: false }
       const filePath = uniquePathIn(defaultSaveDir(), defaultName)
       const passwordState = snapshotDocPassword(event.sender.id, null)
-      const bytes = passwordState.password
-        ? encryptDocx(Buffer.from(data), passwordState.password)
-        : Buffer.from(data)
+      const { bytes: plain, hashes } = await materializeLazyDocx(Buffer.from(data))
+      const bytes = passwordState.password ? encryptDocx(plain, passwordState.password) : plain
       await atomicWriteFile(filePath, bytes)
       // teardown may have happened while the write was in flight — the path is
       // freshly created, so rolling it back is safe (mirrors docs:write-recovery)
@@ -3323,15 +4485,26 @@ export function registerDocsIpc(): void {
         return { ok: false }
       }
       allowDocWrite(event.sender.id, filePath)
-      await rememberDiskState(event.sender.id, filePath, bytes)
+      await rememberDiskState(event.sender.id, filePath, sha256Hex(bytes))
+      pointLazyMediaAt(
+        hashes,
+        filePath,
+        event.sender.id,
+        passwordState.password ? plain : undefined,
+      )
       if (tornDownWcIds.has(event.sender.id)) {
         await unlink(filePath).catch(() => {})
         return { ok: false }
       }
       const passwordIntentPending = commitDocPasswordSave(event.sender.id, passwordState, filePath)
       pushRecent(filePath)
-      notifyFileSaved(event.sender, filePath)
-      return { ok: true, path: filePath, passwordIntentPending }
+      const savedPath = notifyFileSaved(event.sender, filePath)
+      return {
+        ok: true,
+        path: savedPath,
+        passwordIntentPending,
+        ...reissuedDoc(!!passwordState.password, hashes, plain),
+      }
     } catch (err) {
       return { ok: false, error: String(err) }
     }
@@ -3444,12 +4617,25 @@ export function registerDocsIpc(): void {
   // (the protected wrapper round-tripped as a "protected content" shell).
   ipcMain.handle(
     'docs:copy-image-to-clipboard',
-    (_event, dataUrl: unknown, meta: unknown): boolean => {
-      if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/')) return false
-      const base64 = dataUrl.slice(dataUrl.indexOf(',') + 1)
+    async (_event, dataUrl: unknown, meta: unknown): Promise<boolean> => {
+      // Renderer-supplied bitmap: validate before base64 decode + nativeImage
+      // (a huge data URL would OOM the main process). Non-data URLs are
+      // lazy-media ids resolved below.
+      if (!validCopyImageDataUrl(dataUrl)) return false
+      let bytes: Buffer
+      let htmlSrc = dataUrl
+      if (dataUrl.startsWith('data:image/')) {
+        bytes = Buffer.from(dataUrl.slice(dataUrl.indexOf(',') + 1), 'base64')
+      } else {
+        const media = await readLazyMedia(dataUrl)
+        if (!media) return false
+        bytes = media.body
+        // another document cannot resolve this document's lazy URL; inline the bytes
+        htmlSrc = `data:${media.mime};base64,${bytes.toString('base64')}`
+      }
       // createFromBuffer, not createFromDataURL — the latter returns an empty
       // image for valid PNGs in this Electron
-      const image = nativeImage.createFromBuffer(Buffer.from(base64, 'base64'))
+      const image = nativeImage.createFromBuffer(bytes)
       if (image.isEmpty()) return false
       // the html flavor carries the DISPLAY size + layout meta so an in-app
       // paste keeps size/align/wrap instead of falling back to bitmap pixels
@@ -3458,11 +4644,9 @@ export function registerDocsIpc(): void {
       let metaAttr = ''
       if (typeof meta === 'string' && meta.length <= 2048) {
         try {
-          const parsed = JSON.parse(meta) as Record<string, unknown>
-          if (typeof parsed.imageWidthPx === 'number' && parsed.imageWidthPx > 0)
-            width = Math.round(parsed.imageWidthPx)
-          if (typeof parsed.imageHeightPx === 'number' && parsed.imageHeightPx > 0)
-            height = Math.round(parsed.imageHeightPx)
+          const parsed = copyImageDisplaySize(meta)
+          if (parsed.width !== undefined) width = parsed.width
+          if (parsed.height !== undefined) height = parsed.height
           const escaped = meta.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;')
           metaAttr = ` data-image-meta="${escaped}"`
         } catch {
@@ -3471,23 +4655,34 @@ export function registerDocsIpc(): void {
       }
       clipboard.write({
         image,
-        html: `<img src="${dataUrl}" width="${width}" height="${height}"${metaAttr}>`,
+        html: `<img src="${htmlSrc}" width="${width}" height="${height}"${metaAttr}>`,
       })
       return true
     },
   )
 
-  ipcMain.handle('docs:print', async (event) => {
+  // renderer print scale (inverse of the preview's print zoom, see print-zoom.ts)
+  // Infinity passes a `> 0` check, so require finiteness before handing it to Chromium.
+  const pdfScale = (scale?: number) => printScaleOption(scale)
+  const printScale = (scale?: number) =>
+    typeof scale === 'number' && Number.isFinite(scale) && scale > 0 && scale !== 1
+      ? { scaleFactor: Math.round(scale * 100) }
+      : {}
+
+  ipcMain.handle('docs:print', async (event, scale?: number) => {
     // print the calling tab's own content; zero margins — the docx page padding provides them.
     // Resolves when the system dialog is dismissed; the print dialog stays open on cancel
     // (ok=false without error) and surfaces real failures.
     return new Promise<{ ok: boolean; error?: string }>((resolve) => {
-      event.sender.print({ margins: { marginType: 'none' } }, (success, failureReason) => {
-        resolve({
-          ok: success,
-          ...(failureReason && !/cancel/i.test(failureReason) ? { error: failureReason } : {}),
-        })
-      })
+      event.sender.print(
+        { margins: { marginType: 'none' }, ...printScale(scale) },
+        (success, failureReason) => {
+          resolve({
+            ok: success,
+            ...(failureReason && !/cancel/i.test(failureReason) ? { error: failureReason } : {}),
+          })
+        },
+      )
     })
   })
 
@@ -3499,6 +4694,7 @@ export function registerDocsIpc(): void {
       pageWidthTwips: number,
       pageHeightTwips: number,
       outPath?: string,
+      scale?: number,
     ) => {
       // renderer-supplied outPath is only honored when a save dialog authorized it before
       let filePath = outPath ?? null
@@ -3524,9 +4720,73 @@ export function registerDocsIpc(): void {
             height: pageHeightTwips / TWIPS_PER_INCH,
           },
           margins: { top: 0, bottom: 0, left: 0, right: 0 },
+          ...pdfScale(scale),
         })
-        writeFileSync(filePath, data)
-        openGeneratedFile(filePath)
+        await atomicWriteFile(filePath, data)
+        if (!isImageExportTemp(event.sender.id, filePath)) openGeneratedFile(filePath)
+        return { ok: true, path: filePath }
+      } catch (err) {
+        // path is already authorized, so the renderer can retry chunked to the same target
+        return { ok: false, error: String(err), path: filePath }
+      }
+    },
+  )
+
+  ipcMain.handle('docs:save-image-as', async (event, src: unknown) => {
+    if (tornDownWcIds.has(event.sender.id) || typeof src !== 'string') return { ok: false }
+    return saveImageFromUrl(dialogParent(event), src, {
+      title: tm('dlgSaveAs'),
+      fallbackDir: defaultSaveDir(),
+    })
+  })
+
+  ipcMain.handle('docs:pick-export-images-target', async (event) => {
+    const r = await openDialog(event, {
+      title: tm('dlgPickExportDir'),
+      properties: ['openDirectory', 'createDirectory'],
+    })
+    const dir = r.canceled ? null : (r.filePaths[0] ?? null)
+    if (!dir) return null
+    const wcId = event.sender.id
+    const pdfPath = join(tmpdir(), `genoffice-docs-images-${randomUUID()}.pdf`)
+    allowPdfWrite(wcId, pdfPath)
+    imageExportTemps.set(wcId, (imageExportTemps.get(wcId) ?? new Set()).add(pdfPath))
+    imageExportDirs.set(wcId, (imageExportDirs.get(wcId) ?? new Set()).add(dir))
+    return { dir, pdfPath }
+  })
+
+  ipcMain.handle('docs:take-export-pdf', async (event, pdfPath: string) => {
+    const temps = imageExportTemps.get(event.sender.id)
+    if (typeof pdfPath !== 'string' || !temps?.has(pdfPath)) {
+      return { ok: false, error: 'not an image-export temp file' }
+    }
+    temps.delete(pdfPath)
+    try {
+      const data = await readFile(pdfPath)
+      return { ok: true, base64: data.toString('base64') }
+    } catch (err) {
+      return { ok: false, error: String(err) }
+    } finally {
+      await rm(pdfPath, { force: true })
+    }
+  })
+
+  ipcMain.handle(
+    'docs:write-export-image',
+    async (event, dir: string, fileName: string, pngBase64: string) => {
+      if (typeof dir !== 'string' || !imageExportDirs.get(event.sender.id)?.has(dir)) {
+        return { ok: false, error: 'export target is not an authorized folder' }
+      }
+      if (
+        typeof fileName !== 'string' ||
+        fileName !== basename(fileName) ||
+        !/^[^/\\]+\.png$/.test(fileName)
+      ) {
+        return { ok: false, error: 'invalid image file name' }
+      }
+      try {
+        const filePath = join(dir, fileName)
+        await atomicWriteFile(filePath, Buffer.from(String(pngBase64), 'base64'))
         return { ok: true, path: filePath }
       } catch (err) {
         return { ok: false, error: String(err) }
@@ -3534,10 +4794,50 @@ export function registerDocsIpc(): void {
     },
   )
 
+  ipcMain.handle(
+    'docs:export-html',
+    async (event, defaultName: string, html: string, outPath?: string) => {
+      if (typeof html !== 'string' || !html) return { ok: false, error: 'empty document' }
+      let filePath = outPath ?? null
+      if (filePath && !canPdfWrite(event.sender.id, filePath)) {
+        return { ok: false, error: 'export target is not an authorized path' }
+      }
+      if (!filePath) {
+        const result = await saveDialog(event, {
+          title: tm('dlgExportHtml'),
+          defaultPath: defaultName.replace(/\.docx$/i, '') + '.html',
+          filters: [{ name: 'HTML', extensions: ['html'] }],
+        })
+        if (result.canceled || !result.filePath) return { ok: false }
+        filePath = result.filePath
+        allowPdfWrite(event.sender.id, filePath)
+      }
+      try {
+        await atomicWriteFile(
+          filePath,
+          Buffer.from(await inlineLazyMediaInHtml(html, readLazyMedia), 'utf8'),
+        )
+        openGeneratedFile(filePath)
+        return { ok: true, path: filePath }
+      } catch (err) {
+        return { ok: false, error: String(err), path: filePath }
+      }
+    },
+  )
+
   // mixed paper-size export: the renderer prints group by group per size (other pages hidden via CSS); this produces one group's bytes
   ipcMain.handle(
     'docs:print-pdf-buffer',
-    async (event, pageWidthTwips: number, pageHeightTwips: number) => {
+    async (event, pageWidthTwips: number, pageHeightTwips: number, scale?: number) => {
+      // Renderer-supplied page geometry reaches Chromium printToPDF verbatim:
+      // reject non-finite/out-of-range sizes (0.5in..50in) and scales (0.1..5).
+      if (
+        !validPrintDim(pageWidthTwips) ||
+        !validPrintDim(pageHeightTwips) ||
+        !validPrintScale(scale)
+      ) {
+        return { ok: false, error: 'invalid page size or scale' }
+      }
       try {
         const data = await event.sender.printToPDF({
           printBackground: true,
@@ -3546,6 +4846,7 @@ export function registerDocsIpc(): void {
             height: pageHeightTwips / TWIPS_PER_INCH,
           },
           margins: { top: 0, bottom: 0, left: 0, right: 0 },
+          ...pdfScale(scale),
         })
         return { ok: true, base64: data.toString('base64') }
       } catch (err) {
@@ -3580,8 +4881,8 @@ export function registerDocsIpc(): void {
           const pages = await merged.copyPages(part, part.getPageIndices())
           for (const page of pages) merged.addPage(page)
         }
-        writeFileSync(filePath, Buffer.from(await merged.save()))
-        openGeneratedFile(filePath)
+        await atomicWriteFile(filePath, Buffer.from(await merged.save()))
+        if (!isImageExportTemp(event.sender.id, filePath)) openGeneratedFile(filePath)
         return { ok: true, path: filePath }
       } catch (err) {
         return { ok: false, error: String(err) }
@@ -3699,8 +5000,8 @@ export async function createAiDocument(
       openGeneratedFile(filePath)
       return { ok: true, path: filePath }
     }
-    if (type === 'md') {
-      const filePath = uniquePathIn(defaultSaveDir(), `${title}.md`)
+    if (type === 'md' || type === 'html') {
+      const filePath = uniquePathIn(defaultSaveDir(), `${title}.${type}`)
       await writeFile(filePath, content, 'utf8')
       openGeneratedFile(filePath)
       return { ok: true, path: filePath }
@@ -3780,6 +5081,8 @@ export function buildDocsMenu(): void {
             submenu: [
               { role: 'about' as const },
               { type: 'separator' as const },
+              { label: tm('menuPreferences'), click: () => sendCommand('preferences') },
+              { type: 'separator' as const },
               { role: 'services' as const },
               { type: 'separator' as const },
               { role: 'hide' as const },
@@ -3825,6 +5128,8 @@ export function buildDocsMenu(): void {
         { type: 'separator' },
         { label: tm('menuPageSetup'), click: () => sendCommand('page-setup') },
         { label: tm('menuExportPdf'), click: () => sendCommand('export-pdf') },
+        { label: tm('menuExportHtml'), click: () => sendCommand('export-html') },
+        { label: tm('menuExportImages'), click: () => sendCommand('export-images') },
         {
           label: tm('menuPrint'),
           accelerator: 'CmdOrCtrl+P',
@@ -3854,6 +5159,11 @@ export function buildDocsMenu(): void {
           accelerator: 'CmdOrCtrl+F',
           click: () => sendCommand('find'),
         },
+        {
+          label: tm('menuGoTo'),
+          accelerator: isMac ? 'Alt+Cmd+G' : 'Ctrl+G',
+          click: () => sendCommand('goto'),
+        },
         { type: 'separator' },
         { role: 'selectAll', label: tm('menuSelectAll') },
       ],
@@ -3876,8 +5186,17 @@ export function buildDocsMenu(): void {
           accelerator: 'CmdOrCtrl+0',
           click: () => sendCommand('zoom-100'),
         },
-        { label: tm('menuPageWidth'), click: () => sendCommand('zoom-page-width') },
-        { label: tm('menuWholePage'), click: () => sendCommand('zoom-whole-page') },
+        {
+          label: tm('menuZoom'),
+          submenu: [
+            ...[500, 200, 150, 125, 100, 75, 50, 25, 10].map((pct) => ({
+              label: `${pct}%`,
+              click: () => sendCommand('zoom-set', String(pct)),
+            })),
+            { label: tm('menuPageWidth'), click: () => sendCommand('zoom-page-width') },
+            { label: tm('menuWholePage'), click: () => sendCommand('zoom-whole-page') },
+          ],
+        },
         { type: 'separator' },
         {
           id: 'docs-menu-ai-sidebar',
@@ -3951,10 +5270,94 @@ export function buildDocsMenu(): void {
       ],
     },
     {
+      // Word's Table menu; the renderer answers with a hint when the caret is outside a table
+      label: tm('menuTable'),
+      submenu: [
+        {
+          label: tm('menuTableInsert'),
+          submenu: [
+            { label: tm('menuTableInsertTable'), click: () => sendCommand('insert-table') },
+            { label: tm('menuTableColsLeft'), click: () => sendCommand('table-insert-cols-left') },
+            {
+              label: tm('menuTableColsRight'),
+              click: () => sendCommand('table-insert-cols-right'),
+            },
+            {
+              label: tm('menuTableRowsAbove'),
+              click: () => sendCommand('table-insert-rows-above'),
+            },
+            {
+              label: tm('menuTableRowsBelow'),
+              click: () => sendCommand('table-insert-rows-below'),
+            },
+            { label: tm('menuTableCells'), click: () => sendCommand('table-insert-cells') },
+          ],
+        },
+        {
+          label: tm('menuTableDelete'),
+          submenu: [
+            { label: tm('menuTableDeleteTable'), click: () => sendCommand('table-delete-table') },
+            {
+              label: tm('menuTableDeleteColumns'),
+              click: () => sendCommand('table-delete-columns'),
+            },
+            { label: tm('menuTableDeleteRows'), click: () => sendCommand('table-delete-rows') },
+            { label: tm('menuTableCells'), click: () => sendCommand('table-delete-cells') },
+          ],
+        },
+        {
+          label: tm('menuTableSelect'),
+          submenu: [
+            { label: tm('menuTableSelectTable'), click: () => sendCommand('table-select-table') },
+            { label: tm('menuTableSelectColumn'), click: () => sendCommand('table-select-column') },
+            { label: tm('menuTableSelectRow'), click: () => sendCommand('table-select-row') },
+            { label: tm('menuTableSelectCell'), click: () => sendCommand('table-select-cell') },
+          ],
+        },
+        { type: 'separator' },
+        { label: tm('menuTableMergeCells'), click: () => sendCommand('table-merge-cells') },
+        { label: tm('menuTableSplitCells'), click: () => sendCommand('table-split-cells') },
+        { label: tm('menuTableSplitTable'), click: () => sendCommand('table-split-table') },
+        { type: 'separator' },
+        {
+          label: tm('menuTableAutoFit'),
+          submenu: [
+            {
+              label: tm('menuTableAutoFitContents'),
+              click: () => sendCommand('table-autofit-contents'),
+            },
+            {
+              label: tm('menuTableAutoFitWindow'),
+              click: () => sendCommand('table-autofit-window'),
+            },
+            { label: tm('menuTableFixedWidth'), click: () => sendCommand('table-autofit-fixed') },
+            { type: 'separator' },
+            {
+              label: tm('menuTableDistributeRows'),
+              click: () => sendCommand('table-distribute-rows'),
+            },
+            {
+              label: tm('menuTableDistributeColumns'),
+              click: () => sendCommand('table-distribute-columns'),
+            },
+          ],
+        },
+        { label: tm('menuTableRepeatHeader'), click: () => sendCommand('table-repeat-header') },
+        { type: 'separator' },
+        { label: tm('menuTableGridlines'), click: () => sendCommand('table-gridlines') },
+        { label: tm('menuTableProperties'), click: () => sendCommand('table-properties') },
+      ],
+    },
+    {
       // Word for Mac keeps Word Count in the Tools menu, not on the ribbon
       label: tm('menuTools'),
       submenu: [
         { label: tm('menuWordCount'), click: () => sendCommand('word-count') },
+        { label: tm('menuAutoCorrect'), click: () => sendCommand('autocorrect-options') },
+        // Word for Mac keeps Preferences in the application menu
+        ...(isMac
+          ? []
+          : [{ label: tm('menuPreferences'), click: () => sendCommand('preferences') }]),
         { type: 'separator' },
         // Runs the same AI proofread as Review > Editor (renderer shows the one-time ack)
         { label: tm('menuAiProofread'), click: () => sendCommand('ai-proofread') },
@@ -3972,6 +5375,9 @@ export function buildDocsMenu(): void {
         },
         { type: 'separator' },
         { label: tm('menuDocsHelp'), enabled: false },
+        { type: 'separator' },
+        checkUpdatesMenuItem(appMenuLabels(getUiLang())),
+        aboutMenuItem(appMenuLabels(getUiLang())),
       ],
     },
   ]
@@ -4022,11 +5428,7 @@ export function createDocsWindow(openPath?: string): BrowserWindow {
     return { action: 'deny' }
   })
 
-  if (runtime.rendererUrl) {
-    void win.loadURL(runtime.rendererUrl)
-  } else {
-    void win.loadFile(runtime.rendererFile)
-  }
+  void win.loadURL(rendererUrl(runtime.rendererUrl, 'docs'))
   // close guard for standalone-window mode (tab mode goes through the same flow via the shell's tab-manager/window-close path)
   let closeConfirmed = false
   win.on('close', (event) => {
@@ -4245,14 +5647,7 @@ export function createDocsView(openPath?: string): WebContentsView {
 
   // mode=tab: the shell's tab strip owns the traffic lights / caption buttons,
   // so the ribbon must not reserve space for them
-  if (runtime.rendererUrl) {
-    // append via URL so a dev URL that already carries query params stays valid
-    const devUrl = new URL(runtime.rendererUrl)
-    devUrl.searchParams.set('mode', 'tab')
-    void view.webContents.loadURL(devUrl.toString())
-  } else {
-    void view.webContents.loadFile(runtime.rendererFile, { query: { mode: 'tab' } })
-  }
+  void view.webContents.loadURL(rendererUrl(runtime.rendererUrl, 'docs', { mode: 'tab' }))
   // view.webContents becomes undefined after destroy, so grab the id beforehand
   const wcId = view.webContents.id
   view.webContents.once('destroyed', () => {
@@ -4274,6 +5669,7 @@ export function hasDocsWindow(): boolean {
 // ---- standalone lifecycle (apps/docs running on its own) ----
 
 export function startDocsStandalone(): void {
+  registerRendererScheme()
   installNavigationGuard(app)
   installContextMenu(app, () => contextMenuLabels(getUiLang()))
   // dev runs must not share the packaged app's userData (recent files, AI settings)
@@ -4306,6 +5702,7 @@ export function startDocsStandalone(): void {
   registerDocsIpc()
 
   app.whenReady().then(() => {
+    installRendererProtocol({ docs: join(__dirname, '../renderer') })
     setUiLang(normalizeLang(process.env.GENOFFICE_LANG ?? app.getLocale()))
     // packaged builds get the Dock icon from icon.icns; dev shows Electron's default
     if (isDev && process.platform === 'darwin') {

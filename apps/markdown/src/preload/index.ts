@@ -1,9 +1,10 @@
+import type { AiPanelPrefs } from '@genoffice/ui'
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { Lang } from '@genoffice/i18n'
 import type { AiSettings, AiStreamChunk } from '@genoffice/ai-provider'
 import type { ProjectApi } from '@genoffice/project-store'
 import { AI_CHANNELS, MARKDOWN_CHANNELS } from '../shared/ipc'
-import type { ExportFormat, MarkdownApi, SaveMode, UiTheme } from '../shared/ipc'
+import type { AutoSaveDefault, ExportFormat, MarkdownApi, SaveMode, UiTheme } from '../shared/ipc'
 
 const OPEN_DROPPED_PATHS_CHANNEL = 'home:open-dropped-paths'
 const MAX_DROPPED_FILES = 32
@@ -47,6 +48,12 @@ const api: MarkdownApi = {
   pickImage: () => ipcRenderer.invoke(MARKDOWN_CHANNELS.pickImage),
   saveImage: (data) => ipcRenderer.invoke(MARKDOWN_CHANNELS.saveImage, data),
   readImage: (src) => ipcRenderer.invoke(MARKDOWN_CHANNELS.readImage, src),
+  saveImageAs: (src) => ipcRenderer.invoke(MARKDOWN_CHANNELS.saveImageAs, src),
+  onViewImage: (handler) => {
+    const listener = (_e: Electron.IpcRendererEvent, src: string) => handler(src)
+    ipcRenderer.on(MARKDOWN_CHANNELS.viewImage, listener)
+    return () => ipcRenderer.removeListener(MARKDOWN_CHANNELS.viewImage, listener)
+  },
   onExportRequest: (handler) => {
     const listener = (_e: Electron.IpcRendererEvent, format: ExportFormat) => handler(format)
     ipcRenderer.on(MARKDOWN_CHANNELS.exportRequest, listener)
@@ -59,6 +66,12 @@ const api: MarkdownApi = {
   },
   exportDocx: (request) => ipcRenderer.invoke(MARKDOWN_CHANNELS.exportDocx, request),
   exportPdf: (request) => ipcRenderer.invoke(MARKDOWN_CHANNELS.exportPdf, request),
+  prepareImageExport: (request) =>
+    ipcRenderer.invoke(MARKDOWN_CHANNELS.prepareImageExport, request),
+  writeExportImage: (id, page, base64) =>
+    ipcRenderer.invoke(MARKDOWN_CHANNELS.writeExportImage, id, page, base64),
+  finishImageExport: (id, success) =>
+    ipcRenderer.invoke(MARKDOWN_CHANNELS.finishImageExport, id, success),
   getLanguage: () => ipcRenderer.invoke(MARKDOWN_CHANNELS.getLanguage),
   onLanguageChanged: (handler) => {
     const listener = (_e: Electron.IpcRendererEvent, lang: Lang) => handler(lang)
@@ -73,6 +86,19 @@ const api: MarkdownApi = {
   },
   openDroppedFiles: (files) =>
     ipcRenderer.invoke(OPEN_DROPPED_PATHS_CHANNEL, localPathsForDroppedFiles(files)),
+  getAutoSaveDefault: () => ipcRenderer.invoke(MARKDOWN_CHANNELS.getAutoSaveDefault),
+  onAutoSaveDefaultChanged: (handler) => {
+    const listener = (_e: Electron.IpcRendererEvent, value: AutoSaveDefault) => handler(value)
+    ipcRenderer.on(MARKDOWN_CHANNELS.autoSaveDefaultChanged, listener)
+    return () => ipcRenderer.removeListener(MARKDOWN_CHANNELS.autoSaveDefaultChanged, listener)
+  },
+  getAiPanelPrefs: () => ipcRenderer.invoke(MARKDOWN_CHANNELS.getAiPanelPrefs),
+  setAiPanelPrefs: (patch) => ipcRenderer.invoke('app:set-ai-panel-prefs', patch),
+  onAiPanelPrefsChanged: (handler) => {
+    const listener = (_event: Electron.IpcRendererEvent, prefs: AiPanelPrefs) => handler(prefs)
+    ipcRenderer.on(MARKDOWN_CHANNELS.aiPanelPrefsChanged, listener)
+    return () => ipcRenderer.removeListener(MARKDOWN_CHANNELS.aiPanelPrefsChanged, listener)
+  },
   onChromePressed: (handler) => {
     const listener = () => handler()
     ipcRenderer.on('app:chrome-pressed', listener)

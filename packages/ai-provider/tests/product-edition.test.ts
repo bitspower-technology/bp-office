@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { defaultAiSettings } from '../src/providers'
+import { AI_PROVIDERS, defaultAiSettings } from '../src/providers'
+import type { AiProviderId } from '../src/types'
 import {
   CHATGPT_SUBSCRIPTION_ENABLED,
   ENDPOINT_ONLY_EDITION,
@@ -27,5 +28,18 @@ describe('OEM AI provider boundary', () => {
     expect(constrained.provider).toBe('lmstudio')
     expect(constrained.providers.chatgpt.model).toBe('subscription-model')
     expect(settings.provider).toBe('chatgpt')
+  })
+
+  it.each([
+    ...AI_PROVIDERS.filter((provider) => provider.id !== 'lmstudio').map((provider) => provider.id),
+    'genspark',
+    'unknown-provider',
+  ])('cannot activate the persisted or renderer-supplied provider %s', (provider) => {
+    const settings = { ...defaultAiSettings(), provider: provider as AiProviderId }
+    expect(constrainAiSettingsToProduct(settings).provider).toBe('lmstudio')
+    expect(() => assertProductAiProviderEnabled(provider as AiProviderId)).toThrow(
+      /only OpenAI Endpoint/,
+    )
+    expect(settings.provider).toBe(provider)
   })
 })

@@ -17,7 +17,12 @@ export {
   AgentLoop,
   COMPLETED_VIA_TOOLS_TEXT,
   EDITOR_AGENT_MAX_TURNS,
+  EDITOR_AGENT_MAX_CONTEXT_TOKENS,
+  EDITOR_AGENT_MAX_CONTEXT_BYTES,
   DEFAULT_MAX_TURNS,
+  TOOL_ABORTED_OUTPUT,
+  missingRequiredFields,
+  runtimePreamble,
   sanitizeAgentPayload,
 } from './loop'
 export type {
@@ -34,3 +39,5 @@ export type {
   IpcToolResult,
   IpcTransportOptions,
 } from './electron-transport'
+export { streamText } from './stream-text'
+export type { StreamTextOptions, StreamTextOutcome } from './stream-text'

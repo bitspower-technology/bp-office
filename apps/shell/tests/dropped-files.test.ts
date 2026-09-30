@@ -72,6 +72,19 @@ describe('validateDroppedPaths', () => {
     })
   })
 
+  it('opens newly supported HTML and TSV files while keeping Slides unsupported', () => {
+    expect(
+      validateDroppedPaths(['/docs/a.html', '/docs/b.HTM', '/docs/c.tsv', '/docs/d.pptx'], {
+        platform: 'linux',
+        isRegularFile: () => true,
+      }),
+    ).toEqual({
+      paths: ['/docs/a.html', '/docs/b.HTM', '/docs/c.tsv'],
+      duplicates: 0,
+      rejected: 1,
+    })
+  })
+
   it('caps work and counts entries beyond the cap as rejected', () => {
     const input = Array.from({ length: MAX_DROPPED_FILES + 3 }, (_, i) => `/docs/${i}.pdf`)
     const isRegularFile = vi.fn(() => true)

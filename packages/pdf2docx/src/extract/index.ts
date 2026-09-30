@@ -5,9 +5,10 @@
  */
 import { detectVectorRegions } from '../analyze/vector'
 import type { Rect } from '../geometry'
-import { intersectArea, overlapRatio, rectArea } from '../geometry'
+import { coversBox, intersectArea, overlapRatio, printContentBox, rectArea } from '../geometry'
 import type { PdfChar, PageRender, RawPath, RawSubpath } from '../ir'
-import { scriptOf } from '../script'
+import { pageAnchorName } from '../ir'
+import { isEastAsianScript, scriptOf } from '../script'
 import type { PdfiumModule } from './pdfium'
 import {
   BITMAP_FORMAT_BGR,
@@ -17,6 +18,9 @@ import {
   FPDF_ANNOT_WIDGET,
   FPDF_FORMFIELD_CHECKBOX,
   FPDF_FORMFIELD_RADIOBUTTON,
+  FPDF_FORMFIELD_TEXT,
+  FPDF_FORMFLAG_TEXT_MULTILINE,
+  FPDF_FORMFLAG_TEXT_PASSWORD,
   FPDF_PAGEOBJ_FORM,
   FPDF_PAGEOBJ_IMAGE,
   FPDF_PAGEOBJ_PATH,
@@ -24,6 +28,8 @@ import {
   FPDF_PAGEOBJ_TEXT,
   FPDF_SEGMENT_BEZIERTO,
   FPDF_SEGMENT_MOVETO,
+  PDFACTION_GOTO,
+  PDFACTION_URI,
   withAlloc,
 } from './pdfium'
 import { familyFromPsName, italicFromPsName, SUBSET_PREFIX, weightFromPsName } from './fontname'
@@ -44,6 +50,8 @@ export interface ExtractedImage {
   pixelHeight: number
   /** source paint order (top-level page-object index, P16 A) */
   z?: number
+  /** rasterized pattern fill (P35), not a picture the author placed */
+  synthetic?: true
 }
 
 export interface ExtractedPage {
@@ -81,6 +89,12 @@ export interface ExtractedPage {
    */
   bgRender?: PageRender
   /**
+   * print content box (P35): all ink sits inside uniform page margins
+   * (browser/driver prints). Background rules measure page-covering fills
+   * against it — a body wash never reaches the paper edge on such pages.
+   */
+  contentBox?: Rect
+  /**
    * non-page-covering gradient shadings rasterized transparent (P19): slide
    * title bars / accent strips. Consumed ONLY by the canvas rebuild path —
    * flow pages drop them exactly as before.
@@ -112,6 +126,35 @@ export interface ExtractOptions {
 const BAD_UNICODE_RATIO = 0.15
 /** minimum sample size before the bad-unicode ratio is trusted */
 const BAD_UNICODE_MIN_CHARS = 10
+// ── mojibake gate ──
+// A ToUnicode map that is present but WRONG yields real code points, so the
+// U+FFFD/PUA ratio above never fires: a Type3 font with a bogus map voices
+// CJK as "¯?vxwn~·Ï¯¿²xvå", UTF-8 CJK read as Latin-1 as "å¤§æ–‡æœ¬". Both
+// pile up Latin-1 symbols (¯ ¿ ² » ¾, U+00A0–00BF) next to accented letters
+// (U+00C0–00FF) in shares no real language reaches: measured 0.10–0.35 and
+// 0.15–0.37 on the broken pages, ≤0.05 symbols on every legitimate page
+// (Korean dot-leader TOCs score 0.87 symbols but 0 accents).
+/** minimum sample before the mojibake shares mean anything */
+const MOJIBAKE_MIN_CHARS = 40
+/** share of U+00A0–00BF symbol code points */
+const MOJIBAKE_SYMBOL_SHARE = 0.08
+/** share of U+00C0–00FF accented letters */
+const MOJIBAKE_ACCENT_SHARE = 0.15
+
+/** text whose decoded code points cannot be a real language (see above) */
+export function looksLikeMojibake(codes: readonly number[]): boolean {
+  if (codes.length < MOJIBAKE_MIN_CHARS) return false
+  let symbols = 0
+  let accents = 0
+  for (const code of codes) {
+    if (code >= 0xa0 && code <= 0xbf) symbols++
+    else if (code >= 0xc0 && code <= 0xff) accents++
+  }
+  return (
+    symbols / codes.length >= MOJIBAKE_SYMBOL_SHARE &&
+    accents / codes.length >= MOJIBAKE_ACCENT_SHARE
+  )
+}
 /** |angle| above this (radians, ~15°) counts a char as rotated/vertical */
 const ANGLED_CHAR_RAD = 0.26
 /** share of rotated chars that triggers the vertical-text fallback */
@@ -498,6 +541,9 @@ function readImages(
   /** pre-extraction drop test — skipping here saves the decode itself (P28):
    * a searchable scan's page-covering tiles would only be filtered out again */
   skipBox?: (box: Rect) => boolean,
+  /** page /Rotate in quarter turns: GetRenderedBitmap ignores it, so the pixels
+   * turn here to land upright in the display-space box (P27) */
+  rotation = 0,
 ): ExtractedImage[] {
   const images: ExtractedImage[] = []
   const count = m._FPDFPage_CountObjects(page)
@@ -553,7 +599,13 @@ function readImages(
       return
     }
     if (type !== FPDF_PAGEOBJ_IMAGE) return
-    const composed = parent === null ? readMatrix(obj) : composeMatrix(parent, readMatrix(obj))
+    const own = readMatrix(obj)
+    const composed = parent === null ? own : composeMatrix(parent, own)
+    // GetRenderedBitmap draws in the object's own frame; an enclosing form
+    // that flips an axis (Skia wraps svg content in a y-flipping form and
+    // pre-flips the image matrix to compensate) leaves those pixels mirrored
+    // relative to the page
+    const mirror = parent === null ? NO_MIRROR : mirrorBetweenFrames(own, composed)
     let box: Rect
     if (parent === null) {
       if (!m._FPDFPageObj_GetBounds(obj, f6, f6 + 4, f6 + 8, f6 + 12)) return
@@ -604,7 +656,7 @@ function readImages(
           bottom: (cropBox.y0 - box.y0) / (box.y1 - box.y0),
         }
       : null
-    const image = extractImagePayload(m, doc, page, obj, box, crop, alpha)
+    const image = extractImagePayload(m, doc, page, obj, box, crop, alpha, rotation, mirror)
     if (image) images.push({ ...image, ...(cropBox ? { box: cropBox } : {}), z })
   }
   try {
@@ -767,6 +819,8 @@ function extractImagePayload(
   box: Rect,
   crop: CropWindow | null = null,
   gsAlpha = 255,
+  rotation = 0,
+  mirror: Mirror = { x: false, y: false },
 ): ExtractedImage | null {
   const [naturalW, naturalH] = withAlloc(m, 8, (p) => {
     return m._FPDFImageObj_GetImagePixelSize(obj, p, p + 4)
@@ -785,7 +839,8 @@ function extractImagePayload(
   // not raw JPEG, and transparent JPEGs must carry their mask via PNG; a
   // cropped or constant-alpha-washed image needs pixel surgery — P34.)
   const filters = imageFilters(m, obj)
-  const needsSurgery = crop !== null || gsAlpha < IMAGE_OPAQUE_ALPHA
+  const needsSurgery =
+    crop !== null || gsAlpha < IMAGE_OPAQUE_ALPHA || rotation !== 0 || mirror.x || mirror.y
   if (!transparent && !needsSurgery && filters.length === 1 && filters[0] === 'DCTDecode') {
     const raw = tryRawJpeg(m, obj, box, naturalW, naturalH)
     if (raw) return raw
@@ -794,15 +849,19 @@ function extractImagePayload(
   if (!px) return null
   // PNG-payload image rendered well below its natural resolution → re-render
   // scaled up so the PNG keeps the source detail (the raw passthrough above
-  // already carries full resolution for eligible JPEGs)
-  if (naturalW > px.width * RERENDER_MIN_GAIN && naturalH > 0) {
+  // already carries full resolution for eligible JPEGs). Either axis counts:
+  // a scan drawn with a quarter-turn matrix maps its tall side onto the
+  // device width, and judging the width alone halved its resolution.
+  const gain = Math.max(naturalW / Math.max(1, px.width), naturalH / Math.max(1, px.height))
+  if (gain > RERENDER_MIN_GAIN) {
     const scale = Math.min(
-      naturalW / Math.max(1, px.width),
+      gain,
       RERENDER_MAX_PX / Math.max(1, px.width),
       RERENDER_MAX_PX / Math.max(1, px.height),
     )
     if (scale > 1) px = renderImageObjRgba(m, doc, page, obj, scale) ?? px
   }
+  if (mirror.x || mirror.y) px = mirrorRgba(px, mirror)
   if (crop !== null) {
     px = cropRgba(px, crop)
     if (!px) return null
@@ -813,6 +872,7 @@ function extractImagePayload(
     const rgba = px.rgba
     for (let i = 3; i < rgba.length; i += 4) rgba[i] = (rgba[i]! * gsAlpha + 127) >> 8
   }
+  if (rotation !== 0) px = rotateRgbaQuarter(px, rotation)
   return {
     box,
     data: encodeRgbaPng(px.rgba, px.width, px.height),
@@ -948,6 +1008,78 @@ interface CropWindow {
   top: number
   right: number
   bottom: number
+}
+
+/** rotate a bitmap by `turns` clockwise quarter turns (PDF /Rotate semantics) */
+export function rotateRgbaQuarter(
+  px: { rgba: Uint8Array; width: number; height: number },
+  turns: number,
+): { rgba: Uint8Array; width: number; height: number } {
+  const t = ((turns % 4) + 4) % 4
+  if (t === 0) return px
+  const { width: w, height: h, rgba } = px
+  const ow = t === 2 ? w : h
+  const oh = t === 2 ? h : w
+  const out = new Uint8Array(rgba.length)
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const ox = t === 1 ? h - 1 - y : t === 2 ? w - 1 - x : y
+      const oy = t === 1 ? x : t === 2 ? h - 1 - y : w - 1 - x
+      const si = (y * w + x) * 4
+      const di = (oy * ow + ox) * 4
+      out[di] = rgba[si]!
+      out[di + 1] = rgba[si + 1]!
+      out[di + 2] = rgba[si + 2]!
+      out[di + 3] = rgba[si + 3]!
+    }
+  }
+  return { rgba: out, width: ow, height: oh }
+}
+
+/** which axes of a rendered image run opposite to the page (mirroring form matrix) */
+export interface Mirror {
+  x: boolean
+  y: boolean
+}
+
+const NO_MIRROR: Mirror = { x: false, y: false }
+
+/**
+ * Axes along which the render frame (the image's own matrix) runs opposite to
+ * the page frame (the composed matrix). Only axis-aligned frames can mirror: a
+ * rotated form leaves both diagonals near zero, which is no sign flip at all.
+ */
+export function mirrorBetweenFrames(own: Matrix, composed: Matrix): Mirror {
+  const aligned = (mt: Matrix) =>
+    Math.abs(mt[1]) + Math.abs(mt[2]) < 1e-3 * (Math.abs(mt[0]) + Math.abs(mt[3]))
+  if (!aligned(own) || !aligned(composed)) return NO_MIRROR
+  return { x: own[0] * composed[0] < 0, y: own[3] * composed[3] < 0 }
+}
+
+/** mirror an RGBA render along the flagged axes so row 0 / column 0 face the page's top-left */
+export function mirrorRgba(
+  px: { rgba: Uint8Array; width: number; height: number },
+  mirror: Mirror,
+): { rgba: Uint8Array; width: number; height: number } {
+  if (!mirror.x && !mirror.y) return px
+  const { width: w, height: h, rgba } = px
+  const out = new Uint8Array(rgba.length)
+  for (let y = 0; y < h; y++) {
+    const sy = mirror.y ? h - 1 - y : y
+    if (!mirror.x) {
+      out.set(rgba.subarray(sy * w * 4, (sy + 1) * w * 4), y * w * 4)
+      continue
+    }
+    for (let x = 0; x < w; x++) {
+      const si = (sy * w + (w - 1 - x)) * 4
+      const di = (y * w + x) * 4
+      out[di] = rgba[si]!
+      out[di + 1] = rgba[si + 1]!
+      out[di + 2] = rgba[si + 2]!
+      out[di + 3] = rgba[si + 3]!
+    }
+  }
+  return { rgba: out, width: w, height: h }
 }
 
 /** crop an RGBA render to a fractional window (row 0 = page-space top) */
@@ -1304,6 +1436,7 @@ function detectBackgroundStack(
   page: number,
   widthPt: number,
   heightPt: number,
+  contentBox: Rect | null,
 ): {
   count: number
   rasterIndices: number[]
@@ -1312,6 +1445,7 @@ function detectBackgroundStack(
   suspectOnly: boolean
 } {
   const total = m._FPDFPage_CountObjects(page)
+  const pageBox: Rect = { x0: 0, y0: 0, x1: widthPt, y1: heightPt }
   const rasterIndices: number[] = []
   const formTextHandles = new Set<number>()
   let count = 0
@@ -1339,14 +1473,19 @@ function detectBackgroundStack(
         inPrefix = false
         continue
       }
-      const x0 = m.HEAPF32[f4 >> 2]!
-      const y0 = m.HEAPF32[(f4 >> 2) + 1]!
-      const x1 = m.HEAPF32[(f4 >> 2) + 2]!
-      const y1 = m.HEAPF32[(f4 >> 2) + 3]!
-      const coveredW = Math.min(x1, widthPt) - Math.max(x0, 0)
-      const coveredH = Math.min(y1, heightPt) - Math.max(y0, 0)
+      const bounds: Rect = {
+        x0: m.HEAPF32[f4 >> 2]!,
+        y0: m.HEAPF32[(f4 >> 2) + 1]!,
+        x1: m.HEAPF32[(f4 >> 2) + 2]!,
+        y1: m.HEAPF32[(f4 >> 2) + 3]!,
+      }
       const cover = inPrefix ? BG_LAYER_DIM_COVER : BG_EXT_DIM_COVER
-      if (coveredW < widthPt * cover || coveredH < heightPt * cover) {
+      // a fill covering the print content box occludes everything on such a
+      // page just like a full-bleed wash does (the margins carry no ink)
+      if (
+        !coversBox(bounds, pageBox, cover) &&
+        !(contentBox !== null && coversBox(bounds, contentBox, cover))
+      ) {
         inPrefix = false
         continue
       }
@@ -1381,6 +1520,234 @@ function detectBackgroundStack(
     }
   })
   return { count, rasterIndices, formTextHandles, suspectOnly: sureCount === 0 }
+}
+
+/**
+ * Print content box (P35): the bottom-most opaque fill whose bounds frame the
+ * page's ink inside uniform margins. Alpha-0 page-covering rects (Skia
+ * bounding artifacts) lay no ink and neither widen the ink nor qualify.
+ */
+function pageContentBox(
+  m: PdfiumModule,
+  page: number,
+  widthPt: number,
+  heightPt: number,
+): Rect | null {
+  const total = m._FPDFPage_CountObjects(page)
+  const boxes: Rect[] = []
+  const fills: Rect[] = []
+  withAlloc(m, 4 * 4, (f4) => {
+    for (let i = 0; i < total; i++) {
+      const obj = m._FPDFPage_GetObject(page, i)
+      if (!obj) continue
+      const type = m._FPDFPageObj_GetType(obj)
+      const isPath = type === FPDF_PAGEOBJ_PATH
+      if (isPath && !pathPaintsInk(m, obj, f4)) continue
+      if (!m._FPDFPageObj_GetBounds(obj, f4, f4 + 4, f4 + 8, f4 + 12)) continue
+      const box: Rect = {
+        x0: m.HEAPF32[f4 >> 2]!,
+        y0: m.HEAPF32[(f4 >> 2) + 1]!,
+        x1: m.HEAPF32[(f4 >> 2) + 2]!,
+        y1: m.HEAPF32[(f4 >> 2) + 3]!,
+      }
+      if (box.x1 <= box.x0 || box.y1 <= box.y0) continue
+      boxes.push(box)
+      if (isPath && pathIsOpaqueFill(m, obj, f4)) fills.push(box)
+    }
+  })
+  // the wash is drawn early: the first (bottom-z) opaque fill that frames the ink wins
+  for (const f of fills) {
+    const box = printContentBox(f, boxes, widthPt, heightPt)
+    if (box) return box
+  }
+  return null
+}
+
+// ── pattern-filled paths (P35) ──
+// CSS gradients print as PATHS filled with a shading/tiling PATTERN. PDFium's
+// color API cannot voice a pattern: CPDF_ColorState::SetPattern reports a
+// shading pattern as white and a colored tiling pattern as 0xBFBFBF, so the
+// gradient cover/card reached the fill pool as a plain white/grey rectangle
+// and was dropped (or shaded flat grey). Paths reporting exactly those
+// fallback colors are probed with a tiny render of the object alone; the ones
+// whose pixels disagree with the reported color rasterize transparent into
+// the image stream and leave the path stream.
+
+/** PDFium's pattern fallback colors (channel value, all three equal) */
+const PATTERN_FALLBACK_CHANNELS = new Set([0xff, 0xbf])
+/** smaller fills are bullets/rules — never gradients worth a bitmap */
+const PATTERN_MIN_AREA_PT2 = 400
+/** thinner strips are text-line highlights/underlines — a flow-breaking image buys nothing */
+const PATTERN_MIN_DIM_PT = 12
+/** probe render longest side (px) — enough to tell a gradient from a flat fill */
+const PATTERN_PROBE_PX = 24
+/** a probe pixel this far from the reported color (any channel) is not that color */
+const PATTERN_COLOR_TOL = 24
+/** probe pixels below this alpha are unpainted */
+const PATTERN_PROBE_MIN_ALPHA = 8
+/** the object must actually paint this share of its own bounds to be judged */
+const PATTERN_PROBE_MIN_COVER = 0.05
+/** per page, largest candidates first */
+const PATTERN_MAX_PROBES = 48
+const PATTERN_RENDER_SCALE = 1.5
+const PATTERN_RENDER_MAX_PX = 4_000_000
+
+/** render one top-level object alone, transparent, cropped to `region` at `scale` */
+function renderObjectAloneRgba(
+  m: PdfiumModule,
+  doc: number,
+  pageIndex: number,
+  index: number,
+  region: Rect,
+  scale: number,
+): { rgba: Uint8Array; width: number; height: number } | null {
+  const page = m._FPDF_LoadPage(doc, pageIndex)
+  if (!page) return null
+  try {
+    const total = m._FPDFPage_CountObjects(page)
+    for (let i = total - 1; i >= 0; i--) {
+      if (i === index) continue
+      const obj = m._FPDFPage_GetObject(page, i)
+      if (obj && m._FPDFPage_RemoveObject(page, obj)) m._FPDFPageObj_Destroy(obj)
+    }
+    const pageWidthPt = m._FPDF_GetPageWidthF(page)
+    const pageHeightPt = m._FPDF_GetPageHeightF(page)
+    const width = Math.max(1, Math.round((region.x1 - region.x0) * scale))
+    const height = Math.max(1, Math.round((region.y1 - region.y0) * scale))
+    const bitmap = m._FPDFBitmap_Create(width, height, 1)
+    if (!bitmap) return null
+    try {
+      m._FPDFBitmap_FillRect(bitmap, 0, 0, width, height, 0x00000000)
+      m._FPDF_RenderPageBitmap(
+        bitmap,
+        page,
+        Math.round(-region.x0 * scale),
+        Math.round(-(pageHeightPt - region.y1) * scale),
+        Math.round(pageWidthPt * scale),
+        Math.round(pageHeightPt * scale),
+        0,
+        0,
+      )
+      return bitmapToRgba(m, bitmap)
+    } finally {
+      m._FPDFBitmap_Destroy(bitmap)
+    }
+  } finally {
+    m._FPDF_ClosePage(page)
+  }
+}
+
+/**
+ * Probe verdict: 'flat' = the object really is the reported color (a plain
+ * white card — stays a path); 'pattern' = its pixels disagree (gradient /
+ * tile art — rasterize); 'invisible' = it paints next to nothing (a fully
+ * soft-masked layer — drop, it must not survive as a grey rectangle).
+ */
+function probeVerdict(px: { rgba: Uint8Array }, channel: number): 'flat' | 'pattern' | 'invisible' {
+  let covered = 0
+  let sampled = 0
+  let off = false
+  for (let i = 0; i < px.rgba.length; i += 4) {
+    sampled++
+    // any paint counts: a translucent white plate (alpha 0.15) is a real flat
+    // fill, only a fully masked-out layer is invisible
+    if (px.rgba[i + 3]! < PATTERN_PROBE_MIN_ALPHA) continue
+    covered++
+    if (
+      Math.abs(px.rgba[i]! - channel) > PATTERN_COLOR_TOL ||
+      Math.abs(px.rgba[i + 1]! - channel) > PATTERN_COLOR_TOL ||
+      Math.abs(px.rgba[i + 2]! - channel) > PATTERN_COLOR_TOL
+    ) {
+      off = true
+    }
+  }
+  if (sampled === 0 || covered / sampled < PATTERN_PROBE_MIN_COVER) return 'invisible'
+  return off ? 'pattern' : 'flat'
+}
+
+/**
+ * Pattern-filled paths → transparent bitmaps in the image stream (P35).
+ * Returns the images plus the top-level indices readPaths must skip.
+ */
+function readPatternFills(
+  m: PdfiumModule,
+  doc: number,
+  pageIndex: number,
+  page: number,
+  widthPt: number,
+  heightPt: number,
+  skipBelowIndex: number,
+): { images: ExtractedImage[]; consumed: Set<number> } {
+  const images: ExtractedImage[] = []
+  const consumed = new Set<number>()
+  const total = m._FPDFPage_CountObjects(page)
+  const candidates: { index: number; box: Rect; channel: number }[] = []
+  withAlloc(m, 4 * 4, (u4) => {
+    for (let i = skipBelowIndex; i < total; i++) {
+      const obj = m._FPDFPage_GetObject(page, i)
+      if (!obj || m._FPDFPageObj_GetType(obj) !== FPDF_PAGEOBJ_PATH) continue
+      if (!m._FPDFPath_GetDrawMode(obj, u4, u4 + 4) || (m.HEAPU32[u4 >> 2]! | 0) === 0) continue
+      if (!m._FPDFPageObj_GetFillColor(obj, u4, u4 + 4, u4 + 8, u4 + 12)) continue
+      const r = m.HEAPU32[u4 >> 2]!
+      const g = m.HEAPU32[(u4 >> 2) + 1]!
+      const b = m.HEAPU32[(u4 >> 2) + 2]!
+      const a = m.HEAPU32[(u4 >> 2) + 3]!
+      if (r !== g || g !== b || !PATTERN_FALLBACK_CHANNELS.has(r) || a <= IMAGE_MIN_ALPHA) continue
+      if (!m._FPDFPageObj_GetBounds(obj, u4, u4 + 4, u4 + 8, u4 + 12)) continue
+      const box: Rect = {
+        x0: Math.max(0, m.HEAPF32[u4 >> 2]!),
+        y0: Math.max(0, m.HEAPF32[(u4 >> 2) + 1]!),
+        x1: Math.min(widthPt, m.HEAPF32[(u4 >> 2) + 2]!),
+        y1: Math.min(heightPt, m.HEAPF32[(u4 >> 2) + 3]!),
+      }
+      const w = box.x1 - box.x0
+      const h = box.y1 - box.y0
+      if (w < PATTERN_MIN_DIM_PT || h < PATTERN_MIN_DIM_PT || w * h < PATTERN_MIN_AREA_PT2) continue
+      candidates.push({ index: i, box, channel: r })
+    }
+  })
+  if (candidates.length === 0) return { images, consumed }
+  candidates.sort((p, q) => rectArea(q.box) - rectArea(p.box))
+  for (const c of candidates.slice(0, PATTERN_MAX_PROBES)) {
+    const w = c.box.x1 - c.box.x0
+    const h = c.box.y1 - c.box.y0
+    const probe = renderObjectAloneRgba(
+      m,
+      doc,
+      pageIndex,
+      c.index,
+      c.box,
+      PATTERN_PROBE_PX / Math.max(w, h),
+    )
+    if (!probe) continue
+    const verdict = probeVerdict(probe, c.channel)
+    if (process.env['PDF2DOCX_DEBUG_PATTERN'] !== undefined) {
+      console.error(
+        `[pattern] page ${pageIndex + 1} obj ${c.index} box ${JSON.stringify(c.box)} ch ${c.channel} → ${verdict}`,
+      )
+    }
+    if (verdict === 'invisible') {
+      consumed.add(c.index)
+      continue
+    }
+    // 0xBFBFBF is only ever the colored-tiling placeholder — a flat probe
+    // means a uniform tile, still not grey
+    if (verdict === 'flat' && c.channel !== 0xbf) continue
+    const scale = Math.min(PATTERN_RENDER_SCALE, Math.sqrt(PATTERN_RENDER_MAX_PX / (w * h)))
+    const px = renderObjectAloneRgba(m, doc, pageIndex, c.index, c.box, scale)
+    if (!px) continue
+    consumed.add(c.index)
+    images.push({
+      box: c.box,
+      data: encodeRgbaPng(px.rgba, px.width, px.height),
+      mime: 'image/png',
+      pixelWidth: px.width,
+      pixelHeight: px.height,
+      z: c.index,
+      synthetic: true,
+    })
+  }
+  return { images, consumed }
 }
 
 /** handles of text objects buried under the background stack (P16 B) */
@@ -1582,22 +1949,37 @@ function readShadingDecor(
   heightPt: number,
   stackSkip: number,
   vectorRegions: readonly Rect[],
+  rotation: number,
+  dx: number,
+  dy: number,
 ): ExtractedImage[] {
   const page = m._FPDF_LoadPage(doc, pageIndex)
   if (!page) return []
   try {
     const total = m._FPDFPage_CountObjects(page)
     const keep = new Map<number, Rect>()
+    const toDisplay =
+      rotation === 1 || rotation === 2 || rotation === 3
+        ? rotateToDisplay(rotation, widthPt, heightPt)
+        : null
     withAlloc(m, 4 * 4, (f4) => {
       for (let i = stackSkip; i < total; i++) {
         const obj = m._FPDFPage_GetObject(page, i)
         if (!obj || m._FPDFPageObj_GetType(obj) !== FPDF_PAGEOBJ_SHADING) continue
         if (!m._FPDFPageObj_GetBounds(obj, f4, f4 + 4, f4 + 8, f4 + 12)) continue
+        const rawBox: Rect = {
+          x0: m.HEAPF32[f4 >> 2]!,
+          y0: m.HEAPF32[(f4 >> 2) + 1]!,
+          x1: m.HEAPF32[(f4 >> 2) + 2]!,
+          y1: m.HEAPF32[(f4 >> 2) + 3]!,
+        }
+        shiftRect(rawBox, dx, dy)
+        toDisplay?.rect(rawBox)
         const box: Rect = {
-          x0: Math.max(0, m.HEAPF32[f4 >> 2]!),
-          y0: Math.max(0, m.HEAPF32[(f4 >> 2) + 1]!),
-          x1: Math.min(widthPt, m.HEAPF32[(f4 >> 2) + 2]!),
-          y1: Math.min(heightPt, m.HEAPF32[(f4 >> 2) + 3]!),
+          x0: Math.max(0, rawBox.x0),
+          y0: Math.max(0, rawBox.y0),
+          x1: Math.min(widthPt, rawBox.x1),
+          y1: Math.min(heightPt, rawBox.y1),
         }
         const w = box.x1 - box.x0
         const h = box.y1 - box.y0
@@ -1635,11 +2017,11 @@ function readShadingDecor(
         const cx0 = Math.max(0, Math.floor(box.x0 * DECOR_RENDER_SCALE))
         const cy0 = Math.max(0, Math.floor((heightPt - box.y1) * DECOR_RENDER_SCALE))
         const cw = Math.min(
-          bw - cx0,
+          px.width - cx0,
           Math.max(1, Math.ceil((box.x1 - box.x0) * DECOR_RENDER_SCALE)),
         )
         const ch = Math.min(
-          bh - cy0,
+          px.height - cy0,
           Math.max(1, Math.ceil((box.y1 - box.y0) * DECOR_RENDER_SCALE)),
         )
         if (cw <= 0 || ch <= 0) continue
@@ -1682,6 +2064,76 @@ export function renderPageByIndexPng(
   }
 }
 
+type FormProfile = 'empty' | 'text' | 'paint' | 'mixed'
+
+/** what a form XObject draws: only text (strippable whole), only paint, or a mix */
+function formTextProfile(m: PdfiumModule, form: number, depth = 0): FormProfile {
+  if (
+    depth > 3 ||
+    typeof m._FPDFFormObj_CountObjects !== 'function' ||
+    typeof m._FPDFFormObj_GetObject !== 'function'
+  ) {
+    return 'mixed'
+  }
+  let text = false
+  let paint = false
+  const children = m._FPDFFormObj_CountObjects(form)
+  for (let i = 0; i < children; i++) {
+    const child = m._FPDFFormObj_GetObject(form, i)
+    if (!child) continue
+    const type = m._FPDFPageObj_GetType(child)
+    if (type === FPDF_PAGEOBJ_TEXT) text = true
+    else if (type === FPDF_PAGEOBJ_FORM) {
+      const sub = formTextProfile(m, child, depth + 1)
+      if (sub === 'mixed') return 'mixed'
+      if (sub === 'text') text = true
+      else if (sub === 'paint') paint = true
+    } else if (type === FPDF_PAGEOBJ_PATH) {
+      // clip-only paths draw nothing (text clipped to its box is still text-only)
+      if (withAlloc(m, 16, (scratch) => pathPaintsInk(m, child, scratch))) paint = true
+    } else paint = true
+    if (text && paint) return 'mixed'
+  }
+  if (text) return 'text'
+  return paint ? 'paint' : 'empty'
+}
+
+/**
+ * Render a second instance of the page with every text object removed: the
+ * absolute-layout graphics-lost remedy paints this under the editable text
+ * boxes instead of collapsing the page to one bitmap. Text-only form XObjects
+ * go with the text; a form mixing text with paint cannot be split through the
+ * public API — such pages return null and the caller keeps the whole-page
+ * bitmap rather than doubling the text.
+ */
+export function renderPageWithoutTextPng(
+  m: PdfiumModule,
+  doc: number,
+  pageIndex: number,
+  scale: number,
+): PageRender | null {
+  const page = m._FPDF_LoadPage(doc, pageIndex)
+  if (!page) return null
+  try {
+    const total = m._FPDFPage_CountObjects(page)
+    for (let i = total - 1; i >= 0; i--) {
+      const obj = m._FPDFPage_GetObject(page, i)
+      if (!obj) continue
+      const type = m._FPDFPageObj_GetType(obj)
+      let strip = type === FPDF_PAGEOBJ_TEXT
+      if (type === FPDF_PAGEOBJ_FORM) {
+        const profile = formTextProfile(m, obj)
+        if (profile === 'mixed') return null
+        strip = profile === 'text'
+      }
+      if (strip && m._FPDFPage_RemoveObject(page, obj)) m._FPDFPageObj_Destroy(obj)
+    }
+    return renderPagePng(m, page, scale)
+  } finally {
+    m._FPDF_ClosePage(page)
+  }
+}
+
 function probeStructTree(m: PdfiumModule, page: number): boolean {
   const tree = m._FPDF_StructTree_GetForPage(page)
   if (!tree) return false
@@ -1717,7 +2169,7 @@ function assessQuality(
   void rotation
 
   if (textChars.length >= BAD_UNICODE_MIN_CHARS) {
-    if (badUnicodeRatio > BAD_UNICODE_RATIO) {
+    if (badUnicodeRatio > BAD_UNICODE_RATIO || looksLikeMojibake(textChars.map((c) => c.code))) {
       return { degraded: true, reason: 'bad-tounicode', scanned: false, badUnicodeRatio }
     }
     const angled = textChars.filter((c) => Math.abs(c.angle) > ANGLED_CHAR_RAD).length
@@ -1735,7 +2187,7 @@ export interface DocMetadata {
 }
 
 /** one Info-dictionary text field, decoded from PDFium's UTF-16LE buffer */
-function readMetaText(m: PdfiumModule, doc: number, tag: string): string | undefined {
+export function readMetaText(m: PdfiumModule, doc: number, tag: string): string | undefined {
   return withAlloc(m, tag.length + 1, (tagPtr) => {
     for (let i = 0; i < tag.length; i++) m.HEAPU8[tagPtr + i] = tag.charCodeAt(i)
     m.HEAPU8[tagPtr + tag.length] = 0
@@ -1805,11 +2257,110 @@ const shiftRect = (r: Rect, dx: number, dy: number): void => {
 
 /** widget squares outside this range are decoration or full-field outlines */
 const WIDGET_BOX_MIN_PT = 4
+/** per-page link annotation cap and URI byte cap (hostile files) */
+const MAX_LINK_ANNOTS = 2000
+const MAX_LINK_URI_BYTES = 8192
 const WIDGET_BOX_MAX_PT = 24
 /** snap a glyph beside its label when the gap is under this (pt) */
 const WIDGET_SNAP_MAX_GAP_PT = 24
 
+const WIDGET_TEXT_PAD_PT = 2
+const WIDGET_TEXT_MIN_PT = 5
+const WIDGET_TEXT_MAX_PT = 14
+const WIDGET_TEXT_LEADING = 1.15
+
 /** UTF-16LE annotation string/name value ('' when absent or API missing) */
+interface LinkAnnot {
+  rect: Rect
+  href: string
+}
+
+function readUriPath(m: PdfiumModule, doc: number, action: number): string {
+  const len = m._FPDFAction_GetURIPath!(doc, action, 0, 0)
+  if (len <= 1 || len > MAX_LINK_URI_BYTES) return ''
+  return withAlloc(m, len, (buf) => {
+    m._FPDFAction_GetURIPath!(doc, action, buf, len)
+    return new TextDecoder().decode(m.HEAPU8.subarray(buf, buf + len - 1)).trim()
+  })
+}
+
+/** link annotations in raw page space: URI actions and in-document GoTo destinations */
+function readLinkAnnots(m: PdfiumModule, doc: number, page: number): LinkAnnot[] {
+  if (
+    typeof m._FPDFLink_Enumerate !== 'function' ||
+    typeof m._FPDFLink_GetAnnotRect !== 'function' ||
+    typeof m._FPDFLink_GetAction !== 'function' ||
+    typeof m._FPDFLink_GetDest !== 'function' ||
+    typeof m._FPDFAction_GetType !== 'function' ||
+    typeof m._FPDFAction_GetDest !== 'function' ||
+    typeof m._FPDFAction_GetURIPath !== 'function' ||
+    typeof m._FPDFDest_GetDestPageIndex !== 'function'
+  ) {
+    return []
+  }
+  const out: LinkAnnot[] = []
+  withAlloc(m, 8 + 4 * 4, (scratch) => {
+    const posPtr = scratch
+    const linkPtr = scratch + 4
+    const rectPtr = scratch + 8
+    m.HEAPU32[posPtr >> 2] = 0
+    while (out.length < MAX_LINK_ANNOTS && m._FPDFLink_Enumerate!(page, posPtr, linkPtr)) {
+      const link = m.HEAPU32[linkPtr >> 2]!
+      if (!link || !m._FPDFLink_GetAnnotRect!(link, rectPtr)) continue
+      const v = m.HEAPF32.subarray(rectPtr >> 2, (rectPtr >> 2) + 4)
+      const rect: Rect = {
+        x0: Math.min(v[0]!, v[2]!),
+        x1: Math.max(v[0]!, v[2]!),
+        y0: Math.min(v[1]!, v[3]!),
+        y1: Math.max(v[1]!, v[3]!),
+      }
+      if (!(rect.x1 > rect.x0 && rect.y1 > rect.y0)) continue
+      let href = ''
+      const action = m._FPDFLink_GetAction!(link)
+      let dest = 0
+      if (action) {
+        const type = m._FPDFAction_GetType!(action)
+        if (type === PDFACTION_URI) href = readUriPath(m, doc, action)
+        else if (type === PDFACTION_GOTO) dest = m._FPDFAction_GetDest!(doc, action)
+      } else {
+        dest = m._FPDFLink_GetDest!(doc, link)
+      }
+      if (!href && dest) {
+        const pageIndex = m._FPDFDest_GetDestPageIndex!(doc, dest)
+        if (pageIndex >= 0) href = `#${pageAnchorName(pageIndex)}`
+      }
+      if (href && (href.startsWith('#') || isSafeLinkUri(href))) out.push({ rect, href })
+    }
+  })
+  return out
+}
+
+/** Word rejects control chars and unknown schemes in a relationship target */
+function isSafeLinkUri(uri: string): boolean {
+  for (const ch of uri) {
+    const code = ch.codePointAt(0)!
+    if (code < 0x20 || code === 0x7f || /\s/.test(ch)) return false
+  }
+  return /^(https?|ftp|mailto|tel):/i.test(uri)
+}
+
+/** stamp each real char whose center lies inside a link annotation with its target */
+function tagLinkChars(chars: PdfChar[], links: readonly LinkAnnot[]): void {
+  if (links.length === 0) return
+  for (const c of chars) {
+    if (c.isGenerated) continue
+    const cx = (c.box.x0 + c.box.x1) / 2
+    const cy = (c.box.y0 + c.box.y1) / 2
+    for (const link of links) {
+      const r = link.rect
+      if (cx >= r.x0 && cx <= r.x1 && cy >= r.y0 && cy <= r.y1) {
+        c.href = link.href
+        break
+      }
+    }
+  }
+}
+
 function annotStringValue(m: PdfiumModule, annot: number, key: string): string {
   if (typeof m._FPDFAnnot_GetStringValue !== 'function') return ''
   return withAlloc(m, key.length + 1, (kb) => {
@@ -1824,7 +2375,167 @@ function annotStringValue(m: PdfiumModule, annot: number, key: string): string {
   })
 }
 
-function readWidgetCheckboxChars(m: PdfiumModule, doc: number, page: number): PdfChar[] {
+function widgetTextWeight(code: number): number {
+  if (isEastAsianScript(scriptOf(code))) return 1
+  const ch = String.fromCodePoint(code)
+  if (ch === ' ') return 0.4
+  if (/[0-9A-Z]/.test(ch)) return 0.6
+  if (/[.,:;!'"|()[\]{}]/.test(ch)) return 0.3
+  return 0.5
+}
+
+/** glyph ascent / descent as a share of the font size (Helvetica-ish) */
+const WIDGET_TEXT_ASCENT = 0.72
+const WIDGET_TEXT_DESCENT = 0.21
+
+/**
+ * Break one logical row into visual rows that fit `maxW` (weights are em
+ * fractions, so widths are `weight * fontSize`). Breaks after the last space
+ * that fits, else between glyphs — never mid-glyph.
+ */
+function wrapWidgetRow(glyphs: string[], fontSize: number, maxW: number): string[][] {
+  const rows: string[][] = []
+  let start = 0
+  while (start < glyphs.length) {
+    let w = 0
+    let end = start
+    let lastSpace = -1
+    while (end < glyphs.length) {
+      const gw = widgetTextWeight(glyphs[end]!.codePointAt(0) ?? 0) * fontSize
+      if (w + gw > maxW && end > start) break
+      if (glyphs[end] === ' ') lastSpace = end
+      w += gw
+      end++
+    }
+    if (end < glyphs.length && lastSpace > start) end = lastSpace + 1
+    rows.push(glyphs.slice(start, end))
+    start = end
+  }
+  return rows
+}
+
+interface TextFieldOptions {
+  /** /Ff multiline bit: rows start at the top and long rows wrap */
+  multiline?: boolean
+  /** /DA font size (pt); 0 / absent = auto (fit the box height) */
+  fontSize?: number
+}
+
+/**
+ * Lay out a text field's /V inside its widget box. Coordinates are PDF user
+ * space (y up, like every other PdfChar here): the first row hangs from the
+ * top of the box (multiline) or sits vertically centered (single-line, the
+ * way viewers draw it), and each following row steps DOWN by one leading.
+ * Advances come from the font size — a short value in a wide field keeps
+ * its natural glyph widths; a value wider than the field is shrunk to fit
+ * (auto-size viewers do the same), never stretched.
+ */
+function textFieldChars(box: Rect, value: string, opts: TextFieldOptions = {}): PdfChar[] {
+  const out: PdfChar[] = []
+  const innerH = box.y1 - box.y0 - 2 * WIDGET_TEXT_PAD_PT
+  const innerW = box.x1 - box.x0 - 2 * WIDGET_TEXT_PAD_PT
+  if (innerH <= 0 || innerW <= 0) return out
+  const rawRows = value.split(/\r\n|[\r\n]/).map((r) => [...r])
+  const multiline = opts.multiline === true || rawRows.length > 1
+  let fontSize =
+    opts.fontSize && opts.fontSize > 0
+      ? Math.min(opts.fontSize, Math.max(innerH, WIDGET_TEXT_MIN_PT))
+      : Math.min(Math.max(innerH, WIDGET_TEXT_MIN_PT), WIDGET_TEXT_MAX_PT)
+  const rowWidth = (glyphs: string[], fs: number): number =>
+    glyphs.reduce((a, g) => a + widgetTextWeight(g.codePointAt(0) ?? 0) * fs, 0)
+  let rows: string[][]
+  if (multiline) {
+    rows = rawRows.flatMap((r) => (r.length === 0 ? [r] : wrapWidgetRow(r, fontSize, innerW)))
+  } else {
+    rows = rawRows
+    const natural = rowWidth(rows[0] ?? [], fontSize)
+    if (natural > innerW) fontSize = Math.max(WIDGET_TEXT_MIN_PT, (fontSize * innerW) / natural)
+  }
+  const lineH = fontSize * WIDGET_TEXT_LEADING
+  // y of the first row's top edge; rows step down from here
+  const firstTop = multiline
+    ? box.y1 - WIDGET_TEXT_PAD_PT
+    : (box.y0 + box.y1) / 2 + (fontSize * (WIDGET_TEXT_ASCENT + WIDGET_TEXT_DESCENT)) / 2
+  for (let r = 0; r < rows.length; r++) {
+    const glyphs = rows[r]!
+    if (glyphs.length === 0) continue
+    const baseline = firstTop - r * lineH - fontSize * WIDGET_TEXT_ASCENT
+    if (baseline < box.y0) break // the rest would hang below the box
+    let x = box.x0 + WIDGET_TEXT_PAD_PT
+    const limit = box.x1 - WIDGET_TEXT_PAD_PT
+    for (const g of glyphs) {
+      const code = g.codePointAt(0) ?? 0
+      const w = widgetTextWeight(code) * fontSize
+      if (x + w > limit + 0.01) break // clip, never squeeze
+      out.push({
+        code,
+        text: g.trim() === '' ? ' ' : g,
+        box: {
+          x0: x,
+          x1: x + w,
+          y0: baseline - fontSize * WIDGET_TEXT_DESCENT,
+          y1: baseline + fontSize * WIDGET_TEXT_ASCENT,
+        },
+        looseBox: {
+          x0: x,
+          x1: x + w,
+          y0: baseline - fontSize * 0.25,
+          y1: baseline + fontSize * 0.95,
+        },
+        originX: x,
+        originY: baseline,
+        angle: 0,
+        fontSize,
+        fontWeight: 400,
+        fontFamily: 'Helvetica',
+        italic: false,
+        color: '000000',
+        isGenerated: true,
+        isHyphen: false,
+        script: scriptOf(code),
+      })
+      x += w
+    }
+  }
+  return out
+}
+
+/**
+ * Text field /V through the form-fill layer: pdfium resolves it along the
+ * /Parent chain (the standard layout keeps /V, /FT, /Ff, /DA on a parent
+ * field whose /Kids are the widgets), same as IsChecked does for checkboxes.
+ * Falls back to the widget dict's own /V when the field API is missing.
+ */
+function formFieldValue(m: PdfiumModule, form: number, annot: number): string {
+  if (typeof m._FPDFAnnot_GetFormFieldValue === 'function') {
+    const len = m._FPDFAnnot_GetFormFieldValue(form, annot, 0, 0)
+    if (len > 2) {
+      const v = withAlloc(m, len, (buf) => {
+        m._FPDFAnnot_GetFormFieldValue!(form, annot, buf, len)
+        return new TextDecoder('utf-16le').decode(m.HEAPU8.subarray(buf, buf + len - 2))
+      })
+      if (v !== '') return v
+    }
+  }
+  return annotStringValue(m, annot, 'V')
+}
+
+function formFieldFontSize(m: PdfiumModule, form: number, annot: number): number {
+  if (typeof m._FPDFAnnot_GetFontSize !== 'function') return 0
+  return withAlloc(m, 4, (f) => {
+    m.HEAPF32[f >> 2] = 0
+    if (!m._FPDFAnnot_GetFontSize!(form, annot, f)) return 0
+    const v = m.HEAPF32[f >> 2]!
+    return Number.isFinite(v) && v > 0 ? v : 0
+  })
+}
+
+interface WidgetChars {
+  glyphs: PdfChar[]
+  text: PdfChar[]
+}
+
+function readWidgetChars(m: PdfiumModule, doc: number, page: number): WidgetChars {
   if (
     typeof m._FPDFPage_GetAnnotCount !== 'function' ||
     typeof m._FPDFPage_GetAnnot !== 'function' ||
@@ -1838,17 +2549,21 @@ function readWidgetCheckboxChars(m: PdfiumModule, doc: number, page: number): Pd
     typeof m._PDFiumExt_ExitFormFillEnvironment !== 'function' ||
     typeof m._PDFiumExt_CloseFormFillInfo !== 'function'
   ) {
-    return []
+    return { glyphs: [], text: [] }
   }
   const total = m._FPDFPage_GetAnnotCount(page)
-  if (total <= 0) return []
-  const out: PdfChar[] = []
+  if (total <= 0) return { glyphs: [], text: [] }
+  const glyphs: PdfChar[] = []
+  const text: PdfChar[] = []
   const formInfo = m._PDFiumExt_OpenFormFillInfo()
-  if (!formInfo) return []
+  if (!formInfo) return { glyphs: [], text: [] }
   let form = 0
   try {
     form = m._PDFiumExt_InitFormFillEnvironment(doc, formInfo)
-    if (!form) return []
+    if (!form) return { glyphs: [], text: [] }
+    // widget-level queries (font size from /DA) need the page bound to the
+    // form environment; without it FPDFAnnot_GetFontSize reports failure
+    if (typeof m._FORM_OnAfterLoadPage === 'function') m._FORM_OnAfterLoadPage(page, form)
     withAlloc(m, 4 * 4, (f4) => {
       for (let i = 0; i < total; i++) {
         const annot = m._FPDFPage_GetAnnot!(page, i)
@@ -1857,7 +2572,8 @@ function readWidgetCheckboxChars(m: PdfiumModule, doc: number, page: number): Pd
           if (m._FPDFAnnot_GetSubtype!(annot) !== FPDF_ANNOT_WIDGET) continue
           const fieldType = m._FPDFAnnot_GetFormFieldType!(form, annot)
           const radio = fieldType === FPDF_FORMFIELD_RADIOBUTTON
-          if (fieldType !== FPDF_FORMFIELD_CHECKBOX && !radio) continue
+          const isText = fieldType === FPDF_FORMFIELD_TEXT
+          if (fieldType !== FPDF_FORMFIELD_CHECKBOX && !radio && !isText) continue
           if (!m._FPDFAnnot_GetRect!(annot, f4)) continue
           const v = m.HEAPF32.subarray(f4 >> 2, (f4 >> 2) + 4) // left top right bottom
           const box: Rect = {
@@ -1865,6 +2581,22 @@ function readWidgetCheckboxChars(m: PdfiumModule, doc: number, page: number): Pd
             x1: Math.max(v[0]!, v[2]!),
             y0: Math.min(v[1]!, v[3]!),
             y1: Math.max(v[1]!, v[3]!),
+          }
+          if (isText) {
+            // /Ff resolves along the /Parent chain like /V does
+            const flags =
+              typeof m._FPDFAnnot_GetFormFieldFlags === 'function'
+                ? m._FPDFAnnot_GetFormFieldFlags(form, annot)
+                : 0
+            // a password field's value must never surface as plaintext
+            if (flags & FPDF_FORMFLAG_TEXT_PASSWORD) continue
+            text.push(
+              ...textFieldChars(box, formFieldValue(m, form, annot), {
+                multiline: (flags & FPDF_FORMFLAG_TEXT_MULTILINE) !== 0,
+                fontSize: formFieldFontSize(m, form, annot),
+              }),
+            )
+            continue
           }
           const side = Math.max(box.x1 - box.x0, box.y1 - box.y0)
           if (side < WIDGET_BOX_MIN_PT || side > WIDGET_BOX_MAX_PT) continue
@@ -1876,7 +2608,7 @@ function readWidgetCheckboxChars(m: PdfiumModule, doc: number, page: number): Pd
             m._FPDFAnnot_IsChecked!(form, annot) === 1 ||
             (appearanceState !== '' && appearanceState !== 'Off')
           const code = radio ? (checked ? 0x25c9 : 0x25cb) : checked ? 0x2612 : 0x2610
-          out.push({
+          glyphs.push({
             code,
             text: String.fromCodePoint(code),
             box,
@@ -1899,10 +2631,13 @@ function readWidgetCheckboxChars(m: PdfiumModule, doc: number, page: number): Pd
       }
     })
   } finally {
+    if (form && typeof m._FORM_OnBeforeClosePage === 'function') {
+      m._FORM_OnBeforeClosePage(page, form)
+    }
     if (form) m._PDFiumExt_ExitFormFillEnvironment(form)
     m._PDFiumExt_CloseFormFillInfo(formInfo)
   }
-  return out
+  return { glyphs, text }
 }
 
 function rotateToDisplay(
@@ -1961,6 +2696,8 @@ export function extractPage(
     try {
       if (textPage) {
         chars = readChars(m, textPage)
+        // link rects are raw page space like the char boxes: tag before any shift/rotation
+        tagLinkChars(chars, readLinkAnnots(m, doc, page))
         // crop-origin shift BEFORE the ink check: it renders in crop space
         if (shifted) {
           for (const c of chars) {
@@ -1995,10 +2732,12 @@ export function extractPage(
     }
 
     // interactive checkbox/radio widgets → synthesized glyph chars (P29),
-    // through the same crop-shift / rotation normalization as real chars
-    const widgetChars = readWidgetCheckboxChars(m, doc, page)
-    if (widgetChars.length > 0) {
-      for (const c of widgetChars) {
+    // text field values → laid-out runs, through the same crop-shift /
+    // rotation normalization as real chars
+    const widgetChars = readWidgetChars(m, doc, page)
+    const allWidgetChars = [...widgetChars.text, ...widgetChars.glyphs]
+    if (allWidgetChars.length > 0) {
+      for (const c of allWidgetChars) {
         if (shifted) {
           shiftRect(c.box, dx, dy)
           shiftRect(c.looseBox, dx, dy)
@@ -2013,6 +2752,9 @@ export function extractPage(
           c.originX = ox
           c.originY = oy
         }
+      }
+      chars.push(...widgetChars.text)
+      for (const c of widgetChars.glyphs) {
         // ride the neighboring label's line: a widget box is taller than the
         // text beside it, and an unaligned baseline mints a lone line that
         // adds flow height per field (a 261-field form grew 24 → 36 pages).
@@ -2092,7 +2834,8 @@ export function extractPage(
     // shadings / wallpaper images) becomes one behindDoc bitmap. Text-less
     // pages stay out — the scanned/degraded fallback serves them better, and
     // excluding a scan's own image here would break scanned detection.
-    const bgStack = detectBackgroundStack(m, doc, page, widthPt, heightPt)
+    const contentBox = pageContentBox(m, page, widthPt, heightPt)
+    const bgStack = detectBackgroundStack(m, doc, page, widthPt, heightPt, contentBox)
     const hasRealText =
       chars.filter((c) => !c.isGenerated && !isWhitespaceCode(c.code)).length > SCANNED_MAX_CHARS
     // P29 B: a graphics-dominant scan's tile stack must NOT bake — the bake
@@ -2138,9 +2881,26 @@ export function extractPage(
       intersectArea(box, { x0: 0, y0: 0, x1: widthPt, y1: heightPt }) / pageAreaRaw >=
         OCR_SCAN_IMAGE_COVER
     const ocrSkip = ocrTextRecovered ? coversPage : undefined
-    let images = readImages(m, doc, page, bgActive ? bgStack.count : 0, ocrSkip)
+    let images = readImages(m, doc, page, bgActive ? bgStack.count : 0, ocrSkip, rotation)
+    const patternFills = readPatternFills(
+      m,
+      doc,
+      pageIndex,
+      page,
+      widthPt,
+      heightPt,
+      bgActive ? bgStack.count : 0,
+    )
+    if (patternFills.images.length > 0) {
+      images = [...images, ...patternFills.images].sort((p, q) => (p.z ?? 0) - (q.z ?? 0))
+    }
+    // the consumed pattern paths stay in `paths` through vector-region
+    // detection (a gradient blob is part of the illustration it sits in) and
+    // leave the stream afterwards — the region bitmap or the pattern image
+    // carries them
     let paths = readPaths(m, page, bgActive ? bgStack.count : 0)
     if (shifted) {
+      if (contentBox) shiftRect(contentBox, dx, dy)
       for (const img of images) shiftRect(img.box, dx, dy)
       for (const p of paths) {
         if (p.clipBox) shiftRect(p.clipBox, dx, dy)
@@ -2156,6 +2916,7 @@ export function extractPage(
     if (rotation === 1 || rotation === 2 || rotation === 3) {
       const t = rotateToDisplay(rotation, widthPt, heightPt)
       for (const img of images) t.rect(img.box)
+      if (contentBox) t.rect(contentBox)
       for (const p of paths) {
         if (p.clipBox) t.rect(p.clipBox)
         for (const sub of p.subpaths) {
@@ -2217,7 +2978,13 @@ export function extractPage(
     }
 
     // quality verdicts judge the page as authored (before vector-art rewriting)
-    const quality = assessQuality(chars, images, pageRect, rotation)
+    // rasterized pattern fills are vector art, never a scan's page image
+    const quality = assessQuality(
+      chars,
+      images.filter((img) => !img.synthetic),
+      pageRect,
+      rotation,
+    )
     if (ocrImageDominant) quality.scanned = true
     let rotatedDropped = 0
     let quarterTurned = false
@@ -2249,6 +3016,7 @@ export function extractPage(
           c.angle = normalizeAngle(c.angle + t.angleDelta)
         }
         for (const img of images) t.rect(img.box)
+        if (contentBox) t.rect(contentBox)
         for (const p of paths) {
           if (p.clipBox) t.rect(p.clipBox)
           for (const sub of p.subpaths) {
@@ -2332,6 +3100,12 @@ export function extractPage(
       }
     }
 
+    if (patternFills.consumed.size > 0) {
+      outPaths = outPaths.filter(
+        (p) => p.fromForm || p.z === undefined || !patternFills.consumed.has(p.z),
+      )
+    }
+
     // P27 guard input: extraction kept NONE of the page's visible body text
     // and nothing visible (bake/region render) carries it either — the
     // pipeline degrades such a page instead of shipping it silently empty
@@ -2352,8 +3126,10 @@ export function extractPage(
           heightPt,
           bgActive ? bgStack.count : 0,
           vectorRegions,
+          rotation,
+          dx,
+          dy,
         )
-    if (shifted) for (const img of decorImages) shiftRect(img.box, dx, dy)
 
     return {
       index: pageIndex,
@@ -2376,6 +3152,7 @@ export function extractPage(
       ...(rotatedDropped > 0 ? { rotatedDropped } : {}),
       ...(options.cellData ? { cellData: true } : {}),
       ...(bgRender !== undefined ? { bgRender } : {}),
+      ...(contentBox !== null ? { contentBox } : {}),
       ...(decorImages.length > 0 ? { decorImages } : {}),
     }
   } finally {
