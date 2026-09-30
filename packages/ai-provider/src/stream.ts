@@ -1,4 +1,6 @@
 import type { AgentMessage, AgentToolDef } from '@genoffice/agent-core'
+import { withOutputCapFallback } from './output-cap'
+import { assertAiContextBudget } from './context-budget'
 import { streamAnthropic } from './protocols/anthropic'
 import { streamGemini } from './protocols/gemini'
 import { streamOpenAiCompatible } from './protocols/openai-compatible'
@@ -23,35 +25,32 @@ export async function streamForProvider(
   maxTokens: number,
   cb: StreamCallbacks,
 ): Promise<void> {
+  assertAiContextBudget({ system, messages, tools })
   const adapter = getProviderAdapter(provider)
   if (adapter.meta.requiresApiKey && !config.apiKey?.trim()) {
     throw new Error(`${adapter.meta.label} requires an API key`)
   }
-  const requestConfig =
+  let requestConfig =
     provider === 'lmstudio'
       ? { ...config, model: await resolveLmStudioModel(config, cb.signal) }
       : config
   const endpoint = adapter.resolveEndpoint(requestConfig)
   const { baseUrl } = endpoint
-  switch (endpoint.protocol) {
-    case 'anthropic':
-      return streamAnthropic(requestConfig, system, messages, tools, maxTokens, cb, baseUrl)
-    case 'gemini':
-      return streamGemini(requestConfig, system, messages, tools, maxTokens, cb, baseUrl)
-    case 'openai-compatible':
-      return streamOpenAiCompatible(
-        baseUrl,
-        requestConfig,
-        system,
-        messages,
-        tools,
-        maxTokens,
-        cb,
-        {
+  if (endpoint.model) requestConfig = { ...requestConfig, model: endpoint.model }
+  return withOutputCapFallback(baseUrl, requestConfig.model, maxTokens, (cap) => {
+    switch (endpoint.protocol) {
+      case 'anthropic':
+        return streamAnthropic(requestConfig, system, messages, tools, cap, cb, baseUrl)
+      case 'gemini':
+        return streamGemini(requestConfig, system, messages, tools, cap, cb, baseUrl, {
+          omitTemperature: endpoint.omitTemperature,
+        })
+      case 'openai-compatible':
+        return streamOpenAiCompatible(baseUrl, requestConfig, system, messages, tools, cap, cb, {
           omitTemperature: endpoint.omitTemperature,
           useMaxCompletionTokens: endpoint.useMaxCompletionTokens,
           bodyExtras: endpoint.bodyExtras,
-        },
-      )
-  }
+        })
+    }
+  })
 }

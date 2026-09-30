@@ -65,6 +65,12 @@ describe('resolveDefaultSaveDir', () => {
     const fallback = join(root, 'fallback')
     expect(resolveDefaultSaveDir(unusable, fallback)).toBe(fallback)
   })
+
+  it('throws a descriptive error when the fallback itself is unusable', () => {
+    const blocker = join(root, 'blocker')
+    writeFileSync(blocker, 'x')
+    expect(() => resolveDefaultSaveDir(null, blocker)).toThrow(/default save dir not usable/)
+  })
 })
 
 describe('configuredDefaultSaveDir', () => {

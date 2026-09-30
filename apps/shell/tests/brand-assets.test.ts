@@ -496,7 +496,7 @@ describe('generated BP Office brand assets', () => {
       features: { chatgptSubscription: boolean }
       updates: { enabled: boolean }
     }
-    expect(manifest).toMatchObject({ productName: 'BP Office', version: '1.0.1-bp.1' })
+    expect(manifest).toMatchObject({ productName: 'BP Office', version: '1.1.0-bp.1' })
     expect(productConfig).toMatchObject({
       productName: 'BP Office',
       artifactSlug: 'BPOffice',
@@ -518,6 +518,7 @@ describe('generated BP Office brand assets', () => {
       'sheets',
       'pdf',
       'markdown',
+      'html',
     ])
     expect([...builder.matchAll(/\bext:\s*'([^']+)'/g)].map((match) => match[1])).toEqual([
       'docx',
@@ -525,9 +526,12 @@ describe('generated BP Office brand assets', () => {
       'xlsm',
       'xls',
       'csv',
+      'tsv',
       'pdf',
       'md',
       'markdown',
+      'html',
+      'htm',
     ])
     expect(manifest.devDependencies?.['@openai/codex']).toBeUndefined()
     expect(manifest.dependencies?.['@openai/codex']).toBeUndefined()

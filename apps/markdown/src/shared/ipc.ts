@@ -1,3 +1,4 @@
+import type { AiPanelPrefs } from '@genoffice/ui'
 import type { Lang } from '@genoffice/i18n'
 import type {
   AiSettings,
@@ -5,6 +6,8 @@ import type {
   AiStreamRequest,
   AiToolResultRequest,
 } from '@genoffice/ai-provider'
+import type { ExportImageMime } from './export-image-mime'
+export const MAX_PASTED_IMAGE_BYTES = 50 * 1024 * 1024
 
 export const MARKDOWN_CHANNELS = {
   consumePending: 'markdown:consume-pending',
@@ -19,14 +22,23 @@ export const MARKDOWN_CHANNELS = {
   pickImage: 'markdown:pick-image',
   saveImage: 'markdown:save-image',
   readImage: 'markdown:read-image',
+  saveImageAs: 'markdown:save-image-as',
+  viewImage: 'genoffice:view-image',
   exportRequest: 'markdown:export-request',
   exportDocx: 'markdown:export-docx',
   exportPdf: 'markdown:export-pdf',
+  prepareImageExport: 'markdown:prepare-image-export',
+  writeExportImage: 'markdown:write-export-image',
+  finishImageExport: 'markdown:finish-image-export',
   printRequest: 'markdown:print-request',
   getLanguage: 'app:get-language',
   languageChanged: 'app:language-changed',
   getTheme: 'app:get-theme',
   themeChanged: 'app:theme-changed',
+  getAutoSaveDefault: 'app:get-auto-save-default',
+  autoSaveDefaultChanged: 'app:auto-save-default-changed',
+  getAiPanelPrefs: 'app:get-ai-panel-prefs',
+  aiPanelPrefsChanged: 'app:ai-panel-prefs-changed',
 } as const
 
 export type UiTheme = 'light' | 'dark' | 'system'
@@ -35,6 +47,12 @@ export interface OpenDroppedFilesResult {
   opened: number
   duplicates: number
   rejected: number
+}
+
+/** shell-wide AutoSave default; updatedAt is 0 until the user has ever set it */
+export interface AutoSaveDefault {
+  on: boolean
+  updatedAt: number
 }
 
 export type SaveMode = 'save' | 'saveAs'
@@ -59,6 +77,8 @@ export type SaveMarkdownResult =
       path: string
       /** Save As may relocate local images into the new document's assets directory. */
       imageRewrites?: Array<{ from: string; to: string }>
+      /** Actual persisted source after Save As image rewrites. */
+      writtenText?: string
     }
   | { ok: true; canceled: true }
   | { ok: false; error: string }
@@ -75,7 +95,7 @@ export const AI_CHANNELS = {
   fetchImage: 'ai:fetch-image',
 } as const
 
-export type ExportFormat = 'pdf' | 'docx' | 'docs'
+export type ExportFormat = 'pdf' | 'docx' | 'docs' | 'png'
 
 export interface ExportDocxRequest {
   /** .docx bytes, base64 */
@@ -92,12 +112,17 @@ export interface ExportPdfRequest {
   suggestedName: string
 }
 
+export type ImageExportPreparation =
+  | { ok: true; id: string; pdfBase64: string }
+  | { ok: true; canceled: true }
+  | { ok: false; error: string }
+
 export type ExportResult =
   { ok: true; path: string } | { ok: true; canceled: true } | { ok: false; error: string }
 
 export interface ImageData {
   base64: string
-  mime: 'image/png' | 'image/jpeg' | 'image/gif'
+  mime: ExportImageMime
 }
 
 /** API exposed by preload to the renderer (window.markdownApi) */
@@ -139,17 +164,34 @@ export interface MarkdownApi {
    * inside the document's directory are allowed; anything else returns null.
    */
   readImage(src: string): Promise<ImageData | null>
+  /** Save a displayed image (md-asset://, data: or remote URL) through a Save dialog */
+  saveImageAs(src: string): Promise<{ ok: boolean; path?: string; error?: string }>
+  /** Native context menu "View Image" → renderer opens the viewer */
+  onViewImage(handler: (src: string) => void): () => void
   /** Shell menu export → renderer serializes and calls exportDocx/exportPdf */
   onExportRequest(handler: (format: ExportFormat) => void): () => void
   /** Shell menu Print → renderer builds the print HTML and opens the system print dialog */
   onPrintRequest(handler: () => void): () => void
   exportDocx(request: ExportDocxRequest): Promise<ExportResult>
   exportPdf(request: ExportPdfRequest): Promise<ExportResult>
+  prepareImageExport(request: ExportPdfRequest): Promise<ImageExportPreparation>
+  writeExportImage(
+    id: string,
+    page: number,
+    pngBase64: string,
+  ): Promise<{ ok: boolean; error?: string }>
+  finishImageExport(id: string, success: boolean): Promise<ExportResult>
   getLanguage(): Promise<Lang>
   onLanguageChanged(handler: (lang: Lang) => void): () => void
   getTheme(): Promise<UiTheme>
   onThemeChanged(handler: (theme: UiTheme) => void): () => void
   openDroppedFiles(files: File[]): Promise<OpenDroppedFilesResult>
+  getAutoSaveDefault(): Promise<AutoSaveDefault>
+  onAutoSaveDefaultChanged(handler: (value: AutoSaveDefault) => void): () => void
+  /** AI panel text size + chat-input spellcheck (Settings → General in the shell) */
+  getAiPanelPrefs(): Promise<AiPanelPrefs>
+  setAiPanelPrefs(patch: Partial<AiPanelPrefs>): Promise<AiPanelPrefs>
+  onAiPanelPrefsChanged(handler: (prefs: AiPanelPrefs) => void): () => void
   /** press on the shell chrome (tab strip is a sibling WebContentsView whose
    *  clicks produce no DOM event here) — dismiss open popovers */
   onChromePressed(handler: () => void): () => void

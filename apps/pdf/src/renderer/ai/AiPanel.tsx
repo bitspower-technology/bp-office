@@ -1,8 +1,15 @@
+import { aiPanelWidthAtPointer, AiPanelSideButton } from '@genoffice/ui'
 import { useEffect, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent, ReactElement } from 'react'
 import { AgentLoop, EDITOR_AGENT_MAX_TURNS } from '@genoffice/agent-core'
 import type { AiSettings } from '@genoffice/ai-provider'
-import { AiComposer, AiTypingIndicator, BPOfficeMark } from '@genoffice/ui'
+import {
+  AiComposer,
+  AiScopeQuote,
+  type AiScopeQuoteData,
+  AiTypingIndicator,
+  BPOfficeMark,
+} from '@genoffice/ui'
 import { aiLangDirective, t as tGlobal, useI18n } from '../i18n/locale'
 import { Markdown } from '@genoffice/ui'
 import sendEnterOn from '../assets/send-enter-on.png'
@@ -11,7 +18,7 @@ import sendStop from '../assets/send-stop.png'
 import { createPdfSkill } from './pdf-skill'
 import { createElectronTransport } from './transport'
 import { PDF_NAV_SCHEME, parsePdfNavHref } from './pdf-nav'
-import type { PdfAiDeps } from './tools'
+import type { FileOpConfirm, PdfAiDeps, PdfAppDeps } from './tools'
 
 // Word-parity count (same as docs/markdown): Asian chars one by one + non-Asian words
 const ASIAN_RE =
@@ -57,9 +64,19 @@ interface ChatEntry {
   /** the run failed and this user message was rolled back out of the model context */
   undelivered?: boolean
   tools?: ToolActivity[]
+  /** the passage this user message targeted, frozen at send */
+  scope?: AiScopeQuoteData
 }
 
+/** longest selection excerpt echoed on a user bubble */
+const SCOPE_TEXT_MAX = 200
+
 type Phase = 'thinking' | 'replying' | 'working'
+
+interface PendingConfirm {
+  req: FileOpConfirm
+  settle: (ok: boolean) => void
+}
 
 export function AiPanel({
   api,
@@ -69,7 +86,7 @@ export function AiPanel({
   onRunDone,
   onClearSelection,
 }: {
-  api: PdfAiDeps
+  api: PdfAppDeps
   /** Absolute path of the open PDF (chat history is keyed to it) */
   filePath?: string
   onCollapse: () => void
@@ -112,12 +129,14 @@ export function AiPanel({
             role: 'user' | 'assistant'
             text: string
             tools?: Array<{ name: string; summary: string; isError?: boolean; output?: string }>
+            scope?: AiScopeQuoteData
           }): Promise<void>
           loadChat(args: { projectId: string; chatId: string; limit?: number }): Promise<
             Array<{
               role: 'user' | 'assistant'
               text: string
               tools?: Array<{ name: string; summary: string; isError?: boolean; output?: string }>
+              scope?: AiScopeQuoteData
             }>
           >
           rebindChat(args: {
@@ -132,6 +151,7 @@ export function AiPanel({
     role: 'user' | 'assistant',
     text: string,
     tools?: ToolActivity[],
+    scope?: AiScopeQuoteData,
   ): void => {
     const ids = chatIdsRef.current
     const store = chatStore()
@@ -152,6 +172,7 @@ export function AiPanel({
               })),
             }
           : {}),
+        ...(scope ? { scope } : {}),
       })
       .catch(() => {
         /* silent */
@@ -193,6 +214,7 @@ export function AiPanel({
               isError: tool.isError,
               output: tool.output,
             })),
+            ...(m.scope ? { scope: m.scope } : {}),
           })),
           ...prev,
         ])
@@ -255,6 +277,31 @@ export function AiPanel({
   /** Any tool in the current run reported mutated: true */
   const runMutatedRef = useRef(false)
 
+  /** Confirmation card for irreversible file operations; one at a time, a second request is refused */
+  const [fileOpConfirm, setFileOpConfirm] = useState<FileOpConfirm | null>(null)
+  const confirmRef = useRef<PendingConfirm | null>(null)
+  const requestFileOpConfirm = (req: FileOpConfirm, signal?: AbortSignal): Promise<boolean> =>
+    new Promise((resolve) => {
+      if (confirmRef.current || signal?.aborted) {
+        resolve(false)
+        return
+      }
+      const pending: PendingConfirm = {
+        req,
+        settle: (ok) => {
+          if (confirmRef.current !== pending) return
+          confirmRef.current = null
+          setFileOpConfirm(null)
+          resolve(ok)
+        },
+      }
+      confirmRef.current = pending
+      setFileOpConfirm(req)
+      signal?.addEventListener('abort', () => pending.settle(false), { once: true })
+    })
+  // another document or the panel going away answers a pending card with "no"
+  useEffect(() => () => confirmRef.current?.settle(false), [filePath])
+
   const patchLast = (patch: Partial<ChatEntry> | ((last: ChatEntry) => Partial<ChatEntry>)) => {
     setChat((prev) => {
       const next = [...prev]
@@ -286,17 +333,37 @@ export function AiPanel({
       addMarkup: (type, idx, rects, color) => apiRef.current.addMarkup(type, idx, rects, color),
       annotationSummary: () => apiRef.current.annotationSummary(),
       createDocument: (request) => apiRef.current.createDocument(request),
+      confirmFileOp: requestFileOpConfirm,
+      insertBlankPage: (afterVis) => apiRef.current.insertBlankPage(afterVis),
+      setPageSize: (w, h) => apiRef.current.setPageSize(w, h),
+      cropPages: (vis, rect) => apiRef.current.cropPages(vis, rect),
+      replacePages: (vis) => apiRef.current.replacePages(vis),
+      extractPages: (vis) => apiRef.current.extractPages(vis),
+      splitPdf: (n) => apiRef.current.splitPdf(n),
+      splitPages: (n) => apiRef.current.splitPages(n),
+      mergePages: (n, direction, separator) => apiRef.current.mergePages(n, direction, separator),
+      stamps: () => apiRef.current.stamps(),
+      setStamps: (cfg) => apiRef.current.setStamps(cfg),
       annotationsOn: (idx) => apiRef.current.annotationsOn(idx),
-      addNote: (idx, at, contents) => apiRef.current.addNote(idx, at, contents),
+      addNote: (idx, at, contents, color) => apiRef.current.addNote(idx, at, contents, color),
       findNoteRoot: (idx, key) => apiRef.current.findNoteRoot(idx, key),
       replyToThread: (idx, root, contents) => apiRef.current.replyToThread(idx, root, contents),
+      editNote: (idx, item, contents) => apiRef.current.editNote(idx, item, contents),
+      deleteMarkups: (idx, keys) => apiRef.current.deleteMarkups(idx, keys),
+      deleteNoteThread: (idx, root) => apiRef.current.deleteNoteThread(idx, root),
       editText: (input) => apiRef.current.editText(input),
+      moveTextBlock: (idx, block, d) => apiRef.current.moveTextBlock(idx, block, d),
       insertText: (input) => apiRef.current.insertText(input),
+      addFormMark: (idx, kind, rect) => apiRef.current.addFormMark(idx, kind, rect),
+      textInserts: () => apiRef.current.textInserts(),
+      updateTextInsert: (id, edit) => apiRef.current.updateTextInsert(id, edit),
+      moveTextInsert: (id, origin) => apiRef.current.moveTextInsert(id, origin),
+      deleteTextInsert: (id) => apiRef.current.deleteTextInsert(id),
       editFonts: () => apiRef.current.editFonts(),
       formEdits: () => apiRef.current.formEdits(),
-      applyFormEdit: (v) => apiRef.current.applyFormEdit(v),
-      rotatePage: (idx, dir) => apiRef.current.rotatePage(idx, dir),
-      deletePage: (idx) => apiRef.current.deletePage(idx),
+      applyOps: (ops, opts) => apiRef.current.applyOps(ops, opts),
+      metadata: () => apiRef.current.metadata(),
+      pageOrder: () => apiRef.current.pageOrder(),
       pageGeom: (idx) => apiRef.current.pageGeom(idx),
       listImages: () => apiRef.current.listImages(),
       isImageClaimed: (ref) => apiRef.current.isImageClaimed(ref),
@@ -304,7 +371,9 @@ export function AiPanel({
       transformImage: (ref, rect, layer, quarterTurns) =>
         apiRef.current.transformImage(ref, rect, layer, quarterTurns),
       replaceImage: (ref, png) => apiRef.current.replaceImage(ref, png),
+      bakeImage: (ref, op, signal) => apiRef.current.bakeImage(ref, op, signal),
       deleteImage: (ref) => apiRef.current.deleteImage(ref),
+
       fetchImage: (url) => apiRef.current.fetchImage(url),
     }
     loopRef.current = new AgentLoop({
@@ -346,10 +415,16 @@ export function AiPanel({
           patchLast({ streaming: false })
           setChat((prev) => [...prev, { role: 'assistant', text: '', streaming: true }])
         },
-        onDone: ({ text, cancelled, turnLimit }) => {
-          const final = turnLimit
+        onDone: ({ text, cancelled, turnLimit, truncated }) => {
+          const base = turnLimit
             ? [text, tGlobal('aiTurnLimit')].filter(Boolean).join('\n\n')
             : text || (cancelled ? tGlobal('aiStopped') : '')
+          // finish_reason=length with no prose (a reasoning model that spent the whole
+          // output budget thinking) must say so instead of showing the bare "(no reply)",
+          // which reads like the assistant ignored the user — same handling as docs
+          const final = truncated
+            ? [base, tGlobal('aiTruncatedNote')].filter(Boolean).join('\n\n')
+            : base
           if (cancelled) {
             segTextRef.current = ''
             runTextsRef.current = []
@@ -395,7 +470,7 @@ export function AiPanel({
     if (stickToBottomRef.current) {
       chatRef.current?.scrollTo({ top: chatRef.current.scrollHeight })
     }
-  }, [chat, busy])
+  }, [chat, busy, fileOpConfirm])
 
   const onChatScroll = (): void => {
     const el = chatRef.current
@@ -403,18 +478,20 @@ export function AiPanel({
     stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48
   }
 
-  const send = (text: string): void => {
+  /** retryScope: null = a retry that had no scope; undefined = capture the live selection */
+  const send = (text: string, retryScope?: AiScopeQuoteData | null): void => {
     const instruction = text.trim()
     const loop = loopRef.current
     if (!instruction || !loop || loop.busy) return
     stickToBottomRef.current = true
-    persistMessage('user', instruction)
+    const scope = retryScope !== undefined ? (retryScope ?? undefined) : selectionScopeQuote()
+    persistMessage('user', instruction, undefined, scope)
     segTextRef.current = ''
     runTextsRef.current = []
     runToolsRef.current = []
     setChat((prev) => [
       ...prev,
-      { role: 'user', text: instruction },
+      { role: 'user', text: instruction, ...(scope ? { scope } : {}) },
       { role: 'assistant', text: '', streaming: true },
     ])
     setPrompt('')
@@ -463,7 +540,7 @@ export function AiPanel({
   const resizeCleanupRef = useRef<(() => void) | null>(null)
   useEffect(() => () => resizeCleanupRef.current?.(), [])
 
-  /** Drag the right edge to resize: the panel is flush with the window's left edge, so width = clientX */
+  /** Drag the inner panel edge to resize from the selected window side. */
   const startResize = (e: ReactPointerEvent<HTMLDivElement>): void => {
     e.preventDefault()
     const resizer = e.currentTarget
@@ -471,7 +548,7 @@ export function AiPanel({
     document.body.style.cursor = 'col-resize'
     document.body.style.userSelect = 'none'
     const onMove = (ev: PointerEvent): void => {
-      const w = clampPanelWidth(ev.clientX)
+      const w = clampPanelWidth(aiPanelWidthAtPointer(ev.clientX))
       preferredWidthRef.current = w
       setPanelWidth(w)
     }
@@ -505,6 +582,19 @@ export function AiPanel({
   const scopeSel = api.selection()
   const hasScopeSelection = !!scopeSel && scopeSel.text.trim().length > 0
 
+  const selectionScopeQuote = (): AiScopeQuoteData | undefined => {
+    const sel = api.selection()
+    const text = sel?.text.replace(/\s+/g, ' ').trim() ?? ''
+    if (!sel || !text) return undefined
+    return {
+      label: t('aiScopeSelection', {
+        page: sel.lastPage > sel.page ? `${sel.page}-${sel.lastPage}` : sel.page,
+        words: countWords(text),
+      }),
+      text: text.length > SCOPE_TEXT_MAX ? `${text.slice(0, SCOPE_TEXT_MAX)}…` : text,
+    }
+  }
+
   // the selection can vanish without the × (click-away, another file): close the preview too
   useEffect(() => {
     if (!hasScopeSelection) setScopePreviewOpen(false)
@@ -524,6 +614,7 @@ export function AiPanel({
       ref={asideRef}
       className={`copilot${resizing ? ' ai-panel-resizing' : ''}`}
       style={{ width: '100%' }}
+      dir={lang === 'ar' || lang === 'he' ? 'rtl' : undefined}
     >
       <div
         className="ai-panel-resizer"
@@ -538,6 +629,10 @@ export function AiPanel({
           BP Office AI
         </span>
         <div className="ai-panel-header-actions">
+          <AiPanelSideButton
+            lang={lang}
+            onMove={(side) => window.pdfApi.setAiPanelPrefs({ side })}
+          />
           {chat.length > 0 && (
             <button
               className="ai-header-btn"
@@ -554,7 +649,7 @@ export function AiPanel({
             </button>
           )}
           <button
-            className="ai-header-btn"
+            className="ai-header-btn ai-panel-collapse"
             onClick={onCollapse}
             data-tip={t('aiCollapsePanel')}
             aria-label={t('aiCollapsePanel')}
@@ -595,12 +690,16 @@ export function AiPanel({
           if (entry.role === 'user') {
             return (
               <div key={i} className="ai-msg ai-msg-user">
-                {entry.text}
+                {entry.scope && <AiScopeQuote scope={entry.scope} />}
+                <span dir="auto">{entry.text}</span>
                 {entry.undelivered && (
                   <div className="ai-msg-undelivered">
                     {t('aiUndelivered')}
                     {!busy && (
-                      <button className="ai-retry-btn" onClick={() => send(entry.text)}>
+                      <button
+                        className="ai-retry-btn"
+                        onClick={() => send(entry.text, entry.scope ?? null)}
+                      >
                         {t('aiRetry')}
                       </button>
                     )}
@@ -634,6 +733,32 @@ export function AiPanel({
             </div>
           )
         })}
+        {fileOpConfirm && (
+          <div className="ai-confirm-card" role="group" aria-label={t('aiFileOpConfirmTitle')}>
+            <div className="ai-confirm-title">{t('aiFileOpConfirmTitle')}</div>
+            <div className="ai-confirm-summary">{fileOpConfirm.summary}</div>
+            {fileOpConfirm.detail && (
+              <div className="ai-confirm-detail">{fileOpConfirm.detail}</div>
+            )}
+            <div className="ai-confirm-warning">{t('aiFileOpConfirmWarning')}</div>
+            <div className="ai-confirm-actions">
+              <button
+                type="button"
+                className="pdf-modal-btn"
+                onClick={() => confirmRef.current?.settle(false)}
+              >
+                {t('cancel')}
+              </button>
+              <button
+                type="button"
+                className="pdf-modal-btn primary"
+                onClick={() => confirmRef.current?.settle(true)}
+              >
+                {t('aiFileOpConfirm')}
+              </button>
+            </div>
+          </div>
+        )}
         {/* In-progress state: a standalone three-dot row at the end of the stream, kept until done */}
         {busy && <AiTypingIndicator label={typingLabel} />}
       </div>

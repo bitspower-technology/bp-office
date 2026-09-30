@@ -1,3 +1,54 @@
+import { tabStripOverlay } from './title-bar-overlay'
+import { atomicWriteFile } from './atomic-write'
+import { collectLaunchPaths } from './launch-paths'
+import { createDefaultAppService, execFileRunner } from './default-app'
+import { blankPdfBuffer } from '../../../pdf/src/main/blank-pdf'
+import {
+  normalizeAiPanelPrefs,
+  sameAiPanelPrefs,
+  type AiPanelPrefs,
+} from '@genoffice/ui/ai-panel-prefs'
+import type {
+  AutoSaveDefault,
+  FolderListing,
+  FolderRoot,
+  MoveConflictPolicy,
+  MoveResult,
+  NewFileOpts,
+} from '../shared/home-api'
+import { isSameFile, pdfSaveAsTarget, isValidRawRenameName } from './rename-validation'
+import {
+  FolderWatcher,
+  createFolder,
+  describeRoot,
+  isInsideRoot,
+  pathsUnder,
+  listFolder,
+  movePathsInto,
+  rebasePath,
+  renameFolder,
+  uniqueNameIn,
+  type FolderErrors,
+} from './folder-tree'
+import {
+  FOLDER_ROOTS_KEY,
+  describeExtraRoot,
+  readExtraRoots,
+  withExtraRoot,
+  withoutExtraRoot,
+} from './folder-roots'
+import { FileIndexer } from './file-index/indexer'
+import { FileIndexStore } from './file-index/store'
+import {
+  createDetachedEditorWindow,
+  detachedFilePaths,
+  detachedRenameFile,
+  detachedSetFileFor,
+  detachedWindowForWebContents,
+  focusDetachedByPath,
+  focusedDetachedKind,
+} from './detached-windows'
+import extractWorkerPath from './file-index/extract-worker?modulePath'
 import { execSync, spawn } from 'node:child_process'
 import {
   copyFileSync,
@@ -6,9 +57,11 @@ import {
   readFileSync,
   readdirSync,
   renameSync,
+  rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs'
-import { basename, dirname, extname, join } from 'node:path'
+import { basename, dirname, extname, join, resolve } from 'node:path'
 import {
   BrowserWindow,
   Menu,
@@ -29,6 +82,8 @@ import menuPdfIcon1x from './assets/menu-pdf.png?asset'
 import menuPdfIcon2x from './assets/menu-pdf@2x.png?asset'
 import menuMdIcon1x from './assets/menu-md.png?asset'
 import menuMdIcon2x from './assets/menu-md@2x.png?asset'
+import menuHtmlIcon1x from './assets/menu-html.png?asset'
+import menuHtmlIcon2x from './assets/menu-html@2x.png?asset'
 import menuHomeIcon1x from './assets/menu-home.png?asset'
 import menuHomeIcon2x from './assets/menu-home@2x.png?asset'
 import { createI18n, isLang, normalizeLang, setUiLang, type Lang } from '@genoffice/i18n'
@@ -43,22 +98,14 @@ import {
   showOpenDialogWithMemory,
   showSaveDialogWithMemory,
   windowMenuTemplate,
+  aboutMenuItem,
+  checkUpdatesMenuItem,
+  setUpdateCheckInvoker,
+  installRendererProtocol,
 } from '@genoffice/electron-utils'
-import { readAppSettings, writeAppSetting } from './app-settings'
+import { readAppSettings, writeAppSetting, writeAppSettings } from './app-settings'
 import { isTrustedChatGptAuthUrl, parseChatGptLoginId } from './chatgpt-ipc'
-import {
-  LAST_RUN_VERSION_KEY,
-  STAR_PROMPT_KEY,
-  asStarPromptState,
-  isUpgradeLaunch,
-  shouldShowStarPrompt,
-  shouldShowUpgradeStarPrompt,
-  withDocOpen,
-  withFirstRun,
-  withResolved,
-  withShown,
-} from './star-prompt'
-import { ProjectStore } from '@genoffice/project-store'
+import { relayChromePressed } from './chrome-pressed'
 import { checkLmStudioStatus, type AiSettings } from '@genoffice/ai-provider'
 import {
   disposeSharedChatGptProviderService,
@@ -75,6 +122,7 @@ import {
   readStarredFiles,
   recordRecentFile,
   removeRecentFiles,
+  removeStarredFiles,
   replaceRecentFile,
   registerAiIpc,
   registerProjectIpc,
@@ -84,14 +132,16 @@ import {
   setDocsMenuGate,
   setDocsShellHooks,
   createAiDocument,
+  projectFilePaths,
   projectFileRenamed,
+  setDocsHostWindowHook,
   setDocsShellWindow,
   setDocsFileSavedHook,
   setSessionPathResolver,
   defaultSaveDir,
   uniquePathIn,
 } from '../../../docs/src/main/docs-main'
-import { blankXlsxBuffer } from '../../../sheets/src/gateway/csv-import'
+import { blankXlsxBuffer } from '@genoffice/xlsx-gateway/gateway/csv-import'
 import {
   configureSheetsRuntime,
   installSheetsMenu,
@@ -102,6 +152,7 @@ import {
   sheetsFileRenamed,
   setSheetsCloseTabHook,
   setSheetsExtraFileMenuItems,
+  setSheetsHostWindowHook,
   setSheetsShellWindow,
   setSheetsWorkbookOpenedHook,
   startSheetsCaptureServer,
@@ -109,6 +160,10 @@ import {
 } from '../../../sheets/src/main/sheets-main'
 import {
   configurePdfRuntime,
+  markPdfUntitledPath,
+  pdfFileRenamed,
+  setPdfRenamedHook,
+  setPdfRedactionSavedHook,
   flushPdfSave,
   pdfIsDirty,
   requestPdfClose,
@@ -130,13 +185,28 @@ import {
   setMarkdownDocxExportedHook,
   setMarkdownFileSavedHook,
 } from '../../../markdown/src/main/markdown-main'
+import {
+  configureHtmlRuntime,
+  htmlFileRenamed,
+  registerPrivilegedSchemes,
+  requestHtmlClose,
+  requestHtmlSave,
+  sendHtmlExportRequest,
+  sendHtmlPrintRequest,
+  setHtmlDocxExportPrepareHook,
+  setHtmlDocxExportedHook,
+  setHtmlFileSavedHook,
+  setHtmlPresentHooks,
+  setHtmlProvisionalTitleHook,
+} from '../../../html/src/main/html-main'
 import type {
   ChatGptLoginCompleted,
   RecentEntry,
   RecentPage,
   RenameResult,
-  StarPromptShow,
   UiTheme,
+  FileSearchPage,
+  FileSearchQuery,
 } from '../shared/home-api'
 import {
   AI_OPEN_LOCAL_AI_SETTINGS_CHANNEL,
@@ -150,14 +220,19 @@ import { showErrorDialog } from './error-dialog'
 import { isTrustedDropSender, routeDroppedPaths } from './dropped-files'
 import { PRODUCT_DISPLAY_NAME, resolveShellUserDataPath } from './product-identity'
 import {
+  matchesExtFamily,
   normalizeRecentQuery,
   pageRecentPaths,
-  statExistingPaths,
+  statPathEntries,
   withoutLegacySlidePaths,
 } from './recent-files'
 import { TabManager } from './tab-manager'
-import { initAutoUpdater } from './updater'
-import { CHATGPT_SUBSCRIPTION_ENABLED, PRODUCT_REPOSITORY_URL } from '../shared/product-config'
+import { checkForUpdatesNow, initAutoUpdater } from './updater'
+import {
+  CHATGPT_SUBSCRIPTION_ENABLED,
+  PRODUCT_CONFIG,
+  PRODUCT_REPOSITORY_URL,
+} from '../shared/product-config'
 import {
   parseAiConnectionProvider,
   parseChatGptConfig,
@@ -218,6 +293,9 @@ const PDF_OUT = app.isPackaged
 const MARKDOWN_OUT = app.isPackaged
   ? join(process.resourcesPath, 'modules', 'markdown')
   : join(APPS_ROOT, 'markdown', 'out')
+const HTML_OUT = app.isPackaged
+  ? join(process.resourcesPath, 'modules', 'html')
+  : join(APPS_ROOT, 'html', 'out')
 const SIDECAR_BIN = app.isPackaged
   ? join(process.resourcesPath, 'native', SIDECAR_EXE)
   : join(APPS_ROOT, 'sheets', 'native', 'xlsx-engine', 'target', 'release', SIDECAR_EXE)
@@ -250,6 +328,14 @@ configureMarkdownRuntime({
   rendererFile: join(MARKDOWN_OUT, 'renderer', 'index.html'),
   openGeneratedPath: (path) => openGeneratedDocument(path),
 })
+configureHtmlRuntime({
+  preloadPath: join(HTML_OUT, 'preload', 'index.js'),
+  rendererUrl: process.env.HTML_RENDERER_URL,
+  rendererFile: join(HTML_OUT, 'renderer', 'index.html'),
+  openGeneratedPath: (path) => openGeneratedDocument(path),
+})
+// privileged-scheme registration is only legal before app ready
+registerPrivilegedSchemes()
 
 // ---- UI language ----
 // Persisted in userData/app-settings.json so the editor modules can read the
@@ -280,6 +366,8 @@ function persistLang(lang: Lang): void {
   writeAppSetting(APP_SETTINGS_PATH(), 'language', lang)
 }
 
+let cachedAutoSaveDefault: AutoSaveDefault | null = null
+let cachedAiPanelPrefs: AiPanelPrefs | null = null
 let cachedTheme: UiTheme | null = null
 
 function currentTheme(): UiTheme {
@@ -289,39 +377,29 @@ function currentTheme(): UiTheme {
   return cachedTheme
 }
 
-// ---- first-run onboarding ----
-// BP Office community page opened from the onboarding's second slide.
-const readStarPrompt = () =>
-  asStarPromptState(readAppSettings(APP_SETTINGS_PATH())[STAR_PROMPT_KEY])
-const writeStarPrompt = (state: ReturnType<typeof readStarPrompt>) =>
-  writeAppSetting(APP_SETTINGS_PATH(), STAR_PROMPT_KEY, state)
-
-let upgradeStarPromptPending = false
-let starPromptSessionGrant: StarPromptShow | null = null
-
-function recordStarPromptDocOpen(): void {
-  try {
-    const state = readStarPrompt()
-    const next = withDocOpen(state)
-    if (next !== state) writeStarPrompt(next)
-  } catch {
-    // Prompt bookkeeping must never break a local file operation.
-  }
-}
 
 const tMain = createI18n({
   zh: {
-    menuExportDocx: '导出为 Word…',
+    dlgAddFolderRoot: '添加文件夹到首页',
+    errFolderRootUnusable: '无法读取所选文件夹',
     menuFile: '文件',
     menuSectionNew: '新建',
+    menuOpenInNewWindow: '在新窗口中打开',
     menuNewDoc: 'AI Docs',
     menuNewSheet: 'AI Sheets',
     untitledSheet: '未命名表格',
     untitledDoc: '未命名文档',
     untitledMarkdown: '未命名 Markdown',
+    untitledHtml: '未命名 HTML',
+    untitledPdf: '未命名 PDF',
     menuNewMarkdown: 'AI Markdown',
+    menuNewHtml: 'AI HTML',
+    menuNewPdf: 'AI PDF',
     menuExportPdf: '导出为 PDF…',
+    menuExportImages: '导出为图片…',
+    menuExportHtml: '导出为单文件 HTML…',
     menuOpenInDocs: '转换为 Docs 文档并打开',
+    menuPrint: '打印…',
     menuOpen: '打开…',
     menuSave: '保存',
     menuSaveAs: '另存为…',
@@ -335,33 +413,72 @@ const tMain = createI18n({
     filterWord: 'Word 文档',
     filterExcel: 'Excel 工作簿',
     filterMarkdown: 'Markdown 文档',
+    filterHtml: 'HTML 文档',
     filterPdf: 'PDF 文档',
     errBadArgs: '参数无效',
     errBadName: '文件名不合法',
     errMissing: '文件不存在',
     errExists: '同名文件已存在',
     errRenameFailed: '重命名失败',
+    errPdfSaveAsFailed: '另存为 PDF 失败',
     errNewTabFailed: '新建文档失败',
     errUnsupportedExt: '暂不支持 .{ext} 类型',
     copySuffix: '副本',
     menuHelp: '帮助',
     thirdPartyNotices: '第三方软件声明',
+    menuExportDocx: '导出为 Word…',
     btnCancel: '取消',
+    pdfDocxFailedMsg: '导出为 Word 失败',
+    pdfDocxBusyMsg: '正在转换中，请等待当前导出完成。',
+    menuExportXlsx: '导出为 Excel…',
+    pdfXlsxFailedMsg: '导出为 Excel 失败',
+    pdfXlsxBusyMsg: '正在转换中，请等待当前导出完成。',
+    pdfXlsxLocalScannedDetail: '扫描页无法转换为单元格，对应工作表中已写入提示行。',
+    pdfXlsxLocalSkippedMsg: '部分页面未转换为单元格',
+    pdfXlsxLocalSkippedDetail: '第 {pages} 页无法转换为单元格，对应工作表中已写入提示行。',
+    pdfDocxLocalScannedMsg: '检测到扫描件',
+    pdfDocxLocalScannedDetail: '本地转换已按图片保真导出各页，未能识别出可编辑的文本。',
+    pdfDocxLocalDegradedMsg: '部分页面已按图片导出',
+    pdfDocxLocalDegradedDetail: '第 {pages} 页版面无法可靠重建，已按整页图片保真导出。',
+    pdfDocxLocalOcrMsg: '扫描页已转换为可编辑文本',
+    pdfDocxLocalOcrDetail:
+      '第 {pages} 页为扫描件，已通过本地 OCR 识别为可编辑文字，建议校对识别结果。',
+    pdfDocxLocalEncryptedDetail: '此 PDF 已加密，未提供正确的密码，无法转换。',
+    pdfDocxLocalUnsupportedEncDetail: '该文件使用证书加密或不支持的加密方式，无法转换。',
+    pdfPwdTitle: '输入密码',
+    pdfPwdPrompt: '此 PDF 已加密，请输入打开密码：',
+    pdfPwdRetryPrompt: '密码不正确，请重试。',
+    pdfPwdOk: '确定',
+    pdfPwdVerifying: '正在验证密码…',
+    pdfPwdLabel: '密码',
+    pdfPwdPlaceholder: '输入打开密码',
+    pdfPwdShow: '显示密码',
+    pdfPwdHide: '隐藏密码',
+    pdfDocxLocalCorruptDetail: '文件已损坏或不是有效的 PDF，无法转换。',
     dlgPickSaveDir: '选择默认保存位置',
     errSaveDirUnusable: '所选文件夹不可写，无法用作默认保存位置',
   },
   en: {
-    menuExportDocx: 'Export as Word…',
+    dlgAddFolderRoot: 'Add Folder to Home',
+    errFolderRootUnusable: 'The selected folder cannot be read',
     menuFile: 'File',
     menuSectionNew: 'New',
+    menuOpenInNewWindow: 'Open in New Window',
     menuNewDoc: 'AI Docs',
     menuNewSheet: 'AI Sheets',
     untitledSheet: 'Untitled Spreadsheet',
     untitledDoc: 'Untitled Document',
     untitledMarkdown: 'Untitled Markdown',
+    untitledHtml: 'Untitled HTML',
+    untitledPdf: 'Untitled PDF',
     menuNewMarkdown: 'AI Markdown',
+    menuNewHtml: 'AI HTML',
+    menuNewPdf: 'AI PDF',
     menuExportPdf: 'Export as PDF…',
-    menuOpenInDocs: 'Convert & Open in AI Docs',
+    menuExportImages: 'Export as Images…',
+    menuExportHtml: 'Export as Single-File HTML…',
+    menuOpenInDocs: 'Convert and Open in Docs',
+    menuPrint: 'Print…',
     menuOpen: 'Open…',
     menuSave: 'Save',
     menuSaveAs: 'Save As…',
@@ -375,34 +492,79 @@ const tMain = createI18n({
     filterWord: 'Word Documents',
     filterExcel: 'Excel Workbooks',
     filterMarkdown: 'Markdown Documents',
+    filterHtml: 'HTML Documents',
     filterPdf: 'PDF Documents',
     errBadArgs: 'Invalid arguments',
     errBadName: 'Invalid file name',
     errMissing: 'File not found',
     errExists: 'A file with that name already exists',
     errRenameFailed: 'Rename failed',
+    errPdfSaveAsFailed: 'Could not save the PDF copy',
     errNewTabFailed: 'Could not create the new document',
     errUnsupportedExt: '.{ext} files are not supported',
     copySuffix: 'copy',
     menuHelp: 'Help',
     thirdPartyNotices: 'Third-Party Notices',
+    menuExportDocx: 'Export as Word…',
     btnCancel: 'Cancel',
+    pdfDocxFailedMsg: 'Export as Word failed',
+    pdfDocxBusyMsg: 'A Word export is already in progress. Please wait for it to finish.',
+    menuExportXlsx: 'Export as Excel…',
+    pdfXlsxFailedMsg: 'Export as Excel failed',
+    pdfXlsxBusyMsg: 'An export is already in progress. Please wait for it to finish.',
+    pdfXlsxLocalScannedDetail:
+      "Scanned pages cannot be converted to cells; each page's worksheet carries a notice row instead.",
+    pdfXlsxLocalSkippedMsg: 'Some pages were not converted to cells',
+    pdfXlsxLocalSkippedDetail:
+      'Pages {pages} could not be converted to cells; their worksheets carry a notice row instead.',
+    pdfDocxLocalScannedMsg: 'Scanned document detected',
+    pdfDocxLocalScannedDetail:
+      'The pages were exported as images to preserve their appearance; no editable text could be recognized.',
+    pdfDocxLocalDegradedMsg: 'Some pages were exported as images',
+    pdfDocxLocalDegradedDetail:
+      'Page(s) {pages} could not be reliably reconstructed and were exported as full-page images.',
+    pdfDocxLocalOcrMsg: 'Scanned pages converted to editable text',
+    pdfDocxLocalOcrDetail:
+      'Page(s) {pages} were scans; their text was recovered with on-device OCR. Please proofread the result.',
+    pdfDocxLocalEncryptedDetail:
+      'This PDF is encrypted and could not be opened without the correct password.',
+    pdfDocxLocalUnsupportedEncDetail:
+      'This PDF uses certificate-based or otherwise unsupported encryption and cannot be converted.',
+    pdfPwdTitle: 'Enter Password',
+    pdfPwdPrompt: 'This PDF is encrypted. Enter the password to open it:',
+    pdfPwdRetryPrompt: 'Incorrect password. Please try again.',
+    pdfPwdOk: 'OK',
+    pdfPwdVerifying: 'Verifying password…',
+    pdfPwdLabel: 'Password',
+    pdfPwdPlaceholder: 'Enter the open password',
+    pdfPwdShow: 'Show password',
+    pdfPwdHide: 'Hide password',
+    pdfDocxLocalCorruptDetail: 'The file is damaged or not a valid PDF and cannot be converted.',
     dlgPickSaveDir: 'Choose Default Save Location',
     errSaveDirUnusable:
       'The selected folder is not writable and cannot be used as the default save location',
   },
   ja: {
-    menuExportDocx: 'Word として書き出す…',
+    dlgAddFolderRoot: 'フォルダーをホームに追加',
+    errFolderRootUnusable: '選択したフォルダーを読み取れません',
     menuFile: 'ファイル',
     menuSectionNew: '新規作成',
+    menuOpenInNewWindow: '新しいウィンドウで開く',
     menuNewDoc: 'AI Docs',
     menuNewSheet: 'AI Sheets',
     untitledSheet: '無題のスプレッドシート',
     untitledDoc: '無題のドキュメント',
     untitledMarkdown: '無題の Markdown',
+    untitledHtml: '無題の HTML',
+    untitledPdf: '無題の PDF',
     menuNewMarkdown: 'AI Markdown',
+    menuNewHtml: 'AI HTML',
+    menuNewPdf: 'AI PDF',
     menuExportPdf: 'PDF として書き出す…',
+    menuExportImages: '画像としてエクスポート…',
+    menuExportHtml: '単一ファイル HTML として書き出す…',
     menuOpenInDocs: 'Docs 文書に変換して開く',
+    menuPrint: '印刷…',
     menuOpen: '開く…',
     menuSave: '保存',
     menuSaveAs: '名前を付けて保存…',
@@ -416,34 +578,79 @@ const tMain = createI18n({
     filterWord: 'Word 文書',
     filterExcel: 'Excel ブック',
     filterMarkdown: 'Markdown ドキュメント',
+    filterHtml: 'HTML ドキュメント',
     filterPdf: 'PDF ドキュメント',
     errBadArgs: '引数が無効です',
     errBadName: 'ファイル名が無効です',
     errMissing: 'ファイルが見つかりません',
     errExists: '同名のファイルが既に存在します',
     errRenameFailed: '名前の変更に失敗しました',
+    errPdfSaveAsFailed: 'PDF のコピーを保存できませんでした',
     errNewTabFailed: '新規ドキュメントを作成できませんでした',
     errUnsupportedExt: '.{ext} 形式には対応していません',
     copySuffix: 'コピー',
     menuHelp: 'ヘルプ',
     thirdPartyNotices: 'サードパーティソフトウェアに関する通知',
+    menuExportDocx: 'Word として書き出す…',
     btnCancel: 'キャンセル',
+    pdfDocxFailedMsg: 'Word への書き出しに失敗しました',
+    pdfDocxBusyMsg: 'Word への書き出しが進行中です。完了までお待ちください。',
+    menuExportXlsx: 'Excel として書き出す…',
+    pdfXlsxFailedMsg: 'Excel への書き出しに失敗しました',
+    pdfXlsxBusyMsg: '変換が進行中です。現在の書き出しが完了するまでお待ちください。',
+    pdfXlsxLocalScannedDetail:
+      'スキャンされたページはセルに変換できないため、各ページのワークシートに通知行を書き込みました。',
+    pdfXlsxLocalSkippedMsg: '一部のページはセルに変換されませんでした',
+    pdfXlsxLocalSkippedDetail:
+      'ページ {pages} はセルに変換できなかったため、対応するワークシートに通知行を書き込みました。',
+    pdfDocxLocalScannedMsg: 'スキャン文書を検出しました',
+    pdfDocxLocalScannedDetail:
+      '見た目を保つため各ページを画像として書き出しました。編集可能なテキストは認識できませんでした。',
+    pdfDocxLocalDegradedMsg: '一部のページを画像として書き出しました',
+    pdfDocxLocalDegradedDetail:
+      'ページ {pages} はレイアウトを正確に再構築できなかったため、ページ全体を画像として書き出しました。',
+    pdfDocxLocalOcrMsg: 'スキャンページを編集可能なテキストに変換しました',
+    pdfDocxLocalOcrDetail:
+      'ページ {pages} はスキャン画像のため、ローカル OCR でテキストを復元しました。内容の確認をおすすめします。',
+    pdfDocxLocalEncryptedDetail:
+      'このPDFは暗号化されており、正しいパスワードがないため変換できませんでした。',
+    pdfDocxLocalUnsupportedEncDetail:
+      'このPDFは証明書ベースまたは未対応の暗号化方式を使用しているため、変換できません。',
+    pdfPwdTitle: 'パスワードを入力',
+    pdfPwdPrompt: 'このPDFは暗号化されています。開くためのパスワードを入力してください：',
+    pdfPwdRetryPrompt: 'パスワードが正しくありません。もう一度お試しください。',
+    pdfPwdOk: 'OK',
+    pdfPwdVerifying: 'パスワードを確認しています…',
+    pdfPwdLabel: 'パスワード',
+    pdfPwdPlaceholder: '開くパスワードを入力',
+    pdfPwdShow: 'パスワードを表示',
+    pdfPwdHide: 'パスワードを非表示',
+    pdfDocxLocalCorruptDetail: 'ファイルが破損しているか有効なPDFではないため、変換できません。',
     dlgPickSaveDir: '既定の保存先を選択',
     errSaveDirUnusable:
       '選択したフォルダーは書き込みできないため、既定の保存先として使用できません',
   },
   ko: {
-    menuExportDocx: 'Word로 내보내기…',
+    dlgAddFolderRoot: '홈에 폴더 추가',
+    errFolderRootUnusable: '선택한 폴더를 읽을 수 없습니다',
     menuFile: '파일',
     menuSectionNew: '새로 만들기',
+    menuOpenInNewWindow: '새 창에서 열기',
     menuNewDoc: 'AI Docs',
     menuNewSheet: 'AI Sheets',
     untitledSheet: '제목 없는 스프레드시트',
     untitledDoc: '제목 없는 문서',
     untitledMarkdown: '제목 없는 Markdown',
+    untitledHtml: '제목 없는 HTML',
+    untitledPdf: '제목 없는 PDF',
     menuNewMarkdown: 'AI Markdown',
+    menuNewHtml: 'AI HTML',
+    menuNewPdf: 'AI PDF',
     menuExportPdf: 'PDF로 내보내기…',
+    menuExportImages: '이미지로 내보내기…',
+    menuExportHtml: '단일 파일 HTML로 내보내기…',
     menuOpenInDocs: 'Docs 문서로 변환하여 열기',
+    menuPrint: '인쇄…',
     menuOpen: '열기…',
     menuSave: '저장',
     menuSaveAs: '다른 이름으로 저장…',
@@ -457,33 +664,78 @@ const tMain = createI18n({
     filterWord: 'Word 문서',
     filterExcel: 'Excel 통합 문서',
     filterMarkdown: 'Markdown 문서',
+    filterHtml: 'HTML 문서',
     filterPdf: 'PDF 문서',
     errBadArgs: '잘못된 인수입니다',
     errBadName: '파일 이름이 잘못되었습니다',
     errMissing: '파일을 찾을 수 없습니다',
     errExists: '같은 이름의 파일이 이미 있습니다',
     errRenameFailed: '이름 바꾸기에 실패했습니다',
+    errPdfSaveAsFailed: 'PDF 복사본을 저장할 수 없습니다',
     errNewTabFailed: '새 문서를 만들지 못했습니다',
     errUnsupportedExt: '.{ext} 형식은 지원되지 않습니다',
     copySuffix: '복사본',
     menuHelp: '도움말',
     thirdPartyNotices: '타사 소프트웨어 고지',
+    menuExportDocx: 'Word로 내보내기…',
     btnCancel: '취소',
+    pdfDocxFailedMsg: 'Word로 내보내기 실패',
+    pdfDocxBusyMsg: 'Word 내보내기가 이미 진행 중입니다. 완료될 때까지 기다려 주세요.',
+    menuExportXlsx: 'Excel로 내보내기…',
+    pdfXlsxFailedMsg: 'Excel 내보내기 실패',
+    pdfXlsxBusyMsg: '변환이 진행 중입니다. 현재 내보내기가 완료될 때까지 기다려 주세요.',
+    pdfXlsxLocalScannedDetail:
+      '스캔된 페이지는 셀로 변환할 수 없어 각 페이지의 워크시트에 알림 행을 기록했습니다.',
+    pdfXlsxLocalSkippedMsg: '일부 페이지가 셀로 변환되지 않았습니다',
+    pdfXlsxLocalSkippedDetail:
+      '{pages} 페이지는 셀로 변환할 수 없어 해당 워크시트에 알림 행을 기록했습니다.',
+    pdfDocxLocalScannedMsg: '스캔 문서가 감지되었습니다',
+    pdfDocxLocalScannedDetail:
+      '모양을 유지하기 위해 각 페이지를 이미지로 내보냈습니다. 편집 가능한 텍스트를 인식할 수 없었습니다.',
+    pdfDocxLocalDegradedMsg: '일부 페이지가 이미지로 내보내졌습니다',
+    pdfDocxLocalDegradedDetail:
+      '{pages}쪽은 레이아웃을 안정적으로 재구성할 수 없어 전체 페이지 이미지로 내보냈습니다.',
+    pdfDocxLocalOcrMsg: '스캔 페이지를 편집 가능한 텍스트로 변환했습니다',
+    pdfDocxLocalOcrDetail:
+      '{pages}페이지는 스캔 이미지로, 로컬 OCR로 텍스트를 복원했습니다. 결과를 검토해 주세요.',
+    pdfDocxLocalEncryptedDetail:
+      '이 PDF는 암호화되어 있으며 올바른 비밀번호가 없어 변환할 수 없습니다.',
+    pdfDocxLocalUnsupportedEncDetail:
+      '이 PDF는 인증서 기반이거나 지원되지 않는 암호화 방식을 사용하므로 변환할 수 없습니다.',
+    pdfPwdTitle: '비밀번호 입력',
+    pdfPwdPrompt: '이 PDF는 암호화되어 있습니다. 열기 위한 비밀번호를 입력하세요:',
+    pdfPwdRetryPrompt: '비밀번호가 올바르지 않습니다. 다시 시도하세요.',
+    pdfPwdOk: '확인',
+    pdfPwdVerifying: '비밀번호 확인 중…',
+    pdfPwdLabel: '암호',
+    pdfPwdPlaceholder: '열기 암호 입력',
+    pdfPwdShow: '암호 표시',
+    pdfPwdHide: '암호 숨기기',
+    pdfDocxLocalCorruptDetail: '파일이 손상되었거나 유효한 PDF가 아니어서 변환할 수 없습니다.',
     dlgPickSaveDir: '기본 저장 위치 선택',
     errSaveDirUnusable: '선택한 폴더에 쓸 수 없어 기본 저장 위치로 사용할 수 없습니다',
   },
   fr: {
-    menuExportDocx: 'Exporter en Word…',
+    dlgAddFolderRoot: "Ajouter un dossier à l'accueil",
+    errFolderRootUnusable: 'Le dossier sélectionné ne peut pas être lu',
     menuFile: 'Fichier',
     menuSectionNew: 'Nouveau',
+    menuOpenInNewWindow: 'Ouvrir dans une nouvelle fenêtre',
     menuNewDoc: 'AI Docs',
     menuNewSheet: 'AI Sheets',
     untitledSheet: 'Feuille de calcul sans titre',
     untitledDoc: 'Document sans titre',
     untitledMarkdown: 'Markdown sans titre',
+    untitledHtml: 'HTML sans titre',
+    untitledPdf: 'PDF sans titre',
     menuNewMarkdown: 'AI Markdown',
+    menuNewHtml: 'AI HTML',
+    menuNewPdf: 'AI PDF',
     menuExportPdf: 'Exporter en PDF…',
-    menuOpenInDocs: 'Convertir et ouvrir dans AI Docs',
+    menuExportImages: 'Exporter en images…',
+    menuExportHtml: 'Exporter en HTML (fichier unique)…',
+    menuOpenInDocs: 'Convertir et ouvrir dans Docs',
+    menuPrint: 'Imprimer…',
     menuOpen: 'Ouvrir…',
     menuSave: 'Enregistrer',
     menuSaveAs: 'Enregistrer sous…',
@@ -497,34 +749,80 @@ const tMain = createI18n({
     filterWord: 'Documents Word',
     filterExcel: 'Classeurs Excel',
     filterMarkdown: 'Documents Markdown',
+    filterHtml: 'Documents HTML',
     filterPdf: 'Documents PDF',
     errBadArgs: 'Arguments non valides',
     errBadName: 'Nom de fichier non valide',
     errMissing: 'Fichier introuvable',
     errExists: 'Un fichier du même nom existe déjà',
     errRenameFailed: 'Échec du renommage',
+    errPdfSaveAsFailed: 'Impossible d’enregistrer la copie du PDF',
     errNewTabFailed: 'Impossible de créer le nouveau document',
     errUnsupportedExt: 'les fichiers .{ext} ne sont pas pris en charge',
     copySuffix: 'copie',
     menuHelp: 'Aide',
     thirdPartyNotices: 'Mentions relatives aux logiciels tiers',
+    menuExportDocx: 'Exporter en Word…',
     btnCancel: 'Annuler',
+    pdfDocxFailedMsg: "Échec de l'export en Word",
+    pdfDocxBusyMsg: "Un export en Word est déjà en cours. Veuillez attendre qu'il se termine.",
+    menuExportXlsx: 'Exporter en Excel…',
+    pdfXlsxFailedMsg: "Échec de l'exportation en Excel",
+    pdfXlsxBusyMsg: "Une exportation est déjà en cours. Veuillez attendre qu'elle se termine.",
+    pdfXlsxLocalScannedDetail:
+      "Les pages numérisées ne peuvent pas être converties en cellules ; la feuille de chaque page contient une ligne d'avertissement.",
+    pdfXlsxLocalSkippedMsg: "Certaines pages n'ont pas été converties en cellules",
+    pdfXlsxLocalSkippedDetail:
+      "Les pages {pages} n'ont pas pu être converties en cellules ; leurs feuilles contiennent une ligne d'avertissement.",
+    pdfDocxLocalScannedMsg: 'Document numérisé détecté',
+    pdfDocxLocalScannedDetail:
+      "Les pages ont été exportées sous forme d'images pour préserver leur apparence ; aucun texte modifiable n'a pu être reconnu.",
+    pdfDocxLocalDegradedMsg: 'Certaines pages ont été exportées en images',
+    pdfDocxLocalDegradedDetail:
+      "Les pages {pages} n'ont pas pu être reconstruites de manière fiable et ont été exportées en images pleine page.",
+    pdfDocxLocalOcrMsg: 'Pages numérisées converties en texte modifiable',
+    pdfDocxLocalOcrDetail:
+      'Les pages {pages} étaient des numérisations ; leur texte a été restitué par OCR local. Veuillez relire le résultat.',
+    pdfDocxLocalEncryptedDetail:
+      "Ce PDF est chiffré et n'a pas pu être ouvert sans le mot de passe correct.",
+    pdfDocxLocalUnsupportedEncDetail:
+      'Ce PDF utilise un chiffrement par certificat ou un chiffrement non pris en charge et ne peut pas être converti.',
+    pdfPwdTitle: 'Saisir le mot de passe',
+    pdfPwdPrompt: "Ce PDF est chiffré. Saisissez le mot de passe pour l'ouvrir :",
+    pdfPwdRetryPrompt: 'Mot de passe incorrect. Veuillez réessayer.',
+    pdfPwdOk: 'OK',
+    pdfPwdVerifying: 'Vérification du mot de passe…',
+    pdfPwdLabel: 'Mot de passe',
+    pdfPwdPlaceholder: 'Saisissez le mot de passe d’ouverture',
+    pdfPwdShow: 'Afficher le mot de passe',
+    pdfPwdHide: 'Masquer le mot de passe',
+    pdfDocxLocalCorruptDetail:
+      "Le fichier est endommagé ou n'est pas un PDF valide et ne peut pas être converti.",
     dlgPickSaveDir: "Choisir l'emplacement d'enregistrement par défaut",
     errSaveDirUnusable:
       "Le dossier sélectionné n'est pas accessible en écriture et ne peut pas servir d'emplacement d'enregistrement par défaut",
   },
   de: {
-    menuExportDocx: 'Als Word exportieren…',
+    dlgAddFolderRoot: 'Ordner zur Startseite hinzufügen',
+    errFolderRootUnusable: 'Der ausgewählte Ordner kann nicht gelesen werden',
     menuFile: 'Datei',
     menuSectionNew: 'Neu',
+    menuOpenInNewWindow: 'In neuem Fenster öffnen',
     menuNewDoc: 'AI Docs',
     menuNewSheet: 'AI Sheets',
     untitledSheet: 'Unbenannte Tabelle',
     untitledDoc: 'Unbenanntes Dokument',
     untitledMarkdown: 'Unbenanntes Markdown',
+    untitledHtml: 'Unbenanntes HTML',
+    untitledPdf: 'Unbenanntes PDF',
     menuNewMarkdown: 'AI Markdown',
+    menuNewHtml: 'AI HTML',
+    menuNewPdf: 'AI PDF',
     menuExportPdf: 'Als PDF exportieren…',
-    menuOpenInDocs: 'In AI Docs umwandeln und öffnen',
+    menuExportImages: 'Als Bilder exportieren…',
+    menuExportHtml: 'Als Einzeldatei-HTML exportieren…',
+    menuOpenInDocs: 'In Docs umwandeln und öffnen',
+    menuPrint: 'Drucken…',
     menuOpen: 'Öffnen…',
     menuSave: 'Speichern',
     menuSaveAs: 'Speichern unter…',
@@ -538,34 +836,80 @@ const tMain = createI18n({
     filterWord: 'Word-Dokumente',
     filterExcel: 'Excel-Arbeitsmappen',
     filterMarkdown: 'Markdown-Dokumente',
+    filterHtml: 'HTML-Dokumente',
     filterPdf: 'PDF-Dokumente',
     errBadArgs: 'Ungültige Argumente',
     errBadName: 'Ungültiger Dateiname',
     errMissing: 'Datei nicht gefunden',
     errExists: 'Eine Datei mit diesem Namen existiert bereits',
     errRenameFailed: 'Umbenennen fehlgeschlagen',
+    errPdfSaveAsFailed: 'Die PDF-Kopie konnte nicht gespeichert werden',
     errNewTabFailed: 'Neues Dokument konnte nicht erstellt werden',
     errUnsupportedExt: '.{ext}-Dateien werden nicht unterstützt',
     copySuffix: 'Kopie',
     menuHelp: 'Hilfe',
     thirdPartyNotices: 'Hinweise zu Drittanbietersoftware',
+    menuExportDocx: 'Als Word exportieren…',
     btnCancel: 'Abbrechen',
+    pdfDocxFailedMsg: 'Word-Export fehlgeschlagen',
+    pdfDocxBusyMsg: 'Ein Word-Export läuft bereits. Bitte warten Sie, bis er abgeschlossen ist.',
+    menuExportXlsx: 'Als Excel exportieren…',
+    pdfXlsxFailedMsg: 'Export als Excel fehlgeschlagen',
+    pdfXlsxBusyMsg: 'Ein Export läuft bereits. Bitte warten Sie, bis er abgeschlossen ist.',
+    pdfXlsxLocalScannedDetail:
+      'Gescannte Seiten können nicht in Zellen umgewandelt werden; das Arbeitsblatt jeder Seite enthält stattdessen eine Hinweiszeile.',
+    pdfXlsxLocalSkippedMsg: 'Einige Seiten wurden nicht in Zellen umgewandelt',
+    pdfXlsxLocalSkippedDetail:
+      'Die Seiten {pages} konnten nicht in Zellen umgewandelt werden; ihre Arbeitsblätter enthalten stattdessen eine Hinweiszeile.',
+    pdfDocxLocalScannedMsg: 'Gescanntes Dokument erkannt',
+    pdfDocxLocalScannedDetail:
+      'Die Seiten wurden als Bilder exportiert, um ihr Aussehen zu erhalten. Es konnte kein bearbeitbarer Text erkannt werden.',
+    pdfDocxLocalDegradedMsg: 'Einige Seiten wurden als Bilder exportiert',
+    pdfDocxLocalDegradedDetail:
+      'Seite(n) {pages} konnten nicht zuverlässig rekonstruiert werden und wurden als ganzseitige Bilder exportiert.',
+    pdfDocxLocalOcrMsg: 'Gescannte Seiten in bearbeitbaren Text umgewandelt',
+    pdfDocxLocalOcrDetail:
+      'Seite(n) {pages} waren Scans; der Text wurde per lokaler OCR wiederhergestellt. Bitte prüfen Sie das Ergebnis.',
+    pdfDocxLocalEncryptedDetail:
+      'Diese PDF ist verschlüsselt und konnte ohne das richtige Passwort nicht geöffnet werden.',
+    pdfDocxLocalUnsupportedEncDetail:
+      'Diese PDF verwendet eine zertifikatsbasierte oder nicht unterstützte Verschlüsselung und kann nicht konvertiert werden.',
+    pdfPwdTitle: 'Passwort eingeben',
+    pdfPwdPrompt: 'Diese PDF ist verschlüsselt. Geben Sie das Passwort zum Öffnen ein:',
+    pdfPwdRetryPrompt: 'Falsches Passwort. Bitte versuchen Sie es erneut.',
+    pdfPwdOk: 'OK',
+    pdfPwdVerifying: 'Passwort wird überprüft…',
+    pdfPwdLabel: 'Passwort',
+    pdfPwdPlaceholder: 'Passwort zum Öffnen eingeben',
+    pdfPwdShow: 'Passwort anzeigen',
+    pdfPwdHide: 'Passwort ausblenden',
+    pdfDocxLocalCorruptDetail:
+      'Die Datei ist beschädigt oder keine gültige PDF und kann nicht konvertiert werden.',
     dlgPickSaveDir: 'Standard-Speicherort auswählen',
     errSaveDirUnusable:
       'Der ausgewählte Ordner ist nicht beschreibbar und kann nicht als Standard-Speicherort verwendet werden',
   },
   es: {
-    menuExportDocx: 'Exportar como Word…',
+    dlgAddFolderRoot: 'Añadir carpeta al inicio',
+    errFolderRootUnusable: 'No se puede leer la carpeta seleccionada',
     menuFile: 'Archivo',
     menuSectionNew: 'Nuevo',
+    menuOpenInNewWindow: 'Abrir en una ventana nueva',
     menuNewDoc: 'AI Docs',
     menuNewSheet: 'AI Sheets',
     untitledSheet: 'Hoja de cálculo sin título',
     untitledDoc: 'Documento sin título',
     untitledMarkdown: 'Markdown sin título',
+    untitledHtml: 'HTML sin título',
+    untitledPdf: 'PDF sin título',
     menuNewMarkdown: 'AI Markdown',
+    menuNewHtml: 'AI HTML',
+    menuNewPdf: 'AI PDF',
     menuExportPdf: 'Exportar como PDF…',
-    menuOpenInDocs: 'Convertir y abrir en AI Docs',
+    menuExportImages: 'Exportar como imágenes…',
+    menuExportHtml: 'Exportar como HTML de archivo único…',
+    menuOpenInDocs: 'Convertir y abrir en Docs',
+    menuPrint: 'Imprimir…',
     menuOpen: 'Abrir…',
     menuSave: 'Guardar',
     menuSaveAs: 'Guardar como…',
@@ -579,34 +923,80 @@ const tMain = createI18n({
     filterWord: 'Documentos de Word',
     filterExcel: 'Libros de Excel',
     filterMarkdown: 'Documentos Markdown',
+    filterHtml: 'Documentos HTML',
     filterPdf: 'Documentos PDF',
     errBadArgs: 'Argumentos no válidos',
     errBadName: 'Nombre de archivo no válido',
     errMissing: 'Archivo no encontrado',
     errExists: 'Ya existe un archivo con ese nombre',
     errRenameFailed: 'No se pudo cambiar el nombre',
+    errPdfSaveAsFailed: 'No se pudo guardar la copia del PDF',
     errNewTabFailed: 'No se pudo crear el nuevo documento',
     errUnsupportedExt: 'los archivos .{ext} no son compatibles',
     copySuffix: 'copia',
     menuHelp: 'Ayuda',
     thirdPartyNotices: 'Avisos de software de terceros',
+    menuExportDocx: 'Exportar como Word…',
     btnCancel: 'Cancelar',
+    pdfDocxFailedMsg: 'Error al exportar como Word',
+    pdfDocxBusyMsg: 'Ya hay una exportación a Word en curso. Espera a que termine.',
+    menuExportXlsx: 'Exportar como Excel…',
+    pdfXlsxFailedMsg: 'Error al exportar como Excel',
+    pdfXlsxBusyMsg: 'Ya hay una exportación en curso. Espere a que termine.',
+    pdfXlsxLocalScannedDetail:
+      'Las páginas escaneadas no se pueden convertir en celdas; la hoja de cada página incluye una fila de aviso.',
+    pdfXlsxLocalSkippedMsg: 'Algunas páginas no se convirtieron en celdas',
+    pdfXlsxLocalSkippedDetail:
+      'Las páginas {pages} no se pudieron convertir en celdas; sus hojas incluyen una fila de aviso.',
+    pdfDocxLocalScannedMsg: 'Documento escaneado detectado',
+    pdfDocxLocalScannedDetail:
+      'Las páginas se exportaron como imágenes para conservar su aspecto. No se pudo reconocer texto editable.',
+    pdfDocxLocalDegradedMsg: 'Algunas páginas se exportaron como imágenes',
+    pdfDocxLocalDegradedDetail:
+      'Las páginas {pages} no se pudieron reconstruir de forma fiable y se exportaron como imágenes de página completa.',
+    pdfDocxLocalOcrMsg: 'Páginas escaneadas convertidas en texto editable',
+    pdfDocxLocalOcrDetail:
+      'Las páginas {pages} eran escaneos; su texto se recuperó con OCR local. Revise el resultado.',
+    pdfDocxLocalEncryptedDetail:
+      'Este PDF está cifrado y no se pudo abrir sin la contraseña correcta.',
+    pdfDocxLocalUnsupportedEncDetail:
+      'Este PDF usa cifrado basado en certificados u otro cifrado no compatible y no se puede convertir.',
+    pdfPwdTitle: 'Introducir contraseña',
+    pdfPwdPrompt: 'Este PDF está cifrado. Introduzca la contraseña para abrirlo:',
+    pdfPwdRetryPrompt: 'Contraseña incorrecta. Inténtelo de nuevo.',
+    pdfPwdOk: 'Aceptar',
+    pdfPwdVerifying: 'Verificando la contraseña…',
+    pdfPwdLabel: 'Contraseña',
+    pdfPwdPlaceholder: 'Escriba la contraseña de apertura',
+    pdfPwdShow: 'Mostrar contraseña',
+    pdfPwdHide: 'Ocultar contraseña',
+    pdfDocxLocalCorruptDetail:
+      'El archivo está dañado o no es un PDF válido y no se puede convertir.',
     dlgPickSaveDir: 'Elegir ubicación de guardado predeterminada',
     errSaveDirUnusable:
       'La carpeta seleccionada no admite escritura y no puede usarse como ubicación de guardado predeterminada',
   },
   th: {
-    menuExportDocx: 'ส่งออกเป็น Word…',
+    dlgAddFolderRoot: 'เพิ่มโฟลเดอร์ไปยังหน้าแรก',
+    errFolderRootUnusable: 'ไม่สามารถอ่านโฟลเดอร์ที่เลือกได้',
     menuFile: 'ไฟล์',
     menuSectionNew: 'สร้างใหม่',
+    menuOpenInNewWindow: 'เปิดในหน้าต่างใหม่',
     menuNewDoc: 'AI Docs',
     menuNewSheet: 'AI Sheets',
     untitledSheet: 'สเปรดชีตไม่มีชื่อ',
     untitledDoc: 'เอกสารไม่มีชื่อ',
     untitledMarkdown: 'Markdown ไม่มีชื่อ',
+    untitledHtml: 'HTML ไม่มีชื่อ',
+    untitledPdf: 'PDF ไม่มีชื่อ',
     menuNewMarkdown: 'AI Markdown',
+    menuNewHtml: 'AI HTML',
+    menuNewPdf: 'AI PDF',
     menuExportPdf: 'ส่งออกเป็น PDF…',
-    menuOpenInDocs: 'แปลงและเปิดใน AI Docs',
+    menuExportImages: 'ส่งออกเป็นรูปภาพ…',
+    menuExportHtml: 'ส่งออกเป็น HTML ไฟล์เดียว…',
+    menuOpenInDocs: 'แปลงและเปิดใน Docs',
+    menuPrint: 'พิมพ์…',
     menuOpen: 'เปิด…',
     menuSave: 'บันทึก',
     menuSaveAs: 'บันทึกเป็น…',
@@ -620,33 +1010,77 @@ const tMain = createI18n({
     filterWord: 'เอกสาร Word',
     filterExcel: 'เวิร์กบุ๊ก Excel',
     filterMarkdown: 'เอกสาร Markdown',
+    filterHtml: 'เอกสาร HTML',
     filterPdf: 'เอกสาร PDF',
     errBadArgs: 'อาร์กิวเมนต์ไม่ถูกต้อง',
     errBadName: 'ชื่อไฟล์ไม่ถูกต้อง',
     errMissing: 'ไม่พบไฟล์',
     errExists: 'มีไฟล์ชื่อเดียวกันอยู่แล้ว',
     errRenameFailed: 'เปลี่ยนชื่อไม่สำเร็จ',
+    errPdfSaveAsFailed: 'บันทึกสำเนา PDF ไม่สำเร็จ',
     errNewTabFailed: 'สร้างเอกสารใหม่ไม่สำเร็จ',
     errUnsupportedExt: 'ไม่รองรับไฟล์ .{ext}',
     copySuffix: 'สำเนา',
     menuHelp: 'วิธีใช้',
     thirdPartyNotices: 'ประกาศเกี่ยวกับซอฟต์แวร์ของบุคคลที่สาม',
+    menuExportDocx: 'ส่งออกเป็น Word…',
     btnCancel: 'ยกเลิก',
+    pdfDocxFailedMsg: 'ส่งออกเป็น Word ไม่สำเร็จ',
+    pdfDocxBusyMsg: 'กำลังส่งออกเป็น Word อยู่ โปรดรอให้เสร็จสิ้นก่อน',
+    menuExportXlsx: 'ส่งออกเป็น Excel…',
+    pdfXlsxFailedMsg: 'การส่งออกเป็น Excel ล้มเหลว',
+    pdfXlsxBusyMsg: 'กำลังแปลงอยู่ โปรดรอให้การส่งออกปัจจุบันเสร็จสิ้น',
+    pdfXlsxLocalScannedDetail:
+      'หน้าที่สแกนไม่สามารถแปลงเป็นเซลล์ได้ เวิร์กชีตของแต่ละหน้าจึงมีแถวแจ้งเตือนแทน',
+    pdfXlsxLocalSkippedMsg: 'บางหน้าไม่ได้ถูกแปลงเป็นเซลล์',
+    pdfXlsxLocalSkippedDetail:
+      'หน้า {pages} ไม่สามารถแปลงเป็นเซลล์ได้ เวิร์กชีตของหน้าดังกล่าวมีแถวแจ้งเตือนแทน',
+    pdfDocxLocalScannedMsg: 'ตรวจพบเอกสารสแกน',
+    pdfDocxLocalScannedDetail:
+      'ส่งออกแต่ละหน้าเป็นรูปภาพเพื่อคงรูปลักษณ์เดิม ไม่สามารถจดจำข้อความที่แก้ไขได้',
+    pdfDocxLocalDegradedMsg: 'บางหน้าถูกส่งออกเป็นรูปภาพ',
+    pdfDocxLocalDegradedDetail:
+      'หน้า {pages} ไม่สามารถสร้างเลย์เอาต์ใหม่ได้อย่างน่าเชื่อถือ จึงส่งออกเป็นรูปภาพทั้งหน้า',
+    pdfDocxLocalOcrMsg: 'แปลงหน้าสแกนเป็นข้อความที่แก้ไขได้แล้ว',
+    pdfDocxLocalOcrDetail:
+      'หน้า {pages} เป็นภาพสแกน ระบบกู้คืนข้อความด้วย OCR ในเครื่องแล้ว โปรดตรวจทานผลลัพธ์',
+    pdfDocxLocalEncryptedDetail: 'PDF นี้ถูกเข้ารหัสและไม่สามารถเปิดได้โดยไม่มีรหัสผ่านที่ถูกต้อง',
+    pdfDocxLocalUnsupportedEncDetail:
+      'PDF นี้ใช้การเข้ารหัสแบบใบรับรองหรือการเข้ารหัสที่ไม่รองรับ จึงไม่สามารถแปลงได้',
+    pdfPwdTitle: 'ป้อนรหัสผ่าน',
+    pdfPwdPrompt: 'PDF นี้ถูกเข้ารหัส โปรดป้อนรหัสผ่านเพื่อเปิด:',
+    pdfPwdRetryPrompt: 'รหัสผ่านไม่ถูกต้อง โปรดลองอีกครั้ง',
+    pdfPwdOk: 'ตกลง',
+    pdfPwdVerifying: 'กำลังตรวจสอบรหัสผ่าน…',
+    pdfPwdLabel: 'รหัสผ่าน',
+    pdfPwdPlaceholder: 'ป้อนรหัสผ่านเพื่อเปิด',
+    pdfPwdShow: 'แสดงรหัสผ่าน',
+    pdfPwdHide: 'ซ่อนรหัสผ่าน',
+    pdfDocxLocalCorruptDetail: 'ไฟล์เสียหายหรือไม่ใช่ PDF ที่ถูกต้อง จึงไม่สามารถแปลงได้',
     dlgPickSaveDir: 'เลือกตำแหน่งบันทึกเริ่มต้น',
     errSaveDirUnusable: 'โฟลเดอร์ที่เลือกไม่สามารถเขียนได้ จึงใช้เป็นตำแหน่งบันทึกเริ่มต้นไม่ได้',
   },
   id: {
-    menuExportDocx: 'Ekspor sebagai Word…',
+    dlgAddFolderRoot: 'Tambahkan Folder ke Beranda',
+    errFolderRootUnusable: 'Folder yang dipilih tidak dapat dibaca',
     menuFile: 'File',
     menuSectionNew: 'Baru',
+    menuOpenInNewWindow: 'Buka di Jendela Baru',
     menuNewDoc: 'AI Docs',
     menuNewSheet: 'AI Sheets',
     untitledSheet: 'Spreadsheet tanpa judul',
     untitledDoc: 'Dokumen tanpa judul',
     untitledMarkdown: 'Markdown tanpa judul',
+    untitledHtml: 'HTML tanpa judul',
+    untitledPdf: 'PDF tanpa judul',
     menuNewMarkdown: 'AI Markdown',
+    menuNewHtml: 'AI HTML',
+    menuNewPdf: 'AI PDF',
     menuExportPdf: 'Ekspor sebagai PDF…',
-    menuOpenInDocs: 'Konversi & buka di AI Docs',
+    menuExportImages: 'Ekspor sebagai gambar…',
+    menuExportHtml: 'Ekspor sebagai HTML satu file…',
+    menuOpenInDocs: 'Konversi dan buka di Docs',
+    menuPrint: 'Cetak…',
     menuOpen: 'Buka…',
     menuSave: 'Simpan',
     menuSaveAs: 'Simpan Sebagai…',
@@ -660,34 +1094,80 @@ const tMain = createI18n({
     filterWord: 'Dokumen Word',
     filterExcel: 'Buku Kerja Excel',
     filterMarkdown: 'Dokumen Markdown',
+    filterHtml: 'Dokumen HTML',
     filterPdf: 'Dokumen PDF',
     errBadArgs: 'Argumen tidak valid',
     errBadName: 'Nama file tidak valid',
     errMissing: 'File tidak ditemukan',
     errExists: 'File dengan nama tersebut sudah ada',
     errRenameFailed: 'Gagal mengganti nama',
+    errPdfSaveAsFailed: 'Gagal menyimpan salinan PDF',
     errNewTabFailed: 'Gagal membuat dokumen baru',
     errUnsupportedExt: 'file .{ext} tidak didukung',
     copySuffix: 'salinan',
     menuHelp: 'Bantuan',
     thirdPartyNotices: 'Pemberitahuan Perangkat Lunak Pihak Ketiga',
+    menuExportDocx: 'Ekspor sebagai Word…',
     btnCancel: 'Batal',
+    pdfDocxFailedMsg: 'Gagal mengekspor sebagai Word',
+    pdfDocxBusyMsg: 'Ekspor ke Word sedang berlangsung. Harap tunggu hingga selesai.',
+    menuExportXlsx: 'Ekspor sebagai Excel…',
+    pdfXlsxFailedMsg: 'Gagal mengekspor sebagai Excel',
+    pdfXlsxBusyMsg: 'Ekspor sedang berlangsung. Harap tunggu hingga selesai.',
+    pdfXlsxLocalScannedDetail:
+      'Halaman hasil pindaian tidak dapat diubah menjadi sel; lembar kerja setiap halaman berisi baris pemberitahuan.',
+    pdfXlsxLocalSkippedMsg: 'Beberapa halaman tidak diubah menjadi sel',
+    pdfXlsxLocalSkippedDetail:
+      'Halaman {pages} tidak dapat diubah menjadi sel; lembar kerjanya berisi baris pemberitahuan.',
+    pdfDocxLocalScannedMsg: 'Dokumen hasil pindaian terdeteksi',
+    pdfDocxLocalScannedDetail:
+      'Halaman diekspor sebagai gambar untuk mempertahankan tampilannya. Tidak ada teks yang dapat diedit yang berhasil dikenali.',
+    pdfDocxLocalDegradedMsg: 'Beberapa halaman diekspor sebagai gambar',
+    pdfDocxLocalDegradedDetail:
+      'Halaman {pages} tidak dapat direkonstruksi dengan andal dan diekspor sebagai gambar satu halaman penuh.',
+    pdfDocxLocalOcrMsg: 'Halaman pindaian diubah menjadi teks yang dapat diedit',
+    pdfDocxLocalOcrDetail:
+      'Halaman {pages} adalah hasil pindaian; teksnya dipulihkan dengan OCR lokal. Harap periksa hasilnya.',
+    pdfDocxLocalEncryptedDetail:
+      'PDF ini terenkripsi dan tidak dapat dibuka tanpa kata sandi yang benar.',
+    pdfDocxLocalUnsupportedEncDetail:
+      'PDF ini menggunakan enkripsi berbasis sertifikat atau enkripsi yang tidak didukung dan tidak dapat dikonversi.',
+    pdfPwdTitle: 'Masukkan Kata Sandi',
+    pdfPwdPrompt: 'PDF ini terenkripsi. Masukkan kata sandi untuk membukanya:',
+    pdfPwdRetryPrompt: 'Kata sandi salah. Silakan coba lagi.',
+    pdfPwdOk: 'OK',
+    pdfPwdVerifying: 'Memverifikasi kata sandi…',
+    pdfPwdLabel: 'Kata sandi',
+    pdfPwdPlaceholder: 'Masukkan kata sandi buka',
+    pdfPwdShow: 'Tampilkan kata sandi',
+    pdfPwdHide: 'Sembunyikan kata sandi',
+    pdfDocxLocalCorruptDetail:
+      'File rusak atau bukan PDF yang valid sehingga tidak dapat dikonversi.',
     dlgPickSaveDir: 'Pilih Lokasi Penyimpanan Default',
     errSaveDirUnusable:
       'Folder yang dipilih tidak dapat ditulis dan tidak bisa digunakan sebagai lokasi penyimpanan default',
   },
   ru: {
-    menuExportDocx: 'Экспортировать в Word…',
+    dlgAddFolderRoot: 'Добавить папку на главную',
+    errFolderRootUnusable: 'Не удалось прочитать выбранную папку',
     menuFile: 'Файл',
     menuSectionNew: 'Создать',
+    menuOpenInNewWindow: 'Открыть в новом окне',
     menuNewDoc: 'AI Docs',
     menuNewSheet: 'AI Sheets',
     untitledSheet: 'Таблица без названия',
     untitledDoc: 'Документ без названия',
     untitledMarkdown: 'Markdown без названия',
+    untitledHtml: 'HTML без названия',
+    untitledPdf: 'PDF без названия',
     menuNewMarkdown: 'AI Markdown',
+    menuNewHtml: 'AI HTML',
+    menuNewPdf: 'AI PDF',
     menuExportPdf: 'Экспортировать в PDF…',
-    menuOpenInDocs: 'Преобразовать и открыть в AI Docs',
+    menuExportImages: 'Экспорт в изображения…',
+    menuExportHtml: 'Экспортировать в один файл HTML…',
+    menuOpenInDocs: 'Преобразовать и открыть в Docs',
+    menuPrint: 'Печать…',
     menuOpen: 'Открыть…',
     menuSave: 'Сохранить',
     menuSaveAs: 'Сохранить как…',
@@ -701,34 +1181,80 @@ const tMain = createI18n({
     filterWord: 'Документы Word',
     filterExcel: 'Книги Excel',
     filterMarkdown: 'Документы Markdown',
+    filterHtml: 'Документы HTML',
     filterPdf: 'Документы PDF',
     errBadArgs: 'Недопустимые аргументы',
     errBadName: 'Недопустимое имя файла',
     errMissing: 'Файл не найден',
     errExists: 'Файл с таким именем уже существует',
     errRenameFailed: 'Не удалось переименовать',
+    errPdfSaveAsFailed: 'Не удалось сохранить копию PDF',
     errNewTabFailed: 'Не удалось создать новый документ',
     errUnsupportedExt: 'файлы .{ext} не поддерживаются',
     copySuffix: 'копия',
     menuHelp: 'Справка',
     thirdPartyNotices: 'Уведомления о стороннем ПО',
+    menuExportDocx: 'Экспортировать в Word…',
     btnCancel: 'Отмена',
+    pdfDocxFailedMsg: 'Не удалось экспортировать в Word',
+    pdfDocxBusyMsg: 'Экспорт в Word уже выполняется. Дождитесь его завершения.',
+    menuExportXlsx: 'Экспортировать в Excel…',
+    pdfXlsxFailedMsg: 'Не удалось экспортировать в Excel',
+    pdfXlsxBusyMsg: 'Экспорт уже выполняется. Дождитесь его завершения.',
+    pdfXlsxLocalScannedDetail:
+      'Отсканированные страницы нельзя преобразовать в ячейки; на листе каждой страницы добавлена строка с уведомлением.',
+    pdfXlsxLocalSkippedMsg: 'Некоторые страницы не были преобразованы в ячейки',
+    pdfXlsxLocalSkippedDetail:
+      'Страницы {pages} не удалось преобразовать в ячейки; на их листах добавлена строка с уведомлением.',
+    pdfDocxLocalScannedMsg: 'Обнаружен отсканированный документ',
+    pdfDocxLocalScannedDetail:
+      'Страницы экспортированы как изображения, чтобы сохранить их вид. Редактируемый текст распознать не удалось.',
+    pdfDocxLocalDegradedMsg: 'Некоторые страницы экспортированы как изображения',
+    pdfDocxLocalDegradedDetail:
+      'Страницы {pages} не удалось надёжно реконструировать; они экспортированы как полностраничные изображения.',
+    pdfDocxLocalOcrMsg: 'Отсканированные страницы преобразованы в редактируемый текст',
+    pdfDocxLocalOcrDetail:
+      'Страницы {pages} были сканами; текст восстановлен локальным OCR. Проверьте результат.',
+    pdfDocxLocalEncryptedDetail:
+      'Этот PDF зашифрован, и его не удалось открыть без правильного пароля.',
+    pdfDocxLocalUnsupportedEncDetail:
+      'Этот PDF использует шифрование на основе сертификата или другое неподдерживаемое шифрование и не может быть преобразован.',
+    pdfPwdTitle: 'Введите пароль',
+    pdfPwdPrompt: 'Этот PDF зашифрован. Введите пароль, чтобы открыть его:',
+    pdfPwdRetryPrompt: 'Неверный пароль. Попробуйте ещё раз.',
+    pdfPwdOk: 'ОК',
+    pdfPwdVerifying: 'Проверка пароля…',
+    pdfPwdLabel: 'Пароль',
+    pdfPwdPlaceholder: 'Введите пароль для открытия',
+    pdfPwdShow: 'Показать пароль',
+    pdfPwdHide: 'Скрыть пароль',
+    pdfDocxLocalCorruptDetail:
+      'Файл повреждён или не является корректным PDF, преобразование невозможно.',
     dlgPickSaveDir: 'Выбрать папку сохранения по умолчанию',
     errSaveDirUnusable:
       'Выбранная папка недоступна для записи и не может использоваться как папка сохранения по умолчанию',
   },
   ar: {
-    menuExportDocx: 'تصدير كملف Word…',
+    dlgAddFolderRoot: 'إضافة مجلد إلى الصفحة الرئيسية',
+    errFolderRootUnusable: 'لا يمكن قراءة المجلد المحدد',
     menuFile: 'ملف',
     menuSectionNew: 'جديد',
+    menuOpenInNewWindow: 'فتح في نافذة جديدة',
     menuNewDoc: 'AI Docs',
     menuNewSheet: 'AI Sheets',
     untitledSheet: 'جدول بيانات بلا عنوان',
     untitledDoc: 'مستند بدون عنوان',
     untitledMarkdown: 'Markdown بدون عنوان',
+    untitledHtml: 'HTML بدون عنوان',
+    untitledPdf: 'PDF بدون عنوان',
     menuNewMarkdown: 'AI Markdown',
+    menuNewHtml: 'AI HTML',
+    menuNewPdf: 'AI PDF',
     menuExportPdf: 'تصدير بتنسيق PDF…',
-    menuOpenInDocs: 'التحويل والفتح في AI Docs',
+    menuExportImages: 'تصدير كصور…',
+    menuExportHtml: 'تصدير كملف HTML واحد…',
+    menuOpenInDocs: 'التحويل والفتح في Docs',
+    menuPrint: 'طباعة…',
     menuOpen: 'فتح…',
     menuSave: 'حفظ',
     menuSaveAs: 'حفظ باسم…',
@@ -742,33 +1268,77 @@ const tMain = createI18n({
     filterWord: 'مستندات Word',
     filterExcel: 'مصنفات Excel',
     filterMarkdown: 'مستندات Markdown',
+    filterHtml: 'مستندات HTML',
     filterPdf: 'مستندات PDF',
     errBadArgs: 'وسيطات غير صالحة',
     errBadName: 'اسم ملف غير صالح',
     errMissing: 'الملف غير موجود',
     errExists: 'يوجد ملف بالاسم نفسه بالفعل',
     errRenameFailed: 'فشلت إعادة التسمية',
+    errPdfSaveAsFailed: 'تعذّر حفظ نسخة PDF',
     errNewTabFailed: 'تعذّر إنشاء المستند الجديد',
     errUnsupportedExt: 'ملفات .{ext} غير مدعومة',
     copySuffix: 'نسخة',
     menuHelp: 'تعليمات',
     thirdPartyNotices: 'إشعارات برامج الجهات الخارجية',
+    menuExportDocx: 'تصدير كملف Word…',
     btnCancel: 'إلغاء',
+    pdfDocxFailedMsg: 'فشل التصدير كملف Word',
+    pdfDocxBusyMsg: 'يجري حاليًا تصدير إلى Word. يُرجى الانتظار حتى يكتمل.',
+    menuExportXlsx: 'تصدير كملف Excel…',
+    pdfXlsxFailedMsg: 'فشل التصدير كملف Excel',
+    pdfXlsxBusyMsg: 'هناك عملية تصدير قيد التنفيذ. يرجى الانتظار حتى تكتمل.',
+    pdfXlsxLocalScannedDetail:
+      'لا يمكن تحويل الصفحات الممسوحة ضوئيًا إلى خلايا؛ تحتوي ورقة كل صفحة على صف تنبيه بدلاً من ذلك.',
+    pdfXlsxLocalSkippedMsg: 'لم يتم تحويل بعض الصفحات إلى خلايا',
+    pdfXlsxLocalSkippedDetail:
+      'تعذر تحويل الصفحات {pages} إلى خلايا؛ تحتوي أوراقها على صف تنبيه بدلاً من ذلك.',
+    pdfDocxLocalScannedMsg: 'تم اكتشاف مستند ممسوح ضوئيًا',
+    pdfDocxLocalScannedDetail:
+      'تم تصدير الصفحات كصور للحفاظ على مظهرها. لم يتم التعرف على أي نص قابل للتحرير.',
+    pdfDocxLocalDegradedMsg: 'تم تصدير بعض الصفحات كصور',
+    pdfDocxLocalDegradedDetail:
+      'تعذّرت إعادة بناء الصفحات {pages} بشكل موثوق، وتم تصديرها كصور لكامل الصفحة.',
+    pdfDocxLocalOcrMsg: 'تم تحويل الصفحات الممسوحة ضوئيًا إلى نص قابل للتحرير',
+    pdfDocxLocalOcrDetail:
+      'الصفحات {pages} كانت صورًا ممسوحة؛ تم استرداد النص عبر OCR المحلي. يُرجى مراجعة النتيجة.',
+    pdfDocxLocalEncryptedDetail: 'هذا الملف PDF مشفّر وتعذّر فتحه دون كلمة المرور الصحيحة.',
+    pdfDocxLocalUnsupportedEncDetail:
+      'يستخدم ملف PDF هذا تشفيرًا قائمًا على الشهادات أو تشفيرًا غير مدعوم ولا يمكن تحويله.',
+    pdfPwdTitle: 'إدخال كلمة المرور',
+    pdfPwdPrompt: 'هذا الملف PDF مشفّر. أدخل كلمة المرور لفتحه:',
+    pdfPwdRetryPrompt: 'كلمة المرور غير صحيحة. حاول مرة أخرى.',
+    pdfPwdOk: 'موافق',
+    pdfPwdVerifying: 'جارٍ التحقق من كلمة المرور…',
+    pdfPwdLabel: 'كلمة المرور',
+    pdfPwdPlaceholder: 'أدخل كلمة مرور الفتح',
+    pdfPwdShow: 'إظهار كلمة المرور',
+    pdfPwdHide: 'إخفاء كلمة المرور',
+    pdfDocxLocalCorruptDetail: 'الملف تالف أو ليس ملف PDF صالحًا ولا يمكن تحويله.',
     dlgPickSaveDir: 'اختيار موقع الحفظ الافتراضي',
     errSaveDirUnusable: 'المجلد المحدد غير قابل للكتابة ولا يمكن استخدامه كموقع حفظ افتراضي',
   },
   pt: {
-    menuExportDocx: 'Exportar como Word…',
+    dlgAddFolderRoot: 'Adicionar pasta à página inicial',
+    errFolderRootUnusable: 'Não é possível ler a pasta selecionada',
     menuFile: 'Arquivo',
     menuSectionNew: 'Novo',
+    menuOpenInNewWindow: 'Abrir em nova janela',
     menuNewDoc: 'AI Docs',
     menuNewSheet: 'AI Sheets',
     untitledSheet: 'Planilha sem título',
     untitledDoc: 'Documento sem título',
     untitledMarkdown: 'Markdown sem título',
+    untitledHtml: 'HTML sem título',
+    untitledPdf: 'PDF sem título',
     menuNewMarkdown: 'AI Markdown',
+    menuNewHtml: 'AI HTML',
+    menuNewPdf: 'AI PDF',
     menuExportPdf: 'Exportar como PDF…',
-    menuOpenInDocs: 'Converter e abrir no AI Docs',
+    menuExportImages: 'Exportar como imagens…',
+    menuExportHtml: 'Exportar como HTML de arquivo único…',
+    menuOpenInDocs: 'Converter e abrir no Docs',
+    menuPrint: 'Imprimir…',
     menuOpen: 'Abrir…',
     menuSave: 'Salvar',
     menuSaveAs: 'Salvar Como…',
@@ -782,34 +1352,80 @@ const tMain = createI18n({
     filterWord: 'Documentos do Word',
     filterExcel: 'Pastas de trabalho do Excel',
     filterMarkdown: 'Documentos Markdown',
+    filterHtml: 'Documentos HTML',
     filterPdf: 'Documentos PDF',
     errBadArgs: 'Argumentos inválidos',
     errBadName: 'Nome de arquivo inválido',
     errMissing: 'Arquivo não encontrado',
     errExists: 'Já existe um arquivo com esse nome',
     errRenameFailed: 'Falha ao renomear',
+    errPdfSaveAsFailed: 'Falha ao salvar a cópia do PDF',
     errNewTabFailed: 'Falha ao criar o novo documento',
     errUnsupportedExt: 'arquivos .{ext} não são suportados',
     copySuffix: 'cópia',
     menuHelp: 'Ajuda',
     thirdPartyNotices: 'Avisos de software de terceiros',
+    menuExportDocx: 'Exportar como Word…',
     btnCancel: 'Cancelar',
+    pdfDocxFailedMsg: 'Falha ao exportar como Word',
+    pdfDocxBusyMsg: 'Já há uma exportação para Word em andamento. Aguarde a conclusão.',
+    menuExportXlsx: 'Exportar como Excel…',
+    pdfXlsxFailedMsg: 'Falha ao exportar como Excel',
+    pdfXlsxBusyMsg: 'Já há uma exportação em andamento. Aguarde a conclusão.',
+    pdfXlsxLocalScannedDetail:
+      'Páginas digitalizadas não podem ser convertidas em células; a planilha de cada página contém uma linha de aviso.',
+    pdfXlsxLocalSkippedMsg: 'Algumas páginas não foram convertidas em células',
+    pdfXlsxLocalSkippedDetail:
+      'As páginas {pages} não puderam ser convertidas em células; suas planilhas contêm uma linha de aviso.',
+    pdfDocxLocalScannedMsg: 'Documento digitalizado detectado',
+    pdfDocxLocalScannedDetail:
+      'As páginas foram exportadas como imagens para preservar a aparência. Não foi possível reconhecer texto editável.',
+    pdfDocxLocalDegradedMsg: 'Algumas páginas foram exportadas como imagens',
+    pdfDocxLocalDegradedDetail:
+      'As páginas {pages} não puderam ser reconstruídas de forma confiável e foram exportadas como imagens de página inteira.',
+    pdfDocxLocalOcrMsg: 'Páginas digitalizadas convertidas em texto editável',
+    pdfDocxLocalOcrDetail:
+      'As páginas {pages} eram digitalizações; o texto foi recuperado com OCR local. Revise o resultado.',
+    pdfDocxLocalEncryptedDetail:
+      'Este PDF está criptografado e não pôde ser aberto sem a senha correta.',
+    pdfDocxLocalUnsupportedEncDetail:
+      'Este PDF usa criptografia baseada em certificado ou outra criptografia sem suporte e não pode ser convertido.',
+    pdfPwdTitle: 'Digitar senha',
+    pdfPwdPrompt: 'Este PDF está criptografado. Digite a senha para abri-lo:',
+    pdfPwdRetryPrompt: 'Senha incorreta. Tente novamente.',
+    pdfPwdOk: 'OK',
+    pdfPwdVerifying: 'Verificando a senha…',
+    pdfPwdLabel: 'Senha',
+    pdfPwdPlaceholder: 'Digite a senha de abertura',
+    pdfPwdShow: 'Mostrar senha',
+    pdfPwdHide: 'Ocultar senha',
+    pdfDocxLocalCorruptDetail:
+      'O arquivo está danificado ou não é um PDF válido e não pode ser convertido.',
     dlgPickSaveDir: 'Escolher local de salvamento padrão',
     errSaveDirUnusable:
       'A pasta selecionada não permite gravação e não pode ser usada como local de salvamento padrão',
   },
   it: {
-    menuExportDocx: 'Esporta come Word…',
+    dlgAddFolderRoot: 'Aggiungi cartella alla Home',
+    errFolderRootUnusable: 'Impossibile leggere la cartella selezionata',
     menuFile: 'File',
     menuSectionNew: 'Nuovo',
+    menuOpenInNewWindow: 'Apri in una nuova finestra',
     menuNewDoc: 'AI Docs',
     menuNewSheet: 'AI Sheets',
     untitledSheet: 'Foglio di calcolo senza titolo',
     untitledDoc: 'Documento senza titolo',
     untitledMarkdown: 'Markdown senza titolo',
+    untitledHtml: 'HTML senza titolo',
+    untitledPdf: 'PDF senza titolo',
     menuNewMarkdown: 'AI Markdown',
+    menuNewHtml: 'AI HTML',
+    menuNewPdf: 'AI PDF',
     menuExportPdf: 'Esporta come PDF…',
-    menuOpenInDocs: 'Converti e apri in AI Docs',
+    menuExportImages: 'Esporta come immagini…',
+    menuExportHtml: 'Esporta come HTML a file singolo…',
+    menuOpenInDocs: 'Converti e apri in Docs',
+    menuPrint: 'Stampa…',
     menuOpen: 'Apri…',
     menuSave: 'Salva',
     menuSaveAs: 'Salva con nome…',
@@ -823,34 +1439,80 @@ const tMain = createI18n({
     filterWord: 'Documenti Word',
     filterExcel: 'Cartelle di lavoro Excel',
     filterMarkdown: 'Documenti Markdown',
+    filterHtml: 'Documenti HTML',
     filterPdf: 'Documenti PDF',
     errBadArgs: 'Argomenti non validi',
     errBadName: 'Nome file non valido',
     errMissing: 'File non trovato',
     errExists: 'Esiste già un file con questo nome',
     errRenameFailed: 'Impossibile rinominare',
+    errPdfSaveAsFailed: 'Impossibile salvare la copia del PDF',
     errNewTabFailed: 'Impossibile creare il nuovo documento',
     errUnsupportedExt: 'i file .{ext} non sono supportati',
     copySuffix: 'copia',
     menuHelp: 'Aiuto',
     thirdPartyNotices: 'Note sul software di terze parti',
+    menuExportDocx: 'Esporta come Word…',
     btnCancel: 'Annulla',
+    pdfDocxFailedMsg: 'Esportazione in Word non riuscita',
+    pdfDocxBusyMsg: "Un'esportazione in Word è già in corso. Attendi il completamento.",
+    menuExportXlsx: 'Esporta come Excel…',
+    pdfXlsxFailedMsg: 'Esportazione come Excel non riuscita',
+    pdfXlsxBusyMsg: "Un'esportazione è già in corso. Attendere che finisca.",
+    pdfXlsxLocalScannedDetail:
+      'Le pagine scansionate non possono essere convertite in celle; il foglio di ogni pagina contiene una riga di avviso.',
+    pdfXlsxLocalSkippedMsg: 'Alcune pagine non sono state convertite in celle',
+    pdfXlsxLocalSkippedDetail:
+      'Le pagine {pages} non hanno potuto essere convertite in celle; i loro fogli contengono una riga di avviso.',
+    pdfDocxLocalScannedMsg: 'Rilevato documento scansionato',
+    pdfDocxLocalScannedDetail:
+      "Le pagine sono state esportate come immagini per preservarne l'aspetto. Non è stato possibile riconoscere testo modificabile.",
+    pdfDocxLocalDegradedMsg: 'Alcune pagine sono state esportate come immagini',
+    pdfDocxLocalDegradedDetail:
+      'Non è stato possibile ricostruire in modo affidabile le pagine {pages}; sono state esportate come immagini a pagina intera.',
+    pdfDocxLocalOcrMsg: 'Pagine scansionate convertite in testo modificabile',
+    pdfDocxLocalOcrDetail:
+      'Le pagine {pages} erano scansioni; il testo è stato recuperato con OCR locale. Si consiglia di rileggere il risultato.',
+    pdfDocxLocalEncryptedDetail:
+      'Questo PDF è crittografato e non è stato possibile aprirlo senza la password corretta.',
+    pdfDocxLocalUnsupportedEncDetail:
+      'Questo PDF usa una crittografia basata su certificati o comunque non supportata e non può essere convertito.',
+    pdfPwdTitle: 'Inserisci password',
+    pdfPwdPrompt: 'Questo PDF è crittografato. Inserisci la password per aprirlo:',
+    pdfPwdRetryPrompt: 'Password errata. Riprova.',
+    pdfPwdOk: 'OK',
+    pdfPwdVerifying: 'Verifica della password…',
+    pdfPwdLabel: 'Password',
+    pdfPwdPlaceholder: 'Inserisci la password di apertura',
+    pdfPwdShow: 'Mostra password',
+    pdfPwdHide: 'Nascondi password',
+    pdfDocxLocalCorruptDetail:
+      'Il file è danneggiato o non è un PDF valido e non può essere convertito.',
     dlgPickSaveDir: 'Scegli la posizione di salvataggio predefinita',
     errSaveDirUnusable:
       'La cartella selezionata non è scrivibile e non può essere usata come posizione di salvataggio predefinita',
   },
   pl: {
-    menuExportDocx: 'Eksportuj jako Word…',
+    dlgAddFolderRoot: 'Dodaj folder do strony głównej',
+    errFolderRootUnusable: 'Nie można odczytać wybranego folderu',
     menuFile: 'Plik',
     menuSectionNew: 'Nowy',
+    menuOpenInNewWindow: 'Otwórz w nowym oknie',
     menuNewDoc: 'AI Docs',
     menuNewSheet: 'AI Sheets',
     untitledSheet: 'Arkusz bez tytułu',
     untitledDoc: 'Dokument bez tytułu',
     untitledMarkdown: 'Markdown bez tytułu',
+    untitledHtml: 'HTML bez tytułu',
+    untitledPdf: 'PDF bez tytułu',
     menuNewMarkdown: 'AI Markdown',
+    menuNewHtml: 'AI HTML',
+    menuNewPdf: 'AI PDF',
     menuExportPdf: 'Eksportuj jako PDF…',
-    menuOpenInDocs: 'Konwertuj i otwórz w AI Docs',
+    menuExportImages: 'Eksportuj jako obrazy…',
+    menuExportHtml: 'Eksportuj jako pojedynczy plik HTML…',
+    menuOpenInDocs: 'Konwertuj i otwórz w Docs',
+    menuPrint: 'Drukuj…',
     menuOpen: 'Otwórz…',
     menuSave: 'Zapisz',
     menuSaveAs: 'Zapisz jako…',
@@ -864,34 +1526,165 @@ const tMain = createI18n({
     filterWord: 'Dokumenty programu Word',
     filterExcel: 'Skoroszyty programu Excel',
     filterMarkdown: 'Dokumenty Markdown',
+    filterHtml: 'Dokumenty HTML',
     filterPdf: 'Dokumenty PDF',
     errBadArgs: 'Nieprawidłowe argumenty',
     errBadName: 'Nieprawidłowa nazwa pliku',
     errMissing: 'Nie znaleziono pliku',
     errExists: 'Plik o tej nazwie już istnieje',
     errRenameFailed: 'Nie udało się zmienić nazwy',
+    errPdfSaveAsFailed: 'Nie udało się zapisać kopii PDF',
     errNewTabFailed: 'Nie udało się utworzyć nowego dokumentu',
     errUnsupportedExt: 'pliki .{ext} nie są obsługiwane',
     copySuffix: 'kopia',
     menuHelp: 'Pomoc',
     thirdPartyNotices: 'Informacje o oprogramowaniu innych firm',
+    menuExportDocx: 'Eksportuj jako Word…',
     btnCancel: 'Anuluj',
+    pdfDocxFailedMsg: 'Eksport do formatu Word nie powiódł się',
+    pdfDocxBusyMsg: 'Eksport do formatu Word już trwa. Poczekaj na jego zakończenie.',
+    menuExportXlsx: 'Eksportuj jako Excel…',
+    pdfXlsxFailedMsg: 'Eksport jako Excel nie powiódł się',
+    pdfXlsxBusyMsg: 'Eksport już trwa. Poczekaj na jego zakończenie.',
+    pdfXlsxLocalScannedDetail:
+      'Zeskanowanych stron nie można przekształcić w komórki; arkusz każdej strony zawiera wiersz z informacją.',
+    pdfXlsxLocalSkippedMsg: 'Niektóre strony nie zostały przekształcone w komórki',
+    pdfXlsxLocalSkippedDetail:
+      'Stron {pages} nie udało się przekształcić w komórki; ich arkusze zawierają wiersz z informacją.',
+    pdfDocxLocalScannedMsg: 'Wykryto zeskanowany dokument',
+    pdfDocxLocalScannedDetail:
+      'Strony zostały wyeksportowane jako obrazy, aby zachować ich wygląd. Nie udało się rozpoznać edytowalnego tekstu.',
+    pdfDocxLocalDegradedMsg: 'Niektóre strony wyeksportowano jako obrazy',
+    pdfDocxLocalDegradedDetail:
+      'Stron {pages} nie udało się wiarygodnie odtworzyć; wyeksportowano je jako obrazy całych stron.',
+    pdfDocxLocalOcrMsg: 'Zeskanowane strony przekonwertowano na edytowalny tekst',
+    pdfDocxLocalOcrDetail:
+      'Strony {pages} były skanami; tekst odzyskano lokalnym OCR. Sprawdź wynik.',
+    pdfDocxLocalEncryptedDetail:
+      'Ten PDF jest zaszyfrowany i nie można go otworzyć bez prawidłowego hasła.',
+    pdfDocxLocalUnsupportedEncDetail:
+      'Ten PDF używa szyfrowania opartego na certyfikatach lub innego nieobsługiwanego szyfrowania i nie można go przekonwertować.',
+    pdfPwdTitle: 'Wprowadź hasło',
+    pdfPwdPrompt: 'Ten PDF jest zaszyfrowany. Wprowadź hasło, aby go otworzyć:',
+    pdfPwdRetryPrompt: 'Nieprawidłowe hasło. Spróbuj ponownie.',
+    pdfPwdOk: 'OK',
+    pdfPwdVerifying: 'Weryfikowanie hasła…',
+    pdfPwdLabel: 'Hasło',
+    pdfPwdPlaceholder: 'Wprowadź hasło otwarcia',
+    pdfPwdShow: 'Pokaż hasło',
+    pdfPwdHide: 'Ukryj hasło',
+    pdfDocxLocalCorruptDetail:
+      'Plik jest uszkodzony lub nie jest prawidłowym plikiem PDF i nie można go przekonwertować.',
     dlgPickSaveDir: 'Wybierz domyślną lokalizację zapisu',
     errSaveDirUnusable:
       'Wybrany folder nie pozwala na zapis i nie może być domyślną lokalizacją zapisu',
   },
+  cs: {
+    dlgAddFolderRoot: 'Přidat složku na domovskou stránku',
+    errFolderRootUnusable: 'Vybranou složku nelze načíst',
+    menuFile: 'Soubor',
+    menuSectionNew: 'Nový',
+    menuOpenInNewWindow: 'Otevřít v novém okně',
+    menuNewDoc: 'AI Docs',
+    menuNewSheet: 'AI Sheets',
+    untitledSheet: 'Sešit bez názvu',
+    untitledDoc: 'Dokument bez názvu',
+    untitledMarkdown: 'Markdown bez názvu',
+    untitledHtml: 'HTML bez názvu',
+    untitledPdf: 'PDF bez názvu',
+    menuNewMarkdown: 'AI Markdown',
+    menuNewHtml: 'AI HTML',
+    menuNewPdf: 'AI PDF',
+    menuExportPdf: 'Exportovat jako PDF…',
+    menuExportImages: 'Exportovat jako obrázky…',
+    menuExportHtml: 'Exportovat jako samostatné HTML…',
+    menuOpenInDocs: 'Převést a otevřít v Docs',
+    menuPrint: 'Tisk…',
+    menuOpen: 'Otevřít…',
+    menuSave: 'Uložit',
+    menuSaveAs: 'Uložit jako…',
+    menuClose: 'Zavřít',
+    menuEdit: 'Úpravy',
+    menuWindow: 'Okno',
+    menuHome: 'Domů',
+    backToHome: 'Zpět na domovskou stránku',
+    dlgOpenTitle: 'Otevřít soubor',
+    filterSupported: 'Podporované soubory',
+    filterWord: 'Dokumenty Word',
+    filterExcel: 'Sešity Excel',
+    filterMarkdown: 'Dokumenty Markdown',
+    filterHtml: 'Dokumenty HTML',
+    filterPdf: 'Dokumenty PDF',
+    errBadArgs: 'Neplatné argumenty',
+    errBadName: 'Neplatný název souboru',
+    errMissing: 'Soubor nebyl nalezen',
+    errExists: 'Soubor s tímto názvem už existuje',
+    errRenameFailed: 'Přejmenování se nezdařilo',
+    errPdfSaveAsFailed: 'Kopii PDF se nepodařilo uložit',
+    errNewTabFailed: 'Nový dokument se nepodařilo vytvořit',
+    errUnsupportedExt: 'Soubory .{ext} nejsou podporovány',
+    copySuffix: 'kopie',
+    menuHelp: 'Nápověda',
+    thirdPartyNotices: 'Informace o softwaru třetích stran',
+    menuExportDocx: 'Exportovat jako Word…',
+    btnCancel: 'Zrušit',
+    pdfDocxFailedMsg: 'Export do Wordu se nezdařil',
+    pdfDocxBusyMsg: 'Export do Wordu už probíhá. Počkejte, až se dokončí.',
+    menuExportXlsx: 'Exportovat jako Excel…',
+    pdfXlsxFailedMsg: 'Export do Excelu se nezdařil',
+    pdfXlsxBusyMsg: 'Export už probíhá. Počkejte, až se dokončí.',
+    pdfXlsxLocalScannedDetail:
+      'Naskenované stránky nelze převést na buňky; list každé stránky místo toho obsahuje řádek s upozorněním.',
+    pdfXlsxLocalSkippedMsg: 'Některé stránky nebyly převedeny na buňky',
+    pdfXlsxLocalSkippedDetail:
+      'Stránky {pages} nebylo možné převést na buňky; jejich listy místo toho obsahují řádek s upozorněním.',
+    pdfDocxLocalScannedMsg: 'Zjištěn naskenovaný dokument',
+    pdfDocxLocalScannedDetail:
+      'Stránky byly exportovány jako obrázky, aby se zachoval jejich vzhled; nepodařilo se rozpoznat žádný upravitelný text.',
+    pdfDocxLocalDegradedMsg: 'Některé stránky byly exportovány jako obrázky',
+    pdfDocxLocalDegradedDetail:
+      'Stránky {pages} nebylo možné spolehlivě rekonstruovat a byly exportovány jako celostránkové obrázky.',
+    pdfDocxLocalOcrMsg: 'Naskenované stránky převedeny na upravitelný text',
+    pdfDocxLocalOcrDetail:
+      'Stránky {pages} byly skeny; jejich text byl obnoven pomocí OCR v zařízení. Výsledek si prosím zkontrolujte.',
+    pdfDocxLocalEncryptedDetail: 'Toto PDF je šifrované a bez správného hesla ho nelze otevřít.',
+    pdfDocxLocalUnsupportedEncDetail:
+      'Toto PDF používá šifrování založené na certifikátu nebo jiné nepodporované šifrování a nelze ho převést.',
+    pdfPwdTitle: 'Zadejte heslo',
+    pdfPwdPrompt: 'Toto PDF je šifrované. Pro otevření zadejte heslo:',
+    pdfPwdRetryPrompt: 'Nesprávné heslo. Zkuste to znovu.',
+    pdfPwdOk: 'OK',
+    pdfPwdVerifying: 'Ověřování hesla…',
+    pdfPwdLabel: 'Heslo',
+    pdfPwdPlaceholder: 'Zadejte heslo pro otevření',
+    pdfPwdShow: 'Zobrazit heslo',
+    pdfPwdHide: 'Skrýt heslo',
+    pdfDocxLocalCorruptDetail: 'Soubor je poškozený nebo není platným PDF a nelze ho převést.',
+    dlgPickSaveDir: 'Zvolte výchozí umístění pro ukládání',
+    errSaveDirUnusable:
+      'Do vybrané složky nelze zapisovat a nelze ji použít jako výchozí umístění pro ukládání',
+  },
   nl: {
-    menuExportDocx: 'Exporteren als Word…',
+    dlgAddFolderRoot: 'Map toevoegen aan startpagina',
+    errFolderRootUnusable: 'De geselecteerde map kan niet worden gelezen',
     menuFile: 'Bestand',
     menuSectionNew: 'Nieuw',
+    menuOpenInNewWindow: 'Openen in nieuw venster',
     menuNewDoc: 'AI Docs',
     menuNewSheet: 'AI Sheets',
     untitledSheet: 'Naamloze spreadsheet',
     untitledDoc: 'Naamloos document',
     untitledMarkdown: 'Naamloos Markdown',
+    untitledHtml: 'Naamloos HTML',
+    untitledPdf: 'Naamloze PDF',
     menuNewMarkdown: 'AI Markdown',
+    menuNewHtml: 'AI HTML',
+    menuNewPdf: 'AI PDF',
     menuExportPdf: 'Exporteren als PDF…',
-    menuOpenInDocs: 'Converteren en openen in AI Docs',
+    menuExportImages: 'Exporteren als afbeeldingen…',
+    menuExportHtml: 'Exporteren als één HTML-bestand…',
+    menuOpenInDocs: 'Converteren en openen in Docs',
+    menuPrint: 'Afdrukken…',
     menuOpen: 'Openen…',
     menuSave: 'Opslaan',
     menuSaveAs: 'Opslaan als…',
@@ -905,34 +1698,80 @@ const tMain = createI18n({
     filterWord: 'Word-documenten',
     filterExcel: 'Excel-werkmappen',
     filterMarkdown: 'Markdown-documenten',
+    filterHtml: 'HTML-documenten',
     filterPdf: 'PDF-documenten',
     errBadArgs: 'Ongeldige argumenten',
     errBadName: 'Ongeldige bestandsnaam',
     errMissing: 'Bestand niet gevonden',
     errExists: 'Er bestaat al een bestand met die naam',
     errRenameFailed: 'Naam wijzigen mislukt',
+    errPdfSaveAsFailed: 'PDF-kopie kon niet worden opgeslagen',
     errNewTabFailed: 'Kan het nieuwe document niet maken',
     errUnsupportedExt: '.{ext}-bestanden worden niet ondersteund',
     copySuffix: 'kopie',
     menuHelp: 'Help',
     thirdPartyNotices: 'Kennisgevingen over software van derden',
+    menuExportDocx: 'Exporteren als Word…',
     btnCancel: 'Annuleren',
+    pdfDocxFailedMsg: 'Exporteren als Word mislukt',
+    pdfDocxBusyMsg: 'Er is al een Word-export bezig. Wacht tot deze is voltooid.',
+    menuExportXlsx: 'Exporteren als Excel…',
+    pdfXlsxFailedMsg: 'Exporteren als Excel mislukt',
+    pdfXlsxBusyMsg: 'Er is al een export bezig. Wacht tot deze is voltooid.',
+    pdfXlsxLocalScannedDetail:
+      "Gescande pagina's kunnen niet naar cellen worden omgezet; het werkblad van elke pagina bevat een meldingsrij.",
+    pdfXlsxLocalSkippedMsg: "Sommige pagina's zijn niet naar cellen omgezet",
+    pdfXlsxLocalSkippedDetail:
+      "Pagina's {pages} konden niet naar cellen worden omgezet; hun werkbladen bevatten een meldingsrij.",
+    pdfDocxLocalScannedMsg: 'Gescand document gedetecteerd',
+    pdfDocxLocalScannedDetail:
+      "De pagina's zijn als afbeeldingen geëxporteerd om hun uiterlijk te behouden. Er kon geen bewerkbare tekst worden herkend.",
+    pdfDocxLocalDegradedMsg: "Sommige pagina's zijn als afbeeldingen geëxporteerd",
+    pdfDocxLocalDegradedDetail:
+      "Pagina's {pages} konden niet betrouwbaar worden gereconstrueerd en zijn als paginagrote afbeeldingen geëxporteerd.",
+    pdfDocxLocalOcrMsg: 'Gescande pagina’s omgezet naar bewerkbare tekst',
+    pdfDocxLocalOcrDetail:
+      'Pagina(’s) {pages} waren scans; de tekst is hersteld met lokale OCR. Controleer het resultaat.',
+    pdfDocxLocalEncryptedDetail:
+      'Deze PDF is versleuteld en kon niet worden geopend zonder het juiste wachtwoord.',
+    pdfDocxLocalUnsupportedEncDetail:
+      'Deze PDF gebruikt certificaatgebaseerde of anderszins niet-ondersteunde versleuteling en kan niet worden geconverteerd.',
+    pdfPwdTitle: 'Wachtwoord invoeren',
+    pdfPwdPrompt: 'Deze PDF is versleuteld. Voer het wachtwoord in om te openen:',
+    pdfPwdRetryPrompt: 'Onjuist wachtwoord. Probeer het opnieuw.',
+    pdfPwdOk: 'OK',
+    pdfPwdVerifying: 'Wachtwoord controleren…',
+    pdfPwdLabel: 'Wachtwoord',
+    pdfPwdPlaceholder: 'Voer het openingswachtwoord in',
+    pdfPwdShow: 'Wachtwoord tonen',
+    pdfPwdHide: 'Wachtwoord verbergen',
+    pdfDocxLocalCorruptDetail:
+      'Het bestand is beschadigd of geen geldige PDF en kan niet worden geconverteerd.',
     dlgPickSaveDir: 'Standaard opslaglocatie kiezen',
     errSaveDirUnusable:
       'De geselecteerde map is niet beschrijfbaar en kan niet als standaard opslaglocatie worden gebruikt',
   },
   ms: {
-    menuExportDocx: 'Eksport sebagai Word…',
+    dlgAddFolderRoot: 'Tambah Folder ke Laman Utama',
+    errFolderRootUnusable: 'Folder yang dipilih tidak dapat dibaca',
     menuFile: 'Fail',
     menuSectionNew: 'Baharu',
+    menuOpenInNewWindow: 'Buka dalam Tetingkap Baharu',
     menuNewDoc: 'AI Docs',
     menuNewSheet: 'AI Sheets',
     untitledSheet: 'Hamparan tanpa tajuk',
     untitledDoc: 'Dokumen tanpa tajuk',
     untitledMarkdown: 'Markdown tanpa tajuk',
+    untitledHtml: 'HTML tanpa tajuk',
+    untitledPdf: 'PDF tanpa tajuk',
     menuNewMarkdown: 'AI Markdown',
+    menuNewHtml: 'AI HTML',
+    menuNewPdf: 'AI PDF',
     menuExportPdf: 'Eksport sebagai PDF…',
-    menuOpenInDocs: 'Tukar & buka dalam AI Docs',
+    menuExportImages: 'Eksport sebagai imej…',
+    menuExportHtml: 'Eksport sebagai HTML fail tunggal…',
+    menuOpenInDocs: 'Tukar dan buka dalam Docs',
+    menuPrint: 'Cetak…',
     menuOpen: 'Buka…',
     menuSave: 'Simpan',
     menuSaveAs: 'Simpan Sebagai…',
@@ -946,34 +1785,79 @@ const tMain = createI18n({
     filterWord: 'Dokumen Word',
     filterExcel: 'Buku Kerja Excel',
     filterMarkdown: 'Dokumen Markdown',
+    filterHtml: 'Dokumen HTML',
     filterPdf: 'Dokumen PDF',
     errBadArgs: 'Argumen tidak sah',
     errBadName: 'Nama fail tidak sah',
     errMissing: 'Fail tidak ditemui',
     errExists: 'Fail dengan nama yang sama sudah wujud',
     errRenameFailed: 'Gagal menamakan semula',
+    errPdfSaveAsFailed: 'Gagal menyimpan salinan PDF',
     errNewTabFailed: 'Gagal mencipta dokumen baharu',
     errUnsupportedExt: 'fail .{ext} tidak disokong',
     copySuffix: 'salinan',
     menuHelp: 'Bantuan',
     thirdPartyNotices: 'Notis Perisian Pihak Ketiga',
+    menuExportDocx: 'Eksport sebagai Word…',
     btnCancel: 'Batal',
+    pdfDocxFailedMsg: 'Gagal mengeksport sebagai Word',
+    pdfDocxBusyMsg: 'Eksport ke Word sedang dijalankan. Sila tunggu sehingga selesai.',
+    menuExportXlsx: 'Eksport sebagai Excel…',
+    pdfXlsxFailedMsg: 'Eksport sebagai Excel gagal',
+    pdfXlsxBusyMsg: 'Eksport sedang berjalan. Sila tunggu sehingga selesai.',
+    pdfXlsxLocalScannedDetail:
+      'Halaman imbasan tidak boleh ditukar kepada sel; helaian setiap halaman mengandungi baris makluman.',
+    pdfXlsxLocalSkippedMsg: 'Sesetengah halaman tidak ditukar kepada sel',
+    pdfXlsxLocalSkippedDetail:
+      'Halaman {pages} tidak dapat ditukar kepada sel; helaiannya mengandungi baris makluman.',
+    pdfDocxLocalScannedMsg: 'Dokumen imbasan dikesan',
+    pdfDocxLocalScannedDetail:
+      'Halaman dieksport sebagai imej untuk mengekalkan rupanya. Tiada teks boleh edit yang dapat dikenali.',
+    pdfDocxLocalDegradedMsg: 'Sesetengah halaman dieksport sebagai imej',
+    pdfDocxLocalDegradedDetail:
+      'Halaman {pages} tidak dapat dibina semula dengan pasti dan telah dieksport sebagai imej halaman penuh.',
+    pdfDocxLocalOcrMsg: 'Halaman imbasan ditukar kepada teks boleh edit',
+    pdfDocxLocalOcrDetail:
+      'Halaman {pages} ialah imbasan; teksnya dipulihkan dengan OCR setempat. Sila semak hasilnya.',
+    pdfDocxLocalEncryptedDetail:
+      'PDF ini disulitkan dan tidak dapat dibuka tanpa kata laluan yang betul.',
+    pdfDocxLocalUnsupportedEncDetail:
+      'PDF ini menggunakan penyulitan berasaskan sijil atau penyulitan yang tidak disokong dan tidak boleh ditukar.',
+    pdfPwdTitle: 'Masukkan Kata Laluan',
+    pdfPwdPrompt: 'PDF ini disulitkan. Masukkan kata laluan untuk membukanya:',
+    pdfPwdRetryPrompt: 'Kata laluan salah. Sila cuba lagi.',
+    pdfPwdOk: 'OK',
+    pdfPwdVerifying: 'Mengesahkan kata laluan…',
+    pdfPwdLabel: 'Kata laluan',
+    pdfPwdPlaceholder: 'Masukkan kata laluan buka',
+    pdfPwdShow: 'Tunjukkan kata laluan',
+    pdfPwdHide: 'Sembunyikan kata laluan',
+    pdfDocxLocalCorruptDetail: 'Fail rosak atau bukan PDF yang sah dan tidak dapat ditukar.',
     dlgPickSaveDir: 'Pilih Lokasi Simpanan Lalai',
     errSaveDirUnusable:
       'Folder yang dipilih tidak boleh ditulis dan tidak dapat digunakan sebagai lokasi simpanan lalai',
   },
   he: {
-    menuExportDocx: 'ייצוא כ-Word…',
+    dlgAddFolderRoot: 'הוספת תיקייה לדף הבית',
+    errFolderRootUnusable: 'לא ניתן לקרוא את התיקייה שנבחרה',
     menuFile: 'קובץ',
     menuSectionNew: 'חדש',
+    menuOpenInNewWindow: 'פתח בחלון חדש',
     menuNewDoc: 'AI Docs',
     menuNewSheet: 'AI Sheets',
     untitledSheet: 'גיליון אלקטרוני ללא שם',
     untitledDoc: 'מסמך ללא שם',
     untitledMarkdown: 'Markdown ללא שם',
+    untitledHtml: 'HTML ללא שם',
+    untitledPdf: 'PDF ללא שם',
     menuNewMarkdown: 'AI Markdown',
+    menuNewHtml: 'AI HTML',
+    menuNewPdf: 'AI PDF',
     menuExportPdf: 'ייצוא כ-PDF…',
-    menuOpenInDocs: 'המרה ופתיחה ב-AI Docs',
+    menuExportImages: 'ייצוא כתמונות…',
+    menuExportHtml: 'ייצוא כ-HTML בקובץ יחיד…',
+    menuOpenInDocs: 'המרה ופתיחה ב-Docs',
+    menuPrint: 'הדפסה…',
     menuOpen: 'פתיחה…',
     menuSave: 'שמירה',
     menuSaveAs: 'שמירה בשם…',
@@ -987,34 +1871,78 @@ const tMain = createI18n({
     filterWord: 'מסמכי Word',
     filterExcel: 'חוברות עבודה של Excel',
     filterMarkdown: 'מסמכי Markdown',
+    filterHtml: 'מסמכי HTML',
     filterPdf: 'מסמכי PDF',
     errBadArgs: 'ארגומנטים לא חוקיים',
     errBadName: 'שם קובץ לא חוקי',
     errMissing: 'הקובץ לא נמצא',
     errExists: 'כבר קיים קובץ באותו שם',
     errRenameFailed: 'שינוי השם נכשל',
+    errPdfSaveAsFailed: 'לא ניתן לשמור את עותק ה-PDF',
     errNewTabFailed: 'יצירת המסמך החדש נכשלה',
     errUnsupportedExt: 'קובצי .{ext} אינם נתמכים',
     copySuffix: 'עותק',
     menuHelp: 'עזרה',
     thirdPartyNotices: 'הודעות על תוכנות צד שלישי',
+    menuExportDocx: 'ייצוא כ-Word…',
     btnCancel: 'ביטול',
+    pdfDocxFailedMsg: 'הייצוא כ-Word נכשל',
+    pdfDocxBusyMsg: 'ייצוא ל-Word כבר מתבצע. נא להמתין לסיומו.',
+    menuExportXlsx: 'ייצוא כ-Excel…',
+    pdfXlsxFailedMsg: 'הייצוא כ-Excel נכשל',
+    pdfXlsxBusyMsg: 'ייצוא כבר מתבצע. יש להמתין לסיומו.',
+    pdfXlsxLocalScannedDetail:
+      'עמודים סרוקים אינם ניתנים להמרה לתאים; בגיליון של כל עמוד נוספה שורת הודעה.',
+    pdfXlsxLocalSkippedMsg: 'חלק מהעמודים לא הומרו לתאים',
+    pdfXlsxLocalSkippedDetail:
+      'לא ניתן היה להמיר את העמודים {pages} לתאים; בגיליונות שלהם נוספה שורת הודעה.',
+    pdfDocxLocalScannedMsg: 'זוהה מסמך סרוק',
+    pdfDocxLocalScannedDetail:
+      'העמודים יוצאו כתמונות כדי לשמר את המראה. לא ניתן היה לזהות טקסט הניתן לעריכה.',
+    pdfDocxLocalDegradedMsg: 'חלק מהעמודים יוצאו כתמונות',
+    pdfDocxLocalDegradedDetail:
+      'לא ניתן היה לשחזר באופן אמין את עמודים {pages}, והם יוצאו כתמונות של עמוד מלא.',
+    pdfDocxLocalOcrMsg: 'עמודים סרוקים הומרו לטקסט הניתן לעריכה',
+    pdfDocxLocalOcrDetail:
+      'עמודים {pages} היו סריקות; הטקסט שוחזר באמצעות OCR מקומי. מומלץ להגיה את התוצאה.',
+    pdfDocxLocalEncryptedDetail: 'קובץ PDF זה מוצפן ולא ניתן היה לפתוח אותו ללא הסיסמה הנכונה.',
+    pdfDocxLocalUnsupportedEncDetail:
+      'קובץ PDF זה משתמש בהצפנה מבוססת אישורים או בהצפנה שאינה נתמכת ולא ניתן להמירו.',
+    pdfPwdTitle: 'הזנת סיסמה',
+    pdfPwdPrompt: 'קובץ PDF זה מוצפן. הזינו את הסיסמה כדי לפתוח אותו:',
+    pdfPwdRetryPrompt: 'סיסמה שגויה. נסו שוב.',
+    pdfPwdOk: 'אישור',
+    pdfPwdVerifying: 'מאמת את הסיסמה…',
+    pdfPwdLabel: 'סיסמה',
+    pdfPwdPlaceholder: 'הזינו את סיסמת הפתיחה',
+    pdfPwdShow: 'הצג סיסמה',
+    pdfPwdHide: 'הסתר סיסמה',
+    pdfDocxLocalCorruptDetail: 'הקובץ פגום או שאינו PDF תקין ולא ניתן להמירו.',
     dlgPickSaveDir: 'בחירת מיקום שמירה כברירת מחדל',
     errSaveDirUnusable:
       'התיקייה שנבחרה אינה ניתנת לכתיבה ולא ניתן להשתמש בה כמיקום שמירה כברירת מחדל',
   },
   hi: {
-    menuExportDocx: 'Word के रूप में निर्यात करें…',
+    dlgAddFolderRoot: 'होम में फ़ोल्डर जोड़ें',
+    errFolderRootUnusable: 'चयनित फ़ोल्डर पढ़ा नहीं जा सका',
     menuFile: 'फ़ाइल',
     menuSectionNew: 'नया',
+    menuOpenInNewWindow: 'नई विंडो में खोलें',
     menuNewDoc: 'AI Docs',
     menuNewSheet: 'AI Sheets',
     untitledSheet: 'शीर्षकहीन स्प्रेडशीट',
     untitledDoc: 'बिना शीर्षक दस्तावेज़',
     untitledMarkdown: 'अनाम Markdown',
+    untitledHtml: 'अनाम HTML',
+    untitledPdf: 'अनाम PDF',
     menuNewMarkdown: 'AI Markdown',
+    menuNewHtml: 'AI HTML',
+    menuNewPdf: 'AI PDF',
     menuExportPdf: 'PDF के रूप में निर्यात…',
-    menuOpenInDocs: 'AI Docs में बदलें और खोलें',
+    menuExportImages: 'छवियों के रूप में निर्यात…',
+    menuExportHtml: 'एकल-फ़ाइल HTML के रूप में निर्यात…',
+    menuOpenInDocs: 'Docs में बदलें और खोलें',
+    menuPrint: 'प्रिंट करें…',
     menuOpen: 'खोलें…',
     menuSave: 'सहेजें',
     menuSaveAs: 'इस रूप में सहेजें…',
@@ -1028,34 +1956,80 @@ const tMain = createI18n({
     filterWord: 'Word दस्तावेज़',
     filterExcel: 'Excel वर्कबुक',
     filterMarkdown: 'Markdown दस्तावेज़',
+    filterHtml: 'HTML दस्तावेज़',
     filterPdf: 'PDF दस्तावेज़',
     errBadArgs: 'अमान्य आर्ग्युमेंट',
     errBadName: 'अमान्य फ़ाइल नाम',
     errMissing: 'फ़ाइल नहीं मिली',
     errExists: 'इस नाम की फ़ाइल पहले से मौजूद है',
     errRenameFailed: 'नाम बदलने में विफल',
+    errPdfSaveAsFailed: 'PDF की प्रति सहेजी नहीं जा सकी',
     errNewTabFailed: 'नया दस्तावेज़ बनाने में विफल',
     errUnsupportedExt: '.{ext} फ़ाइलें समर्थित नहीं हैं',
     copySuffix: 'प्रतिलिपि',
     menuHelp: 'सहायता',
     thirdPartyNotices: 'तृतीय-पक्ष सॉफ़्टवेयर सूचनाएँ',
+    menuExportDocx: 'Word के रूप में निर्यात करें…',
     btnCancel: 'रद्द करें',
+    pdfDocxFailedMsg: 'Word के रूप में निर्यात विफल रहा',
+    pdfDocxBusyMsg: 'Word के रूप में निर्यात पहले से चल रहा है। कृपया पूरा होने तक प्रतीक्षा करें।',
+    menuExportXlsx: 'Excel के रूप में निर्यात करें…',
+    pdfXlsxFailedMsg: 'Excel के रूप में निर्यात विफल रहा',
+    pdfXlsxBusyMsg: 'एक निर्यात पहले से चल रहा है। कृपया उसके पूरा होने की प्रतीक्षा करें।',
+    pdfXlsxLocalScannedDetail:
+      'स्कैन किए गए पेज सेल में परिवर्तित नहीं किए जा सकते; प्रत्येक पेज की वर्कशीट में एक सूचना पंक्ति जोड़ी गई है।',
+    pdfXlsxLocalSkippedMsg: 'कुछ पेज सेल में परिवर्तित नहीं हुए',
+    pdfXlsxLocalSkippedDetail:
+      'पेज {pages} सेल में परिवर्तित नहीं किए जा सके; उनकी वर्कशीट में एक सूचना पंक्ति जोड़ी गई है।',
+    pdfDocxLocalScannedMsg: 'स्कैन किया गया दस्तावेज़ मिला',
+    pdfDocxLocalScannedDetail:
+      'पृष्ठों का स्वरूप बनाए रखने के लिए उन्हें छवियों के रूप में निर्यात किया गया। संपादन योग्य टेक्स्ट को पहचाना नहीं जा सका।',
+    pdfDocxLocalDegradedMsg: 'कुछ पृष्ठ छवियों के रूप में निर्यात किए गए',
+    pdfDocxLocalDegradedDetail:
+      'पृष्ठ {pages} का लेआउट विश्वसनीय रूप से पुनर्निर्मित नहीं हो सका, इसलिए उन्हें पूर्ण-पृष्ठ छवियों के रूप में निर्यात किया गया।',
+    pdfDocxLocalOcrMsg: 'स्कैन किए गए पृष्ठ संपादन योग्य टेक्स्ट में बदले गए',
+    pdfDocxLocalOcrDetail:
+      'पृष्ठ {pages} स्कैन थे; स्थानीय OCR से टेक्स्ट पुनर्प्राप्त किया गया। कृपया परिणाम जाँचें।',
+    pdfDocxLocalEncryptedDetail:
+      'यह PDF एन्क्रिप्टेड है और सही पासवर्ड के बिना इसे खोला नहीं जा सका।',
+    pdfDocxLocalUnsupportedEncDetail:
+      'यह PDF प्रमाणपत्र-आधारित या असमर्थित एन्क्रिप्शन का उपयोग करता है और इसे परिवर्तित नहीं किया जा सकता।',
+    pdfPwdTitle: 'पासवर्ड दर्ज करें',
+    pdfPwdPrompt: 'यह PDF एन्क्रिप्टेड है। खोलने के लिए पासवर्ड दर्ज करें:',
+    pdfPwdRetryPrompt: 'पासवर्ड गलत है। कृपया फिर से प्रयास करें।',
+    pdfPwdOk: 'ठीक है',
+    pdfPwdVerifying: 'पासवर्ड सत्यापित किया जा रहा है…',
+    pdfPwdLabel: 'पासवर्ड',
+    pdfPwdPlaceholder: 'खोलने का पासवर्ड दर्ज करें',
+    pdfPwdShow: 'पासवर्ड दिखाएँ',
+    pdfPwdHide: 'पासवर्ड छिपाएँ',
+    pdfDocxLocalCorruptDetail:
+      'फ़ाइल क्षतिग्रस्त है या मान्य PDF नहीं है, इसलिए रूपांतरण नहीं हो सकता।',
     dlgPickSaveDir: 'डिफ़ॉल्ट सहेजने का स्थान चुनें',
     errSaveDirUnusable:
       'चयनित फ़ोल्डर में लिखा नहीं जा सकता, इसलिए इसे डिफ़ॉल्ट सहेजने के स्थान के रूप में उपयोग नहीं किया जा सकता',
   },
   'zh-TW': {
-    menuExportDocx: '匯出為 Word…',
+    dlgAddFolderRoot: '將資料夾加入首頁',
+    errFolderRootUnusable: '無法讀取所選資料夾',
     menuFile: '檔案',
     menuSectionNew: '新增',
+    menuOpenInNewWindow: '在新視窗中開啟',
     menuNewDoc: 'AI Docs',
     menuNewSheet: 'AI Sheets',
     untitledSheet: '未命名試算表',
     untitledDoc: '未命名文件',
     untitledMarkdown: '未命名 Markdown',
+    untitledHtml: '未命名 HTML',
+    untitledPdf: '未命名 PDF',
     menuNewMarkdown: 'AI Markdown',
+    menuNewHtml: 'AI HTML',
+    menuNewPdf: 'AI PDF',
     menuExportPdf: '匯出為 PDF…',
+    menuExportImages: '匯出為圖片…',
+    menuExportHtml: '匯出為單檔 HTML…',
     menuOpenInDocs: '轉換為 Docs 文件並開啟',
+    menuPrint: '列印…',
     menuOpen: '開啟…',
     menuSave: '儲存',
     menuSaveAs: '另存新檔…',
@@ -1069,18 +2043,48 @@ const tMain = createI18n({
     filterWord: 'Word 文件',
     filterExcel: 'Excel 活頁簿',
     filterMarkdown: 'Markdown 文件',
+    filterHtml: 'HTML 文件',
     filterPdf: 'PDF 文件',
     errBadArgs: '參數無效',
     errBadName: '檔案名稱不合法',
     errMissing: '檔案不存在',
     errExists: '同名檔案已存在',
     errRenameFailed: '重新命名失敗',
+    errPdfSaveAsFailed: '另存為 PDF 失敗',
     errNewTabFailed: '新建文件失敗',
     errUnsupportedExt: '暫不支援 .{ext} 類型',
     copySuffix: '副本',
     menuHelp: '說明',
     thirdPartyNotices: '第三方軟體聲明',
+    menuExportDocx: '匯出為 Word…',
     btnCancel: '取消',
+    pdfDocxFailedMsg: '匯出為 Word 失敗',
+    pdfDocxBusyMsg: '正在轉換中，請等待目前的匯出完成。',
+    menuExportXlsx: '匯出為 Excel…',
+    pdfXlsxFailedMsg: '匯出為 Excel 失敗',
+    pdfXlsxBusyMsg: '正在轉換中，請等待目前匯出完成。',
+    pdfXlsxLocalScannedDetail: '掃描頁無法轉換為儲存格，對應工作表中已寫入提示列。',
+    pdfXlsxLocalSkippedMsg: '部分頁面未轉換為儲存格',
+    pdfXlsxLocalSkippedDetail: '第 {pages} 頁無法轉換為儲存格，對應工作表中已寫入提示列。',
+    pdfDocxLocalScannedMsg: '偵測到掃描文件',
+    pdfDocxLocalScannedDetail: '本機轉換已將各頁以圖片方式保真匯出，未能辨識出可編輯的文字。',
+    pdfDocxLocalDegradedMsg: '部分頁面已以圖片匯出',
+    pdfDocxLocalDegradedDetail: '第 {pages} 頁的版面無法可靠重建，已以整頁圖片保真匯出。',
+    pdfDocxLocalOcrMsg: '掃描頁已轉換為可編輯文字',
+    pdfDocxLocalOcrDetail:
+      '第 {pages} 頁為掃描件，已透過本機 OCR 辨識為可編輯文字，建議校對辨識結果。',
+    pdfDocxLocalEncryptedDetail: '此 PDF 已加密，未提供正確的密碼，無法轉換。',
+    pdfDocxLocalUnsupportedEncDetail: '該檔案使用憑證加密或不支援的加密方式，無法轉換。',
+    pdfPwdTitle: '輸入密碼',
+    pdfPwdPrompt: '此 PDF 已加密，請輸入開啟密碼：',
+    pdfPwdRetryPrompt: '密碼不正確，請重試。',
+    pdfPwdOk: '確定',
+    pdfPwdVerifying: '正在驗證密碼…',
+    pdfPwdLabel: '密碼',
+    pdfPwdPlaceholder: '輸入開啟密碼',
+    pdfPwdShow: '顯示密碼',
+    pdfPwdHide: '隱藏密碼',
+    pdfDocxLocalCorruptDetail: '檔案已損壞或不是有效的 PDF，無法轉換。',
     dlgPickSaveDir: '選擇預設儲存位置',
     errSaveDirUnusable: '所選資料夾無法寫入，無法作為預設儲存位置',
   },
@@ -1099,30 +2103,145 @@ let tabManager: TabManager | null = null
  * project the next save should belong to. key: 'doc' | 'sheet' | 'markdown', value: projectId.
  * Consumed by each app's saveHook once the file first hits disk (P1 item 3).
  */
-const pendingNewFileProject = new Map<string, string>()
+/** folders the user added to the home tree beside the default save folder */
+function extraFolderRoots(): string[] {
+  return readExtraRoots(readAppSettings(APP_SETTINGS_PATH()), defaultSaveDir())
+}
+
+function folderRootPaths(): string[] {
+  return [defaultSaveDir(), ...extraFolderRoots()]
+}
+
+function insideAnyRoot(path: string): boolean {
+  return folderRootPaths().some((root) => isInsideRoot(root, path))
+}
+
+function isAnyRoot(path: string): boolean {
+  const key = resolve(path)
+  return folderRootPaths().some((root) => resolve(root) === key)
+}
+
+const pendingNewFileDir = new Map<string, { dir: string; setAt: number }>()
+/** folder bound to a freshly created editor tab, keyed by its webContents id; consumed by the first save */
+const pendingDirByWc = new Map<number, { dir: string; setAt: number }>()
+/** a pending folder only applies to a file created within this window after the click */
+const PENDING_DIR_TTL_MS = 30 * 60 * 1000
+
+function rememberPendingDir(kind: string, opts?: NewFileOpts): void {
+  const dir = opts?.dir
+  if (!dir || resolve(dir) === resolve(defaultSaveDir()) || !insideAnyRoot(dir)) {
+    pendingNewFileDir.delete(kind)
+    return
+  }
+  pendingNewFileDir.set(kind, { dir, setAt: Date.now() })
+}
+
+/** the folder remembered for this kind, consumed; null when none, expired or gone */
+function takePendingDir(kind: string): { dir: string; setAt: number } | null {
+  const pending = pendingNewFileDir.get(kind)
+  pendingNewFileDir.delete(kind)
+  if (!pending) return null
+  if (Date.now() - pending.setAt > PENDING_DIR_TTL_MS) return null
+  return existsSync(pending.dir) ? pending : null
+}
+
+/** where a shell-created blank file (sheet, pdf) lands: the remembered folder, else the root */
+function newFileDir(kind: string): string {
+  return takePendingDir(kind)?.dir ?? defaultSaveDir()
+}
+
+/** hand the remembered folder to the tab that was just opened for it */
+function bindPendingDir(kind: string, tabId: string | undefined): void {
+  const pending = takePendingDir(kind)
+  const wc = tabId ? tabManager?.webContentsForTab(tabId) : undefined
+  if (pending && wc) pendingDirByWc.set(wc.id, pending)
+}
 
 /**
- * P1: after a file first hits disk, if a pending project was set earlier via
- * "create from project view", move the new file into that project automatically.
- * Called from createShellWindow's opened/saved hooks.
+ * A tab's file first hit disk (silent first save, Save As, or an open): if a
+ * folder is bound to that tab and the file is a fresh one in the root, move
+ * it there. A pre-existing file opened in the tab never qualifies: its birth
+ * time (or, where the filesystem reports none, its mtime) predates the click.
  */
-function applyPendingProject(filePath: string): void {
-  const ext = extname(filePath).slice(1).toLowerCase()
-  let key: string | undefined
-  if (ext === 'docx') key = 'doc'
-  else if (ext === 'xlsx' || ext === 'xlsm' || ext === 'xls' || ext === 'csv') key = 'sheet'
-  else if (ext === 'md' || ext === 'markdown') key = 'markdown'
-  if (!key) return
-  const projectId = pendingNewFileProject.get(key)
-  if (!projectId) return
-  pendingNewFileProject.delete(key)
+/**
+ * Everything that keys on a file path follows a rename/move: recents, stars,
+ * the AI chat history (project-store) and any
+ * open tab (which re-grants the new path and refreshes its title).
+ */
+function afterFileMoved(oldPath: string, newPath: string): void {
+  replaceRecentFile(oldPath, newPath)
+  projectFileRenamed(oldPath, newPath)
+  const affected = tabManager?.renameTabFile(oldPath, newPath) ?? []
+  const detachedAffected = detachedRenameFile(oldPath, newPath)
+  if (detachedAffected) affected.push(detachedAffected)
+  for (const t of affected) {
+    if (t.kind === 'docs') docsFileRenamed(t.webContents, oldPath, newPath)
+    else if (t.kind === 'sheets') sheetsFileRenamed(t.webContents, oldPath, newPath)
+    else if (t.kind === 'markdown') markdownFileRenamed(t.webContents, oldPath, newPath)
+    else if (t.kind === 'html') htmlFileRenamed(t.webContents, oldPath, newPath)
+    else if (t.kind === 'pdf') pdfFileRenamed(t.webContents, oldPath, newPath)
+  }
+}
+
+function trackedFilesUnder(dir: string): string[] {
+  return pathsUnder(dir, [
+    ...readRecentFiles(),
+    ...readStarredFiles(),
+    ...projectFilePaths(),
+    ...(tabManager?.openFilePaths() ?? []),
+    ...detachedFilePaths(),
+  ])
+}
+
+/** a folder moved/renamed: re-key every tracked file that lived under it */
+function afterFolderMoved(oldDir: string, newDir: string, filesBefore: readonly string[]): void {
+  for (const file of filesBefore) afterFileMoved(file, rebasePath(file, oldDir, newDir))
+}
+
+const folderWatchers = new Map<string, FolderWatcher>()
+
+let fileIndexStore: FileIndexStore | null = null
+let fileIndexer: FileIndexer | null = null
+/** the search index lives in userData and follows the save folder plus recents/starred */
+function ensureFileIndexer(): FileIndexer | null {
+  if (fileIndexer) return fileIndexer
   try {
-    const store = new ProjectStore(app.getPath('userData'))
-    store.ensureDefaultProject()
-    store.resolveProjectForFile(filePath) // assign to default first (idempotent)
-    store.moveFileToProject(filePath, projectId)
-  } catch (err) {
-    console.warn('[shell] applyPendingProject failed:', err)
+    fileIndexStore = new FileIndexStore(join(app.getPath('userData'), 'file-index.db'))
+  } catch (e) {
+    console.warn('[file-index] unavailable:', e instanceof Error ? e.message : e)
+    return null
+  }
+  fileIndexer = new FileIndexer(fileIndexStore, extractWorkerPath, {
+    roots: () => folderRootPaths().filter((root) => existsSync(root)),
+    extraPaths: () => [...readRecentFiles(), ...readStarredFiles()],
+  })
+  return fileIndexer
+}
+
+const SEARCH_EXT_FAMILY: Record<string, readonly string[]> = {
+  docx: ['docx', 'doc'],
+  xlsx: ['xlsx', 'xlsm', 'xls', 'csv', 'tsv'],
+  md: ['md', 'markdown'],
+  html: ['html', 'htm'],
+}
+
+/** one recursive watcher per tree root; follows the save-folder setting and the added folders */
+function ensureFolderWatchers(): void {
+  const wanted = new Set(folderRootPaths().filter((root) => existsSync(root)))
+  for (const [root, watcher] of folderWatchers) {
+    if (wanted.has(root) && watcher.active) continue
+    watcher.close()
+    folderWatchers.delete(root)
+  }
+  for (const root of wanted) {
+    if (folderWatchers.has(root)) continue
+    const watcher = new FolderWatcher(root, (dirs) => {
+      fileIndexer?.refresh()
+      for (const wc of webContents.getAllWebContents()) {
+        if (!wc.isDestroyed()) wc.send(HOME_CHANNELS.folderChanged, dirs)
+      }
+    })
+    folderWatchers.set(root, watcher)
   }
 }
 
@@ -1140,9 +2259,17 @@ function applyMenuFor(kind: TabKind): void {
     case 'markdown':
       buildMarkdownMenu()
       break
+    case 'html':
+      buildHtmlMenu()
+      break
     default:
       buildHomeMenu()
   }
+}
+
+function refreshTitleBarOverlay(): void {
+  if (process.platform === 'darwin' || !shellWindow || shellWindow.isDestroyed()) return
+  shellWindow.setTitleBarOverlay(tabStripOverlay(nativeTheme.shouldUseDarkColors))
 }
 
 function createShellWindow(): void {
@@ -1155,7 +2282,14 @@ function createShellWindow(): void {
     // vibrancy lets editor modules punch translucent regions through to the desktop
     ...(process.platform === 'darwin'
       ? { titleBarStyle: 'hiddenInset' as const, vibrancy: 'sidebar' as const }
-      : {}),
+      : {
+          // the tab strip is the title bar, as on macOS; the application menu
+          // stays registered for its accelerators and opens from the strip's
+          // menu button (Alt still reveals the native bar where one exists)
+          titleBarStyle: 'hidden' as const,
+          titleBarOverlay: tabStripOverlay(nativeTheme.shouldUseDarkColors),
+          autoHideMenuBar: true,
+        }),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
@@ -1164,13 +2298,17 @@ function createShellWindow(): void {
     },
   })
   shellWindow = win
+  nativeTheme.on('updated', refreshTitleBarOverlay)
+  win.once('closed', () => nativeTheme.off('updated', refreshTitleBarOverlay))
   // dragging the window by the tab strip's blank (draggable) area produces no
   // DOM event anywhere — will-move is the only signal to dismiss popovers
-  win.on('will-move', broadcastChromePressed)
+  win.on('will-move', () => broadcastChromePressed())
 
   const manager = new TabManager(
     win,
-    () => win.webContents.send(TABS_CHANNELS.changed, manager.list()),
+    () => {
+      win.webContents.send(TABS_CHANNELS.changed, manager.list())
+    },
     applyMenuFor,
     // no extension: these tabs have no file on disk yet; the title becomes the
     // real filename (the localized untitled default + .docx etc.) once the first save lands
@@ -1183,43 +2321,102 @@ function createShellWindow(): void {
   )
   tabManager = manager
 
-  // pushRecent-triggered docs menu rebuilds must not clobber the active tab's menu
-  setDocsMenuGate(() => manager.list().some((t) => t.active && t.kind === 'docs'))
+  // pushRecent-triggered docs menu rebuilds must not clobber the active tab's
+  // menu; a focused detached docs window owns the menu just like an active tab
+  setDocsMenuGate(
+    () =>
+      focusedDetachedKind() === 'docs' || manager.list().some((t) => t.active && t.kind === 'docs'),
+  )
 
   setDocsShellWindow(win)
   setSheetsShellWindow(win)
+  setDocsHostWindowHook((wc) => detachedWindowForWebContents(wc.id))
+  setSheetsHostWindowHook((wc) => detachedWindowForWebContents(wc.id))
+  setHtmlPresentHooks({
+    setBleed: (wc, on) => manager.setContentBleed(wc, on),
+    hostWindow: () => win,
+    openTab: (owner, title) => {
+      manager.openHtmlPresentTab(owner, title)
+      return true
+    },
+    closeTab: (wc) => {
+      const id = manager.tabIdForWebContents(wc.id)
+      if (id) void manager.closeTab(id)
+      return !!id
+    },
+  })
+
   setDocsShellHooks({
-    openTab: (openPath, options) => manager.openDocsTab(openPath, options),
+    openTab: (openPath, options) => ensureTabManager().openDocsTab(openPath, options),
+    openAiDocTab: (content) =>
+      ensureTabManager().openDocsTab(undefined, { newBlank: true, aiContent: content }),
     listTabs: () =>
-      manager
-        .list()
+      (tabManager?.list() ?? [])
         .filter((t) => t.kind === 'docs')
         .map((t) => ({ id: t.id, title: t.title, focused: t.active })),
-    focusTab: (id) => manager.activateTab(id),
-    closeActiveTab: () => manager.closeActiveTab(),
+    focusTab: (id) => tabManager?.activateTab(id),
+    // ⌘W in a detached docs window closes that window (its own close guard runs)
+    closeActiveTab: () => {
+      const focused = BrowserWindow.getFocusedWindow()
+      if (focused && focused !== win) focused.close()
+      else tabManager?.closeActiveTab()
+    },
+    openGeneratedPath: (path) => openGeneratedDocument(path),
   })
   setSheetsCloseTabHook(() => manager.closeActiveTab())
   // When ⌘O opens a file inside a tab, sync the tab title/path (used for de-dup by path) and record it as recent.
-  // The first save / save-as fires this too, so applyPendingProject also runs here.
+  // The first save / save-as fires this too, so applyPendingDir also runs here.
   setSheetsWorkbookOpenedHook((wc, path) => {
     manager.setTabFileFor(wc.id, path)
+    detachedSetFileFor(wc.id, path)
     recordRecentFile(path)
-    applyPendingProject(path)
   })
   // docs' save-as / silent first save lands on a new path → sync the tab title too
   setDocsFileSavedHook((wc, path) => {
     manager.setTabFileFor(wc.id, path)
+    detachedSetFileFor(wc.id, path)
     recordRecentFile(path)
-    applyPendingProject(path)
+    return applyPendingDir(wc.id, path)
   })
   // markdown untitled first save / Save As lands on a new path
   setMarkdownFileSavedHook((wc, path) => {
     manager.setTabFileFor(wc.id, path)
     recordRecentFile(path)
-    applyPendingProject(path)
+    applyPendingDir(wc.id, path)
+  })
+  setHtmlFileSavedHook((wc, path) => {
+    manager.setTabFileFor(wc.id, path)
+    recordRecentFile(path)
+    applyPendingDir(wc.id, path)
+  })
+  setHtmlProvisionalTitleHook((wc, title) => manager.setTabTitleFor(wc.id, title))
+  // A redacted copy becomes this tab's document; the source still exists.
+  setPdfRedactionSavedHook((wc, path) => {
+    manager.setTabFileFor(wc.id, path)
+    recordRecentFile(path)
+    applyPendingDir(wc.id, path)
+  })
+  setPdfRenamedHook((wc, oldPath, newPath) => {
+    manager.setTabFileFor(wc.id, newPath)
+    replaceRecentFile(oldPath, newPath)
+    projectFileRenamed(oldPath, newPath)
   })
   // markdown "convert & open in Docs" → route the fresh .docx to a docs tab
   setMarkdownDocxExportedHook((path) => {
+    openDocumentPath(path)
+  })
+  // Word export to a path already open in a docs tab: close that tab before the file is
+  // written (its unsaved-changes prompt applies, and a later save of the stale document
+  // could otherwise overwrite the export); a cancelled close aborts the export.
+  setHtmlDocxExportPrepareHook(async (path) => {
+    const stale = manager.findDocsTabByPath(path)
+    if (!stale) return true
+    const active = manager.list().find((t) => t.active)?.id
+    await manager.closeTab(stale)
+    if (active && active !== stale) manager.activateTab(active)
+    return !manager.findDocsTabByPath(path)
+  })
+  setHtmlDocxExportedHook((path) => {
     openDocumentPath(path)
   })
 
@@ -1233,11 +2430,13 @@ function createShellWindow(): void {
     const dirtySheets = manager.dirtySheetsTabs()
     const dirtyPdf = manager.dirtyPdfTabs()
     const dirtyMarkdown = manager.dirtyMarkdownTabs()
+    const dirtyHtml = manager.dirtyHtmlTabs()
     const docsTabs = manager.docsTabs()
     if (
       dirtySheets.length === 0 &&
       dirtyPdf.length === 0 &&
       dirtyMarkdown.length === 0 &&
+      dirtyHtml.length === 0 &&
       docsTabs.length === 0
     )
       return
@@ -1256,9 +2455,14 @@ function createShellWindow(): void {
         if (!(await requestMarkdownClose(tab.webContents, win))) return
       }
       for (const tab of docsTabs) {
+        // The Docs dirty check lives in its renderer.
         if (!(await docsQueryDirty(tab.webContents))) continue
         manager.activateTab(tab.id)
         if (!(await requestDocsClose(tab.webContents, win))) return
+      }
+      for (const tab of dirtyHtml) {
+        manager.activateTab(tab.id)
+        if (!(await requestHtmlClose(tab.webContents, win))) return
       }
       closeConfirmed = true
       if (!win.isDestroyed()) win.close()
@@ -1267,7 +2471,9 @@ function createShellWindow(): void {
 
   win.on('closed', () => {
     if (shellWindow === win) shellWindow = null
-    if (tabManager === manager) tabManager = null
+    if (tabManager === manager) {
+      tabManager = null
+    }
   })
 
   if (process.env.ELECTRON_RENDERER_URL) {
@@ -1280,12 +2486,12 @@ function createShellWindow(): void {
 // ---- routing: one dispatch function for every open path ----
 
 const DOCX_RE = /\.docx$/i
-const XLSX_RE = /\.(xlsx|xlsm|xls|csv)$/i
+const XLSX_RE = /\.(xlsx|xlsm|xls|csv|tsv)$/i
+const HTML_RE = /\.html?$/i
 const PDF_RE = /\.pdf$/i
 const MD_RE = /\.(md|markdown)$/i
 
 /** document formats we recognize but don't open — surfaced as a dialog, not silently dropped */
-const UNSUPPORTED_DOC_RE = /\.(doc|rtf|odt|pptx|ppt|pps|odp|ods|xlsb|pages|key|numbers)$/i
 
 /**
  * Single source of truth for the open-dialog filter. Includes the
@@ -1302,21 +2508,9 @@ const OPEN_DIALOG_EXTENSIONS = [
   'pdf',
   'md',
   'markdown',
+  'html',
+  'htm',
 ]
-
-function supportedFileIn(argv: string[]): string | null {
-  return (
-    argv.find(
-      (arg) =>
-        (DOCX_RE.test(arg) || XLSX_RE.test(arg) || PDF_RE.test(arg) || MD_RE.test(arg)) &&
-        existsSync(arg),
-    ) ?? null
-  )
-}
-
-function unsupportedFileIn(argv: string[]): string | null {
-  return argv.find((arg) => UNSUPPORTED_DOC_RE.test(arg) && existsSync(arg)) ?? null
-}
 
 function notifyUnsupportedFile(filePath: string): void {
   const ext = extname(filePath).slice(1).toLowerCase() || basename(filePath)
@@ -1338,12 +2532,12 @@ function showAppWarning(message: string): void {
 /** the single router: extension decides which module owns the file; false = nothing opened */
 function openDocumentPath(filePath: string): boolean {
   if (!existsSync(filePath) || !tabManager) return false
+  if (focusDetachedByPath(filePath)) return true
   if (DOCX_RE.test(filePath)) {
     recordRecentFile(filePath)
     const existing = tabManager.findDocsTabByPath(filePath)
     if (existing) tabManager.activateTab(existing)
     else tabManager.openDocsTab(filePath)
-    recordStarPromptDocOpen()
     return true
   }
   if (XLSX_RE.test(filePath)) {
@@ -1354,7 +2548,6 @@ function openDocumentPath(filePath: string): boolean {
     } else {
       tabManager.openSheetsTab(filePath)
     }
-    recordStarPromptDocOpen()
     return true
   }
   if (PDF_RE.test(filePath)) {
@@ -1362,7 +2555,6 @@ function openDocumentPath(filePath: string): boolean {
     const existing = tabManager.findPdfTabByPath(filePath)
     if (existing) tabManager.activateTab(existing)
     else tabManager.openPdfTab(filePath)
-    recordStarPromptDocOpen()
     return true
   }
   if (MD_RE.test(filePath)) {
@@ -1370,7 +2562,13 @@ function openDocumentPath(filePath: string): boolean {
     const existing = tabManager.findMarkdownTabByPath(filePath)
     if (existing) tabManager.activateTab(existing)
     else tabManager.openMarkdownTab(filePath)
-    recordStarPromptDocOpen()
+    return true
+  }
+  if (HTML_RE.test(filePath)) {
+    recordRecentFile(filePath)
+    const existing = tabManager.findHtmlTabByPath(filePath)
+    if (existing) tabManager.activateTab(existing)
+    else tabManager.openHtmlTab(filePath)
     return true
   }
   notifyUnsupportedFile(filePath)
@@ -1402,7 +2600,7 @@ function openGeneratedDocument(filePath: string): boolean {
  */
 async function newSheetTab(): Promise<void> {
   try {
-    const filePath = uniquePathIn(defaultSaveDir(), `${tm('untitledSheet')}.xlsx`)
+    const filePath = uniquePathIn(newFileDir('sheet'), `${tm('untitledSheet')}.xlsx`)
     writeFileSync(filePath, await blankXlsxBuffer())
     // eligible for content-derived auto-rename after the first AI generation
     markSheetsUntitledPath(filePath)
@@ -1429,8 +2627,7 @@ function surfaceNewTabError(err: unknown): void {
 
 function newDocTab(): void {
   try {
-    tabManager?.openDocsTab(undefined, { newBlank: true })
-    recordStarPromptDocOpen()
+    bindPendingDir('doc', tabManager?.openDocsTab(undefined, { newBlank: true }))
   } catch (err) {
     surfaceNewTabError(err)
   }
@@ -1438,17 +2635,90 @@ function newDocTab(): void {
 
 function newMarkdownTab(): void {
   try {
-    tabManager?.openMarkdownTab()
-    recordStarPromptDocOpen()
+    bindPendingDir('markdown', tabManager?.openMarkdownTab())
   } catch (err) {
     surfaceNewTabError(err)
   }
 }
 
+function applyPendingDir(wcId: number, filePath: string): string {
+  const pending = pendingDirByWc.get(wcId)
+  if (!pending) return filePath
+  if (Date.now() - pending.setAt > PENDING_DIR_TTL_MS) {
+    pendingDirByWc.delete(wcId)
+    return filePath
+  }
+  if (resolve(dirname(filePath)) !== resolve(defaultSaveDir())) return filePath
+  try {
+    const stat = statSync(filePath)
+    const born = stat.birthtimeMs || stat.mtimeMs
+    if (born < pending.setAt - 2000) return filePath
+  } catch {
+    return filePath
+  }
+  pendingDirByWc.delete(wcId)
+  if (!existsSync(pending.dir)) return filePath
+  // a clash with an existing name takes the "(2)" suffix rather than staying in the root
+  const target = join(pending.dir, uniqueNameIn(pending.dir, basename(filePath)))
+  try {
+    renameSync(filePath, target)
+  } catch (err) {
+    console.warn('[shell] move new file into folder failed:', err)
+    return filePath
+  }
+  afterFileMoved(filePath, target)
+  return target
+}
+
+function newHtmlTab(): void {
+  try {
+    bindPendingDir('html', tabManager?.openHtmlTab())
+  } catch (err) {
+    surfaceNewTabError(err)
+  }
+}
+
+async function newPdfTab(): Promise<void> {
+  try {
+    const filePath = uniquePathIn(newFileDir('pdf'), `${tm('untitledPdf')}.pdf`)
+    writeFileSync(filePath, await blankPdfBuffer())
+    // Opt the file into content-derived auto-naming on its first save
+    markPdfUntitledPath(filePath)
+    // route directly (not via openDocumentPath) so creating a pdf emits only
+    // file_new and counts one doc-open — same as the blank workbook above
+    openDocumentPath(filePath)
+  } catch (err) {
+    surfaceNewTabError(err)
+  }
+}
+
+function currentAutoSaveDefault(): AutoSaveDefault {
+  if (cachedAutoSaveDefault) return cachedAutoSaveDefault
+  const saved = readAppSettings(APP_SETTINGS_PATH())
+  const updatedAt = saved.autoSaveDefaultUpdatedAt
+  cachedAutoSaveDefault = {
+    on: saved.autoSaveDefault === true,
+    updatedAt: typeof updatedAt === 'number' && updatedAt > 0 ? updatedAt : 0,
+  }
+  return cachedAutoSaveDefault
+}
+
+function currentAiPanelPrefs(): AiPanelPrefs {
+  if (cachedAiPanelPrefs) return cachedAiPanelPrefs
+  const saved = readAppSettings(APP_SETTINGS_PATH())
+  cachedAiPanelPrefs = normalizeAiPanelPrefs({
+    side: saved.aiPanelSide,
+    fontSize: saved.aiPanelFontSize,
+    customFontSize: saved.aiPanelCustomFontSize,
+    spellcheck: saved.aiPanelSpellcheck,
+  })
+  return cachedAiPanelPrefs
+}
+
 // ---- home IPC ----
 
 function statEntries(paths: string[]): RecentEntry[] {
-  return statExistingPaths(withoutLegacySlidePaths(paths), new Set(readStarredFiles()))
+  return statPathEntries(withoutLegacySlidePaths(paths), new Set(readStarredFiles()))
 }
 
 function broadcastAiSettings(settings: AiSettings): void {
@@ -1573,17 +2843,92 @@ function registerHomeIpc(): void {
     }
   })
 
+  ipcMain.handle(HOME_CHANNELS.getAutoSaveDefault, (): AutoSaveDefault => currentAutoSaveDefault())
+  ipcMain.handle('app:get-auto-save-default', (): AutoSaveDefault => currentAutoSaveDefault())
+
+  ipcMain.handle(HOME_CHANNELS.setAutoSaveDefault, (_event, on: unknown) => {
+    if (typeof on !== 'boolean') return
+    if (on === currentAutoSaveDefault().on) return
+    const next: AutoSaveDefault = { on, updatedAt: Date.now() }
+    cachedAutoSaveDefault = next
+    writeAppSettings(APP_SETTINGS_PATH(), {
+      autoSaveDefault: next.on,
+      autoSaveDefaultUpdatedAt: next.updatedAt,
+    })
+    for (const wc of webContents.getAllWebContents()) wc.send('app:auto-save-default-changed', next)
+  })
+
+  ipcMain.handle(HOME_CHANNELS.getAiPanelPrefs, (): AiPanelPrefs => currentAiPanelPrefs())
+  ipcMain.handle('app:get-ai-panel-prefs', (): AiPanelPrefs => currentAiPanelPrefs())
+
+  const setAiPanelPrefs = (patch: unknown): AiPanelPrefs => {
+    const prev = currentAiPanelPrefs()
+    const raw =
+      patch !== null && typeof patch === 'object' ? (patch as Record<string, unknown>) : {}
+    // unknown/malformed fields fall back to the previous value, not the default
+    const next = normalizeAiPanelPrefs({
+      side: raw.side === 'left' || raw.side === 'right' ? raw.side : prev.side,
+      fontSize: 'fontSize' in raw ? raw.fontSize : prev.fontSize,
+      customFontSize: 'customFontSize' in raw ? raw.customFontSize : prev.customFontSize,
+      spellcheck: 'spellcheck' in raw ? raw.spellcheck : prev.spellcheck,
+    })
+    if (sameAiPanelPrefs(next, prev)) return prev
+    cachedAiPanelPrefs = next
+    writeAppSettings(APP_SETTINGS_PATH(), {
+      aiPanelSide: next.side,
+      aiPanelFontSize: next.fontSize,
+      aiPanelCustomFontSize: next.customFontSize,
+      aiPanelSpellcheck: next.spellcheck,
+    })
+    for (const wc of webContents.getAllWebContents()) wc.send('app:ai-panel-prefs-changed', next)
+    return next
+  }
+  ipcMain.handle(HOME_CHANNELS.setAiPanelPrefs, (_event, patch) => setAiPanelPrefs(patch))
+  ipcMain.handle('app:set-ai-panel-prefs', (_event, patch) => setAiPanelPrefs(patch))
+
+  ipcMain.handle(HOME_CHANNELS.newHtml, (_event, opts?: NewFileOpts) => {
+    rememberPendingDir('html', opts)
+    newHtmlTab()
+  })
+
+  ipcMain.handle(HOME_CHANNELS.newPdf, (_event, opts?: NewFileOpts) => {
+    rememberPendingDir('pdf', opts)
+    void newPdfTab()
+  })
+
   ipcMain.handle(HOME_CHANNELS.getAppVersion, (): string => app.getVersion())
 
   ipcMain.handle(HOME_CHANNELS.recents, (_event, query: unknown): RecentPage =>
     pageRecentPaths(withoutLegacySlidePaths(readRecentFiles()), query, new Set(readStarredFiles())),
   )
 
+  ipcMain.handle(HOME_CHANNELS.searchFiles, (_event, raw: unknown): FileSearchPage => {
+    const query = (raw && typeof raw === 'object' ? raw : {}) as Partial<FileSearchQuery>
+    const indexer = ensureFileIndexer()
+    if (!indexer || !fileIndexStore) {
+      return { hits: [], total: 0, index: { indexed: 0, pending: 0, scanning: false } }
+    }
+    // an open search box is the moment a stale index shows; rescan at most once a minute
+    indexer.refreshIfStale(60_000)
+    const q = typeof query.q === 'string' ? query.q.trim().slice(0, 200) : ''
+    const filter = typeof query.ext === 'string' ? query.ext : ''
+    const exts = filter && filter !== 'all' ? (SEARCH_EXT_FAMILY[filter] ?? [filter]) : undefined
+    const offset = Number.isFinite(query.offset) ? Math.max(0, Math.floor(query.offset!)) : 0
+    const limit = Number.isFinite(query.limit) ? Math.max(0, Math.floor(query.limit!)) : 50
+    const starred = new Set(readStarredFiles())
+    const result = q ? fileIndexStore.search(q, { exts, offset, limit }) : { hits: [], total: 0 }
+    return {
+      hits: result.hits.map((h) => ({ ...h, starred: starred.has(h.path) })),
+      total: result.total,
+      index: indexer.progress(),
+    }
+  })
+
   // Starred files sort by mtime, which requires stat-ing them all first; they are hand-picked and few, so this is fine
   ipcMain.handle(HOME_CHANNELS.starred, (_event, query: unknown): RecentPage => {
     const { offset, limit, ext } = normalizeRecentQuery(query)
     const all = statEntries(readStarredFiles()).sort((a, b) => b.mtimeMs - a.mtimeMs)
-    const filtered = ext ? all.filter((entry) => entry.ext === ext) : all
+    const filtered = ext ? all.filter((entry) => matchesExtFamily(entry.ext, ext)) : all
     return {
       entries: limit === 0 ? [] : filtered.slice(offset, offset + limit),
       total: filtered.length,
@@ -1600,7 +2945,9 @@ function registerHomeIpc(): void {
   })
 
   ipcMain.handle(HOME_CHANNELS.openPath, (_event, path: unknown) => {
-    if (typeof path === 'string') openDocumentPath(path)
+    if (typeof path !== 'string' || !path || path.length > 4096) return
+    openDocumentPath(path)
+    fileIndexer?.refresh()
   })
 
   ipcMain.handle(HOME_CHANNELS.openDroppedPaths, (event, input: unknown) => {
@@ -1634,35 +2981,34 @@ function registerHomeIpc(): void {
         { name: tm('filterExcel'), extensions: ['xlsx', 'xlsm', 'xls', 'csv'] },
         { name: tm('filterPdf'), extensions: ['pdf'] },
         { name: tm('filterMarkdown'), extensions: ['md', 'markdown'] },
+        { name: tm('filterHtml'), extensions: ['html', 'htm'] },
       ],
       properties: ['openFile', 'multiSelections'],
     })
     if (!result.canceled) for (const path of result.filePaths) openDocumentPath(path)
   })
 
-  ipcMain.handle(HOME_CHANNELS.newDoc, (_event, opts?: { projectId?: string }) => {
-    if (opts?.projectId && opts.projectId !== 'default') {
-      pendingNewFileProject.set('doc', opts.projectId)
-    }
+  ipcMain.handle(HOME_CHANNELS.newDoc, (_event, opts?: NewFileOpts) => {
+    rememberPendingDir('doc', opts)
     newDocTab()
   })
 
-  ipcMain.handle(HOME_CHANNELS.newSheet, (_event, opts?: { projectId?: string }) => {
-    if (opts?.projectId && opts.projectId !== 'default') {
-      pendingNewFileProject.set('sheet', opts.projectId)
-    }
+  ipcMain.handle(HOME_CHANNELS.newSheet, (_event, opts?: NewFileOpts) => {
+    rememberPendingDir('sheet', opts)
     void newSheetTab()
   })
 
-  ipcMain.handle(HOME_CHANNELS.newMarkdown, (_event, opts?: { projectId?: string }) => {
-    if (opts?.projectId && opts.projectId !== 'default') {
-      pendingNewFileProject.set('markdown', opts.projectId)
-    }
+  ipcMain.handle(HOME_CHANNELS.newMarkdown, (_event, opts?: NewFileOpts) => {
+    rememberPendingDir('markdown', opts)
     newMarkdownTab()
   })
 
   ipcMain.handle(HOME_CHANNELS.removeRecent, (_event, paths: unknown) => {
-    removeRecentFiles(stringPaths(paths))
+    const list = stringPaths(paths)
+    removeRecentFiles(list)
+    // an unavailable entry's star must go with it, or the Starred view keeps
+    // a dead dimmed row the recents list no longer shows
+    removeStarredFiles(list.filter((p) => !existsSync(p)))
   })
 
   ipcMain.handle(HOME_CHANNELS.revealPath, (_event, path: unknown) => {
@@ -1674,12 +3020,21 @@ function registerHomeIpc(): void {
     (_event, path: unknown, newName: unknown): RenameResult => {
       if (typeof path !== 'string' || typeof newName !== 'string')
         return { ok: false, error: tm('errBadArgs') }
+      // Validate the raw name before trimming: trimming first would
+      // silently turn "report " into "report" and make the
+      // trailing-space gate in isValidRenameName unreachable. Reject
+      // with the localized gate instead of renaming to a different
+      // name than requested.
+      if (!isValidRawRenameName(newName)) return { ok: false, error: tm('errBadName') }
       const name = newName.trim()
-      if (!name || /[\\/:]/.test(name)) return { ok: false, error: tm('errBadName') }
       if (!existsSync(path)) return { ok: false, error: tm('errMissing') }
       const target = join(dirname(path), name)
       if (target === path) return { ok: true, path }
-      if (existsSync(target)) return { ok: false, error: tm('errExists') }
+      // A case-only rename (Report.pdf -> report.pdf) hits the source itself on
+      // case-insensitive filesystems; only a genuinely different file blocks.
+      if (existsSync(target) && !isSameFile(path, target)) {
+        return { ok: false, error: tm('errExists') }
+      }
       try {
         renameSync(path, target)
       } catch (err) {
@@ -1723,6 +3078,8 @@ function registerHomeIpc(): void {
       }
     }
     removeRecentFiles(list)
+    // the files were deliberately destroyed — stars must not survive as ghosts
+    removeStarredFiles(list)
   })
 
   ipcMain.handle(HOME_CHANNELS.openTrash, () => {
@@ -1766,12 +3123,185 @@ function registerHomeIpc(): void {
     cachedTheme = theme
     writeAppSetting(APP_SETTINGS_PATH(), 'theme', theme)
     nativeTheme.themeSource = theme
+    refreshTitleBarOverlay()
     for (const wc of webContents.getAllWebContents()) wc.send('app:theme-changed', theme)
   })
 
   // effective folder where new/untitled files land; the editor mains resolve
   // the same setting themselves (configuredDefaultSaveDir via docs' defaultSaveDir)
+  // ── folder tree over the default save folder ──
+  const folderErrors = (): FolderErrors => ({
+    badArgs: tm('errBadArgs'),
+    badName: tm('errBadName'),
+    missing: tm('errMissing'),
+    exists: tm('errExists'),
+    failed: tm('errRenameFailed'),
+  })
+  const insideRoot = (path: unknown): path is string =>
+    typeof path === 'string' && insideAnyRoot(path)
+  const isRoot = (path: string) => isAnyRoot(path)
+
+  ipcMain.handle(HOME_CHANNELS.folderRoots, (): FolderRoot[] => {
+    // describeRoot creates a missing save folder, so its watcher has something to attach to
+    const roots = [describeRoot(defaultSaveDir()), ...extraFolderRoots().map(describeExtraRoot)]
+    ensureFolderWatchers()
+    return roots
+  })
+
+  // an added folder joins the tree where it is: nothing on disk is created, copied or moved
+  const addFolderRoot = (path: string): FolderRoot | null => {
+    const extras = withExtraRoot(extraFolderRoots(), defaultSaveDir(), path)
+    if (!extras) return null
+    writeAppSetting(APP_SETTINGS_PATH(), FOLDER_ROOTS_KEY, extras)
+    ensureFolderWatchers()
+    fileIndexer?.refresh()
+    return describeExtraRoot(path)
+  }
+
+  ipcMain.handle(HOME_CHANNELS.addFolderRoot, async (): Promise<FolderRoot | null> => {
+    const result = await showOpenDialogWithMemory(dialog, shellWindow, {
+      title: tm('dlgAddFolderRoot'),
+      properties: ['openDirectory'],
+    })
+    const picked = result.filePaths[0]
+    if (result.canceled || !picked) return null
+    if (!describeExtraRoot(picked).readable) {
+      showErrorDialog(shellWindow, tm('errFolderRootUnusable'), picked)
+      return null
+    }
+    return addFolderRoot(picked)
+  })
+
+  ipcMain.handle(HOME_CHANNELS.dropFolderRoots, (_event, paths: unknown): FolderRoot[] => {
+    const added: FolderRoot[] = []
+    const files: string[] = []
+    for (const path of stringPaths(paths)) {
+      if (!describeExtraRoot(path).readable) {
+        files.push(path)
+        continue
+      }
+      const root = addFolderRoot(path)
+      if (root) added.push(root)
+    }
+    if (files.length > 0) routeDroppedPaths(files, openDocumentPath)
+    return added
+  })
+
+  ipcMain.handle(HOME_CHANNELS.removeFolderRoot, (_event, path: unknown) => {
+    if (typeof path !== 'string') return
+    const extras = withoutExtraRoot(extraFolderRoots(), path)
+    writeAppSetting(APP_SETTINGS_PATH(), FOLDER_ROOTS_KEY, extras)
+    ensureFolderWatchers()
+    fileIndexer?.refresh()
+  })
+
+  ipcMain.handle(HOME_CHANNELS.listFolder, (_event, dir: unknown): FolderListing => {
+    if (!insideRoot(dir)) return { dir: String(dir), folders: [], files: [] }
+    return listFolder(dir, new Set(readStarredFiles()))
+  })
+
+  ipcMain.handle(
+    HOME_CHANNELS.createFolder,
+    (_event, parent: unknown, name: unknown): RenameResult => {
+      if (!insideRoot(parent) || typeof name !== 'string')
+        return { ok: false, error: tm('errBadArgs') }
+      return createFolder(parent, name, folderErrors())
+    },
+  )
+
+  ipcMain.handle(
+    HOME_CHANNELS.renameFolder,
+    (_event, dir: unknown, newName: unknown): RenameResult => {
+      if (!insideRoot(dir) || isRoot(dir) || typeof newName !== 'string')
+        return { ok: false, error: tm('errBadArgs') }
+      const filesBefore = trackedFilesUnder(dir)
+      const result = renameFolder(dir, newName, folderErrors())
+      if (result.ok && result.path && result.path !== dir) {
+        afterFolderMoved(dir, result.path, filesBefore)
+      }
+      return result
+    },
+  )
+
+  ipcMain.handle(
+    HOME_CHANNELS.movePaths,
+    async (_event, paths: unknown, targetDir: unknown, policy: unknown): Promise<MoveResult> => {
+      const list = stringPaths(paths)
+      if (!insideRoot(targetDir)) {
+        const error = tm('errBadArgs')
+        return { moved: [], conflicts: [], failed: list.map((path) => ({ path, error })) }
+      }
+      const conflictPolicy: MoveConflictPolicy =
+        policy === 'replace' || policy === 'keepBoth' || policy === 'skip' ? policy : 'ask'
+      const isDir = (p: string) => {
+        try {
+          return statSync(p).isDirectory()
+        } catch {
+          return false
+        }
+      }
+      // files may come from anywhere (the Recent list); folders only from inside the tree, never a root itself
+      const sources = list.filter((p) => !isDir(p) || (insideAnyRoot(p) && !isAnyRoot(p)))
+      const dirFiles = new Map(sources.filter(isDir).map((p) => [p, trackedFilesUnder(p)]))
+      // 'replace' must not destroy data: the displaced target goes to the trash,
+      // and everything keyed on its path (recents, stars, chat history) leaves
+      // with it so the incoming file does not inherit another document's record
+      const displaced: string[] = []
+      const result = movePathsInto(sources, targetDir, conflictPolicy, folderErrors(), {
+        replaceExisting: (path) => {
+          const parked = join(dirname(path), `.genoffice-replaced-${Date.now()}-${basename(path)}`)
+          const files = isDir(path) ? trackedFilesUnder(path) : [path]
+          renameSync(path, parked)
+          return {
+            commit: () => {
+              displaced.push(parked)
+              removeRecentFiles(files)
+              removeStarredFiles(files)
+              for (const file of files) projectFileRenamed(file, rebasePath(file, path, parked))
+            },
+            rollback: () => renameSync(parked, path),
+          }
+        },
+      })
+      for (const parked of displaced) {
+        try {
+          await shell.trashItem(parked)
+        } catch {
+          rmSync(parked, { recursive: true, force: true })
+        }
+      }
+      for (const { from, to } of result.moved) {
+        const files = dirFiles.get(from)
+        if (files) afterFolderMoved(from, to, files)
+        else afterFileMoved(from, to)
+      }
+      return result
+    },
+  )
+
+  ipcMain.handle(HOME_CHANNELS.deleteFolder, async (_event, dir: unknown) => {
+    if (!insideRoot(dir) || isRoot(dir)) return
+    const files = trackedFilesUnder(dir)
+    try {
+      await shell.trashItem(dir)
+    } catch {
+      return
+    }
+    removeRecentFiles(files)
+    removeStarredFiles(files)
+  })
+
   ipcMain.handle(HOME_CHANNELS.getDefaultSaveDir, (): string => defaultSaveDir())
+
+  const defaultApp = createDefaultAppService({
+    platform: process.platform,
+    packaged: app.isPackaged,
+    exePath: app.getPath('exe'),
+    run: execFileRunner,
+    openExternal: (url) => shell.openExternal(url),
+  })
+  ipcMain.handle(HOME_CHANNELS.getDefaultAppStatus, () => defaultApp.status())
+  ipcMain.handle(HOME_CHANNELS.setDefaultApp, () => defaultApp.set())
 
   ipcMain.handle(HOME_CHANNELS.pickDefaultSaveDir, async (): Promise<string | null> => {
     const result = await showOpenDialogWithMemory(dialog, shellWindow, {
@@ -1786,6 +3316,7 @@ function registerHomeIpc(): void {
       return null
     }
     writeAppSetting(APP_SETTINGS_PATH(), DEFAULT_SAVE_DIR_KEY, picked)
+    ensureFolderWatchers()
     return picked
   })
 
@@ -1799,33 +3330,6 @@ function registerHomeIpc(): void {
     shell.openExternal(PRODUCT_REPOSITORY_URL).catch(() => {
       // no browser handler available; nothing actionable for the user here
     })
-  })
-
-  ipcMain.handle(HOME_CHANNELS.starPromptShouldShow, (): StarPromptShow => {
-    if (starPromptSessionGrant) return starPromptSessionGrant
-    const now = Date.now()
-    const state = readStarPrompt()
-    const docOpens = state.docOpens ?? 0
-    if (!app.isPackaged && process.env.GENOFFICE_FORCE_STAR_PROMPT) {
-      return { show: true, docOpens }
-    }
-    const grant = (): StarPromptShow => {
-      writeStarPrompt(withShown(state, now))
-      starPromptSessionGrant = { show: true, docOpens }
-      return starPromptSessionGrant
-    }
-    if (upgradeStarPromptPending) {
-      upgradeStarPromptPending = false
-      if (shouldShowUpgradeStarPrompt(state)) return grant()
-    }
-    if (!shouldShowStarPrompt(state, now)) return { show: false, docOpens }
-    return grant()
-  })
-
-  ipcMain.handle(HOME_CHANNELS.starPromptAction, (_event, action: unknown) => {
-    if (action !== 'starred' && action !== 'later') return
-    starPromptSessionGrant = null
-    if (action === 'starred') writeStarPrompt(withResolved(readStarPrompt()))
   })
 }
 
@@ -1847,6 +3351,7 @@ interface MenuIconSet {
   xlsx: NativeImage
   pdf: NativeImage
   md: NativeImage
+  html: NativeImage
   home: NativeImage
 }
 let menuIconCache: MenuIconSet | null = null
@@ -1856,6 +3361,7 @@ function menuIcons(): MenuIconSet {
     xlsx: loadMenuIcon(menuXlsxIcon1x, menuXlsxIcon2x),
     pdf: loadMenuIcon(menuPdfIcon1x, menuPdfIcon2x),
     md: loadMenuIcon(menuMdIcon1x, menuMdIcon2x),
+    html: loadMenuIcon(menuHtmlIcon1x, menuHtmlIcon2x),
     home: loadMenuIcon(menuHomeIcon1x, menuHomeIcon2x),
   }
   return menuIconCache
@@ -1867,24 +3373,57 @@ const TAB_MENU_ICON: Record<TabKind, keyof MenuIconSet> = {
   sheets: 'xlsx',
   pdf: 'pdf',
   markdown: 'md',
+  html: 'html',
 }
 
 // tab views see neither DOM events nor a focus change when the user clicks the
 // shell chrome — relay the press so open popovers in documents can dismiss
-function broadcastChromePressed(): void {
-  for (const wc of webContents.getAllWebContents()) wc.send(TABS_CHANNELS.chromePressed)
+function broadcastChromePressed(senderId?: number): void {
+  relayChromePressed(webContents.getAllWebContents(), senderId)
+}
+
+/** the shell's tab manager, recreating the shell window when a detached editor outlived it */
+function ensureTabManager(): TabManager {
+  if (!tabManager) createShellWindow()
+  if (!tabManager) throw new Error('the shell window could not be created')
+  return tabManager
+}
+
+/** "Open in New Window": reparent the tab's live view into a detached editor
+ *  window — the document moves as-is, unsaved edits included. */
+function detachTabToWindow(id: string): void {
+  if (!tabManager) return
+  const record = tabManager.detachTab(id)
+  if (!record) return
+  const win = createDetachedEditorWindow({ ...record, applyMenuFor })
+  win.focus()
 }
 
 function registerTabsIpc(): void {
-  ipcMain.on(TABS_CHANNELS.chromePressed, broadcastChromePressed)
+  ipcMain.on(TABS_CHANNELS.chromePressed, (event) => broadcastChromePressed(event.sender.id))
   ipcMain.handle(TABS_CHANNELS.list, () => tabManager?.list() ?? [])
-  ipcMain.handle(TABS_CHANNELS.activate, (_event, id: string) => tabManager?.activateTab(id))
-  ipcMain.handle(TABS_CHANNELS.close, (_event, id: string) => tabManager?.closeTab(id))
+  ipcMain.handle(TABS_CHANNELS.activate, (_event, id: unknown) => {
+    if (typeof id !== 'string' || !id) return
+    tabManager?.activateTab(id)
+  })
+  ipcMain.handle(TABS_CHANNELS.close, (_event, id: unknown) => {
+    if (typeof id !== 'string' || !id) return
+    return tabManager?.closeTab(id)
+  })
   ipcMain.handle(TABS_CHANNELS.reorder, (_event, id: string, toIndex: number) => {
     if (typeof id === 'string' && Number.isInteger(toIndex)) tabManager?.reorderTab(id, toIndex)
   })
   // "all tabs" overflow menu — native popup because the editors' WebContentsView
   // would cover any DOM dropdown the shell renderer draws below the tab strip
+  ipcMain.handle(TABS_CHANNELS.showAppMenu, (_event, x: unknown, y: unknown) => {
+    if (!shellWindow) return
+    Menu.getApplicationMenu()?.popup({
+      window: shellWindow,
+      ...(typeof x === 'number' && typeof y === 'number'
+        ? { x: Math.round(x), y: Math.round(y) }
+        : {}),
+    })
+  })
   ipcMain.handle(TABS_CHANNELS.showMenu, (_event, x: unknown, y: unknown) => {
     if (!tabManager || !shellWindow) return
     const menu = Menu.buildFromTemplate(
@@ -1897,6 +3436,38 @@ function registerTabsIpc(): void {
       })),
     )
     menu.popup({
+      window: shellWindow,
+      ...(typeof x === 'number' && typeof y === 'number'
+        ? { x: Math.round(x), y: Math.round(y) }
+        : {}),
+    })
+  })
+  ipcMain.handle(TABS_CHANNELS.detach, (_event, id: unknown) => {
+    if (typeof id !== 'string') return
+    const tab = tabManager?.list().find((t) => t.id === id)
+    if (tab && (tab.kind === 'docs' || tab.kind === 'sheets')) detachTabToWindow(id)
+  })
+  // per-tab context menu — native for the same reason as the tab list above
+  ipcMain.handle(TABS_CHANNELS.showTabMenu, (_event, id: unknown, x: unknown, y: unknown) => {
+    if (!tabManager || !shellWindow || typeof id !== 'string') return
+    const tab = tabManager.list().find((t) => t.id === id)
+    if (!tab || tab.kind === 'home') return
+    const template: MenuItemConstructorOptions[] = []
+    // MVP: docs + sheets; the other editors follow once their
+    // detached-window quirks (HTML fullscreen, PDF) are covered
+    if (tab.kind === 'docs' || tab.kind === 'sheets') {
+      template.push({
+        label: tm('menuOpenInNewWindow'),
+        click: () => detachTabToWindow(id),
+      })
+      template.push({ type: 'separator' })
+    }
+    template.push({
+      label: tm('menuClose'),
+      enabled: tab.closable,
+      click: () => void tabManager?.closeTab(id),
+    })
+    Menu.buildFromTemplate(template).popup({
       window: shellWindow,
       ...(typeof x === 'number' && typeof y === 'number'
         ? { x: Math.round(x), y: Math.round(y) }
@@ -1982,7 +3553,12 @@ function buildHomeMenu(): void {
     {
       role: 'help',
       label: tm('menuHelp'),
-      submenu: [{ label: tm('thirdPartyNotices'), click: () => void openThirdPartyNotices() }],
+      submenu: [
+        { label: tm('thirdPartyNotices'), click: () => void openThirdPartyNotices() },
+        { type: 'separator' },
+        checkUpdatesMenuItem(appMenuLabels(currentLang())),
+        aboutMenuItem(appMenuLabels(currentLang())),
+      ],
     },
   ]
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
@@ -2053,7 +3629,12 @@ function buildPdfMenu(): void {
     {
       role: 'help',
       label: tm('menuHelp'),
-      submenu: [{ label: tm('thirdPartyNotices'), click: () => void openThirdPartyNotices() }],
+      submenu: [
+        { label: tm('thirdPartyNotices'), click: () => void openThirdPartyNotices() },
+        { type: 'separator' },
+        checkUpdatesMenuItem(appMenuLabels(currentLang())),
+        aboutMenuItem(appMenuLabels(currentLang())),
+      ],
     },
   ]
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
@@ -2112,6 +3693,13 @@ function buildMarkdownMenu(): void {
           },
         },
         {
+          label: tm('menuExportImages'),
+          click: () => {
+            const tab = tabManager?.activeMarkdownTab()
+            if (tab) sendMarkdownExportRequest(tab.webContents, 'png')
+          },
+        },
+        {
           label: tm('menuOpenInDocs'),
           click: () => {
             const tab = tabManager?.activeMarkdownTab()
@@ -2140,7 +3728,104 @@ function buildMarkdownMenu(): void {
     {
       role: 'help',
       label: tm('menuHelp'),
-      submenu: [{ label: tm('thirdPartyNotices'), click: () => void openThirdPartyNotices() }],
+      submenu: [
+        { label: tm('thirdPartyNotices'), click: () => void openThirdPartyNotices() },
+        { type: 'separator' },
+        checkUpdatesMenuItem(appMenuLabels(currentLang())),
+        aboutMenuItem(appMenuLabels(currentLang())),
+      ],
+    },
+  ]
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template))
+}
+
+// ---- html menu (html-main has no menu of its own; the shell owns html tabs) ----
+
+function buildHtmlMenu(): void {
+  const isMac = process.platform === 'darwin'
+  const template: MenuItemConstructorOptions[] = [
+    ...(isMac ? [{ role: 'appMenu' as const }] : []),
+    {
+      label: tm('menuFile'),
+      submenu: [
+        {
+          label: tm('menuOpen'),
+          accelerator: 'CmdOrCtrl+O',
+          click: () => void openFileViaDialog(),
+        },
+        { type: 'separator' },
+        {
+          label: tm('backToHome'),
+          accelerator: 'Shift+CmdOrCtrl+H',
+          click: () => tabManager?.openHomeTab(),
+        },
+        { type: 'separator' },
+        {
+          label: tm('menuSave'),
+          accelerator: 'CmdOrCtrl+S',
+          click: () => {
+            const tab = tabManager?.activeHtmlTab()
+            if (tab) void requestHtmlSave(tab.webContents, 'save')
+          },
+        },
+        {
+          label: tm('menuSaveAs'),
+          accelerator: 'CmdOrCtrl+Shift+S',
+          click: () => {
+            const tab = tabManager?.activeHtmlTab()
+            if (tab) void requestHtmlSave(tab.webContents, 'saveAs')
+          },
+        },
+        { type: 'separator' },
+        {
+          label: tm('menuExportDocx'),
+          click: () => {
+            const tab = tabManager?.activeHtmlTab()
+            if (tab) sendHtmlExportRequest(tab.webContents, 'docx')
+          },
+        },
+        {
+          label: tm('menuExportPdf'),
+          click: () => {
+            const tab = tabManager?.activeHtmlTab()
+            if (tab) sendHtmlExportRequest(tab.webContents, 'pdf')
+          },
+        },
+        {
+          label: tm('menuExportHtml'),
+          click: () => {
+            const tab = tabManager?.activeHtmlTab()
+            if (tab) sendHtmlExportRequest(tab.webContents, 'html')
+          },
+        },
+        { type: 'separator' },
+        {
+          label: tm('menuPrint'),
+          accelerator: 'CmdOrCtrl+P',
+          click: () => {
+            const tab = tabManager?.activeHtmlTab()
+            if (tab) sendHtmlPrintRequest(tab.webContents)
+          },
+        },
+        { type: 'separator' },
+        {
+          label: tm('menuClose'),
+          accelerator: 'CmdOrCtrl+W',
+          click: () => tabManager?.closeActiveTab(),
+        },
+      ],
+    },
+    editMenuTemplate(process.platform, appMenuLabels(currentLang())),
+    windowMenuTemplate(process.platform, appMenuLabels(currentLang())),
+    {
+      role: 'help',
+      label: tm('menuHelp'),
+      submenu: [
+        { label: tm('thirdPartyNotices'), click: () => void openThirdPartyNotices() },
+        { type: 'separator' },
+        checkUpdatesMenuItem(appMenuLabels(currentLang())),
+        aboutMenuItem(appMenuLabels(currentLang())),
+      ],
     },
   ]
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
@@ -2168,16 +3853,20 @@ async function savePdfAs(): Promise<void> {
       defaultPath: tab.filePath,
       filters: [{ name: tm('filterPdf'), extensions: ['pdf'] }],
     })
-    if (picked.canceled || !picked.filePath || picked.filePath === tab.filePath) return
+    const target = pdfSaveAsTarget(picked, tab.filePath)
+    if (!target) return
     if (pdfIsDirty(tab.webContents.id)) {
       // Renderer applies its pending edits onto the source bytes; the pdf main
       // process writes the result to the picked path only
-      if (!(await requestPdfSaveAs(tab.webContents, picked.filePath))) return
+      if (!(await requestPdfSaveAs(tab.webContents, target))) return
     } else {
       // No pending edits → a byte-identical copy
-      copyFileSync(tab.filePath, picked.filePath)
+      copyFileSync(tab.filePath, target)
     }
-    openDocumentPath(picked.filePath)
+    openDocumentPath(target)
+  } catch (err) {
+    console.error('[shell] pdf save as failed:', err)
+    showErrorDialog(shellWindow, tm('errPdfSaveAsFailed'), err)
   } finally {
     savingPdfAs = false
     setPdfSaveAsInFlight(tab.webContents, false)
@@ -2249,7 +3938,7 @@ async function exportPdfAsDocxLocal(): Promise<void> {
       },
     )
     if (!result) return
-    writeFileSync(picked.filePath, result.docx)
+    await atomicWriteFile(picked.filePath, result.docx)
 
     const ocrPages = result.pageResults
       .filter((page) => page.status === 'ocr')
@@ -2315,7 +4004,7 @@ async function exportPdfAsXlsxLocal(): Promise<void> {
       },
     )
     if (!result) return
-    writeFileSync(picked.filePath, result.xlsx)
+    await atomicWriteFile(picked.filePath, result.xlsx)
     const skippedPages = result.pageResults
       .filter((page) => page.status !== 'ok')
       .map((page) => page.page)
@@ -2391,7 +4080,7 @@ function installDockMenu(): void {
 
 // ---- lifecycle (the shell is the only owner) ----
 
-let pendingLaunchPath = supportedFileIn(process.argv) ?? unsupportedFileIn(process.argv)
+let pendingLaunchPaths = collectLaunchPaths(process.argv)
 
 // show() does not un-minimize, and on macOS ⌘W destroys the shell window while the
 // app keeps running — either way a file opened from Finder would land out of sight.
@@ -2402,6 +4091,12 @@ function revealShellWindow(): void {
   shellWindow?.focus()
 }
 
+function openLaunchPaths(paths: readonly string[]): void {
+  let opened = false
+  for (const filePath of paths) opened = openDocumentPath(filePath) || opened
+  if (!opened) tabManager?.openHomeTab()
+}
+
 // On macOS a file opened from Finder is not in argv; it arrives via the open-file event (before ready).
 // If another instance already holds the lock, this process exits, and the path must ride along in
 // the lock request's additionalData to the surviving instance — so the lock request is deferred
@@ -2409,20 +4104,17 @@ function revealShellWindow(): void {
 app.on('open-file', (event, filePath) => {
   event.preventDefault()
   if (!app.isReady()) {
-    pendingLaunchPath = filePath
+    if (!pendingLaunchPaths.includes(filePath)) pendingLaunchPaths.push(filePath)
     return
   }
   revealShellWindow()
-  if (!openDocumentPath(filePath)) tabManager?.openHomeTab()
+  openLaunchPaths([filePath])
 })
 
 app.on('second-instance', (_event, argv, _cwd, additionalData) => {
-  const file =
-    supportedFileIn(argv) ??
-    unsupportedFileIn(argv) ??
-    (additionalData as { launchPath?: string } | null)?.launchPath
+  const paths = collectLaunchPaths(argv, additionalData)
   revealShellWindow()
-  if (!file || !openDocumentPath(file)) tabManager?.openHomeTab()
+  openLaunchPaths(paths)
 })
 
 installNavigationGuard(app)
@@ -2441,7 +4133,19 @@ setSessionPathResolver(resolveSheetsSessionPath)
 const devPidFile = () => join(app.getPath('userData'), 'dev-instance.pid')
 
 app.whenReady().then(async () => {
-  const lockData = () => (pendingLaunchPath ? { launchPath: pendingLaunchPath } : {})
+  // first scan waits for the windows to come up; later ones follow folder changes
+  setTimeout(() => ensureFileIndexer()?.refresh(), 4000)
+  installRendererProtocol({
+    docs: join(DOCS_OUT, 'renderer'),
+    sheets: join(SHEETS_OUT, 'renderer'),
+    pdf: join(PDF_OUT, 'renderer'),
+    markdown: join(MARKDOWN_OUT, 'renderer'),
+    html: join(HTML_OUT, 'renderer'),
+  })
+  const lockData = () =>
+    pendingLaunchPaths.length > 0
+      ? { launchPath: pendingLaunchPaths[0], launchPaths: pendingLaunchPaths }
+      : {}
   let hasLock = app.requestSingleInstanceLock(lockData())
   if (!hasLock && !app.isPackaged) {
     // Dev watch restart: electron-vite SIGTERMs the previous instance and spawns this
@@ -2484,28 +4188,6 @@ app.whenReady().then(async () => {
   // mutable lang, whose 'zh' default otherwise wins the race for whichever
   // tab loads first (e.g. sheets booting in Chinese while docs shows English).
   currentLang()
-  try {
-    const settings = readAppSettings(APP_SETTINGS_PATH())
-    const starState = readStarPrompt()
-    const stamped = withFirstRun(starState, Date.now())
-    if (stamped !== starState) writeStarPrompt(stamped)
-
-    const previousVersion =
-      typeof settings[LAST_RUN_VERSION_KEY] === 'string'
-        ? (settings[LAST_RUN_VERSION_KEY] as string)
-        : null
-    const currentVersion = app.getVersion()
-    upgradeStarPromptPending = isUpgradeLaunch(
-      previousVersion,
-      currentVersion,
-      settings.onboardingSeen === true,
-    )
-    if (previousVersion !== currentVersion) {
-      writeAppSetting(APP_SETTINGS_PATH(), LAST_RUN_VERSION_KEY, currentVersion)
-    }
-  } catch {
-    // Prompt bookkeeping must never block startup.
-  }
   // native menus/dialogs/scrollbars follow the persisted theme from first paint
   nativeTheme.themeSource = currentTheme()
   startSheetsCaptureServer()
@@ -2513,10 +4195,11 @@ app.whenReady().then(async () => {
   // deferred to ready: labels need currentLang(), which reads app.getLocale()
   installBackToHomeItems()
   installDockMenu()
+  setUpdateCheckInvoker(PRODUCT_CONFIG.updates.enabled ? () => void checkForUpdatesNow() : null)
   initAutoUpdater(() => shellWindow)
 
-  if (!pendingLaunchPath || !openDocumentPath(pendingLaunchPath)) tabManager?.openHomeTab()
-  pendingLaunchPath = null
+  openLaunchPaths(pendingLaunchPaths)
+  pendingLaunchPaths = []
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createShellWindow()

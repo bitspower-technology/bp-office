@@ -20,7 +20,17 @@ export type {
   LmStudioModel,
   LmStudioStatus,
 } from './types'
-export { AI_PROVIDERS, activeProvider, defaultAiSettings, resolveAiSettings } from './providers'
+export {
+  AI_PROVIDERS,
+  DEFAULT_MAX_OUTPUT_TOKENS,
+  MAX_MAX_OUTPUT_TOKENS,
+  MIN_MAX_OUTPUT_TOKENS,
+  activeProvider,
+  clampMaxOutputTokens,
+  defaultAiSettings,
+  maxOutputTokensOf,
+  resolveAiSettings,
+} from './providers'
 export {
   LM_STUDIO_DEFAULT_BASE_URL,
   LM_STUDIO_STATUS_TIMEOUT_MS,
@@ -39,9 +49,10 @@ export type {
   ResolvedEndpoint,
 } from './registry'
 export { chatForProvider } from './chat'
-export { setRescueFetch } from './fetch'
+export { setAiUserAgent, setRescueFetch } from './fetch'
 export { isAiNetworkError } from './network-error'
 export { isAiOverloadedError } from './overload-error'
+export { parseOutputCapRejection } from './output-cap'
 export { sseLines, streamForProvider } from './stream'
 export type { StreamCallbacks } from './stream'
 export {

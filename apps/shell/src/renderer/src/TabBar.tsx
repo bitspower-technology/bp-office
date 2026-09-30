@@ -5,6 +5,8 @@ import iconDocx from './assets/file-docx.svg'
 import iconXlsx from './assets/file-xlsx.svg'
 import iconPdf from './assets/file-pdf.svg'
 import iconMd from './assets/file-md.svg'
+import iconHtml from './assets/file-html.svg'
+import { notifyFilesChanged } from './file-events'
 import { useI18n } from './locale'
 
 declare global {
@@ -20,6 +22,8 @@ declare global {
 function BrandFileIcon({ src }: { src: string }) {
   return <img className="tab-icon-img" src={src} width={16} height={16} alt="" aria-hidden="true" />
 }
+
+const IS_MAC = navigator.platform.toLowerCase().includes('mac')
 
 function HomeIcon() {
   return (
@@ -48,12 +52,42 @@ const KIND_ICON: Record<TabSummary['kind'], ReactElement> = {
   sheets: <BrandFileIcon src={iconXlsx} />,
   pdf: <BrandFileIcon src={iconPdf} />,
   markdown: <BrandFileIcon src={iconMd} />,
+  html: <BrandFileIcon src={iconHtml} />,
 }
 
 export function TabBar() {
   const { t } = useI18n()
   const [tabs, setTabs] = useState<TabSummary[]>([])
   const stripRef = useRef<HTMLDivElement>(null)
+
+  // Double-click a file tab to rename the underlying file inline (Home's row
+  // rename, one tab over): the input prefills the base name, Enter/blur commits
+  // through the same renameFile IPC (title syncs via tabManager.renameTabFile),
+  // Escape cancels. Home tabs and untitled documents cannot be renamed.
+  const [renaming, setRenaming] = useState<{ id: string; value: string } | null>(null)
+  const renamingRef = useRef(renaming)
+  renamingRef.current = renaming
+  const tabsRef = useRef(tabs)
+  tabsRef.current = tabs
+  const commitRename = () => {
+    const r = renamingRef.current
+    renamingRef.current = null
+    setRenaming(null)
+    if (!r) return
+    const tab = tabsRef.current.find((tb) => tb.id === r.id)
+    const value = r.value.trim()
+    if (!tab?.filePath || !value) return
+    const dot = tab.filePath.lastIndexOf('.')
+    const ext = dot > -1 ? tab.filePath.slice(dot + 1) : ''
+    const newName = ext ? `${value}.${ext}` : value
+    if (newName === tab.title) return
+    void window.aiOffice.renameFile(tab.filePath, newName).then((result) => {
+      if (!result.ok) window.alert(result.error ?? t('renameFailed'))
+      // Home shares this renderer and only re-pulls on window focus, which the
+      // rename input already holds: tell it the recents / folder rows moved.
+      else notifyFilesChanged()
+    })
+  }
 
   // Chrome-style drag-to-reorder: the grabbed tab tracks the pointer 1:1 while
   // its neighbours slide aside live; the final order is committed on release.
@@ -161,6 +195,26 @@ export function TabBar() {
   return (
     <div className="tab-bar">
       <div className="tab-bar-drag-spacer" />
+      {!IS_MAC && (
+        <button
+          className="tab-app-menu-btn"
+          title={t('appMenu')}
+          aria-label={t('appMenu')}
+          onClick={(event) => {
+            const rect = event.currentTarget.getBoundingClientRect()
+            void window.aiOfficeTabs.showAppMenu(Math.round(rect.left), Math.round(rect.bottom))
+          }}
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path
+              d="M4 7h16M4 12h16M4 17h16"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+            />
+          </svg>
+        </button>
+      )}
       <div className={dragVisual ? 'tab-strip dragging' : 'tab-strip'} ref={stripRef}>
         {tabs.map((tab, index) => {
           // live transforms: the grabbed tab tracks the pointer; tabs between
@@ -179,10 +233,23 @@ export function TabBar() {
             <div
               key={tab.id}
               className={`tab-item ${tab.kind === 'home' ? 'tab-home' : ''} ${tab.active ? 'active' : ''} ${dragVisual?.id === tab.id ? 'drag-source' : ''}`}
+              // long file names ellipsize in the strip — hover reveals the
+              // full title (the close button's own tooltip still wins there)
+              title={tab.title}
               style={dragStyle}
+              onContextMenu={(event) => {
+                event.preventDefault()
+                if (tab.id === 'home') return
+                void window.aiOfficeTabs.showTabMenu(
+                  tab.id,
+                  Math.round(event.clientX),
+                  Math.round(event.clientY),
+                )
+              }}
               onPointerDown={(event) => {
                 if (event.button !== 0) return
                 if ((event.target as HTMLElement).closest('.tab-close')) return
+                if ((event.target as HTMLElement).closest('.tab-rename-input')) return
                 // Chrome-style: pressing a tab activates it immediately, so
                 // activation never depends on the click that a drag would eat
                 if (!tab.active) void window.aiOfficeTabs.activate(tab.id)
@@ -267,7 +334,46 @@ export function TabBar() {
               {/* highlight plate behind the content — hover capsule / active white body */}
               <span className="tab-plate" aria-hidden="true" />
               <span className="tab-icon">{KIND_ICON[tab.kind]}</span>
-              <span className="tab-title">{tab.title}</span>
+              {renaming?.id === tab.id ? (
+                <input
+                  className="tab-rename-input"
+                  autoFocus
+                  value={renaming.value}
+                  aria-label={t('rename')}
+                  spellCheck={false}
+                  onClick={(event) => event.stopPropagation()}
+                  onDoubleClick={(event) => event.stopPropagation()}
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onChange={(event) => setRenaming({ id: tab.id, value: event.target.value })}
+                  onKeyDown={(event) => {
+                    // Enter that confirms an IME candidate is not a commit (Home's rename does the same)
+                    if (event.nativeEvent.isComposing) return
+                    if (event.key === 'Enter') commitRename()
+                    else if (event.key === 'Escape') {
+                      renamingRef.current = null
+                      setRenaming(null)
+                    }
+                  }}
+                  onBlur={commitRename}
+                />
+              ) : (
+                <span
+                  className="tab-title"
+                  onDoubleClick={(event) => {
+                    if (tab.id === 'home' || !tab.filePath) return
+                    if ((event.target as HTMLElement).closest('.tab-close')) return
+                    const dot = tab.filePath.lastIndexOf('.')
+                    const ext = dot > -1 ? tab.filePath.slice(dot + 1) : ''
+                    const base =
+                      ext && tab.title.toLowerCase().endsWith(`.${ext.toLowerCase()}`)
+                        ? tab.title.slice(0, -(ext.length + 1))
+                        : tab.title
+                    setRenaming({ id: tab.id, value: base })
+                  }}
+                >
+                  {tab.title}
+                </span>
+              )}
               {tab.closable && (
                 <button
                   className="tab-close"
@@ -332,6 +438,7 @@ export function TabBar() {
           />
         </svg>
       </button>
+      <div className="tab-bar-caption-spacer" />
     </div>
   )
 }

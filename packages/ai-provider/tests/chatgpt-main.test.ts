@@ -121,6 +121,14 @@ afterEach(async () => {
 })
 
 describe('ChatGPT runtime resolution and lifecycle', () => {
+  it('pins the managed runtime to the same 130K context ceiling as endpoint providers', () => {
+    expect(CHATGPT_GLOBAL_CODEX_CONFIG_OVERRIDES).toContain('model_context_window=130000')
+    expect(CHATGPT_GLOBAL_CODEX_CONFIG_OVERRIDES).toContain('model_auto_compact_token_limit=115000')
+    expect(CHATGPT_RESTRICTED_THREAD_CONFIG).toMatchObject({
+      model_context_window: 130_000,
+      model_auto_compact_token_limit: 115_000,
+    })
+  })
   it('denies the complete pinned Codex tool-capability feature set', () => {
     const expected = [
       'apply_patch_freeform',
@@ -606,6 +614,70 @@ describe('ChatGPT status and models', () => {
 })
 
 describe('ChatGptProviderService streaming', () => {
+  it('rejects oversized history before starting a managed model turn', async () => {
+    const server = new FakeAppServer((message, instance) => {
+      standardHandler(message, instance)
+      if (message.method === 'thread/start')
+        instance.reply(message.id!, { thread: { id: 'large' } })
+    })
+    const client = new ChatGptAppServerClient(fixtureOptions(server))
+    clients.push(client)
+    const thread = await client.startThread({ system: 'sys', tools: [] })
+    await expect(
+      client.streamTurn(thread.threadId, [{ type: 'text', text: 'x'.repeat(520_000) }], {
+        onDelta: () => {},
+        onDynamicToolCall: async ({ call }) => ({ id: call.id, name: call.name, output: '' }),
+      }),
+    ).rejects.toThrow(/130K-token/)
+    expect(server.messages.some((message) => message.method === 'turn/start')).toBe(false)
+  })
+
+  it('withholds oversized dynamic tool results and interrupts the managed turn', async () => {
+    const replies: unknown[] = []
+    const server = new FakeAppServer((message, instance) => {
+      standardHandler(message, instance)
+      if (message.method === 'thread/start') {
+        instance.reply(message.id!, { thread: { id: 'large-tool' } })
+      } else if (message.method === 'turn/start') {
+        instance.reply(message.id!, { turn: { id: 't', status: 'inProgress' } })
+        queueMicrotask(() =>
+          instance.request('large-rpc', 'item/tool/call', {
+            threadId: 'large-tool',
+            turnId: 't',
+            callId: 'call',
+            namespace: null,
+            tool: 'read_text',
+            arguments: {},
+          }),
+        )
+      } else if (message.id === 'large-rpc' && message.result) {
+        replies.push(message.result)
+      } else if (message.method === 'turn/interrupt') {
+        instance.reply(message.id!, {})
+      }
+    })
+    const client = new ChatGptAppServerClient(fixtureOptions(server))
+    clients.push(client)
+    const thread = await client.startThread({
+      system: 'sys',
+      tools: [{ name: 'read_text', description: 'Read', inputSchema: { type: 'object' } }],
+    })
+    await expect(
+      client.streamTurn(thread.threadId, [{ type: 'text', text: 'read' }], {
+        onDelta: () => {},
+        onDynamicToolCall: async ({ call }) => ({
+          id: call.id,
+          name: call.name,
+          output: 'x'.repeat(520_000),
+        }),
+      }),
+    ).rejects.toThrow(/130K-token/)
+    expect(replies).toHaveLength(1)
+    expect(JSON.stringify(replies)).toContain('130K-token')
+    expect(JSON.stringify(replies).length).toBeLessThan(1000)
+    expect(server.messages.some((message) => message.method === 'turn/interrupt')).toBe(true)
+  })
+
   it('uses a hardened ephemeral thread and completes mid-turn dynamic tools', async () => {
     let threadParams: Record<string, unknown> | undefined
     let turnParams: Record<string, unknown> | undefined

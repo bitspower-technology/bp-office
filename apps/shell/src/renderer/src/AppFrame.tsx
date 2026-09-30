@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react'
 import { installFileDropOpen } from '@genoffice/ui'
 import { Home } from './Home'
 import { Onboarding } from './Onboarding'
-import { StarPromptCard } from './StarPromptCard'
 import { TabBar } from './TabBar'
 import { useI18n } from './locale'
 
@@ -16,7 +15,6 @@ export function AppFrame({ initialOnboardingSeen }: AppFrameProps) {
   const [homeActive, setHomeActive] = useState(true)
   const [showOnboarding, setShowOnboarding] = useState(!initialOnboardingSeen)
   const [fileDragActive, setFileDragActive] = useState(false)
-  const [starPromptDocOpens, setStarPromptDocOpens] = useState<number | null>(null)
 
   useEffect(() => {
     const applyTabs = (tabs: Awaited<ReturnType<typeof window.aiOfficeTabs.list>>) => {
@@ -35,17 +33,6 @@ export function AppFrame({ initialOnboardingSeen }: AppFrameProps) {
     [],
   )
 
-  useEffect(() => {
-    if (showOnboarding) return
-    let alive = true
-    void window.aiOffice.starPromptShouldShow().then((result) => {
-      if (alive && result.show) setStarPromptDocOpens(result.docOpens)
-    })
-    return () => {
-      alive = false
-    }
-  }, [showOnboarding])
-
   const finishOnboarding = () => {
     setShowOnboarding(false)
     void window.aiOffice.setOnboardingSeen().catch(() => {})
@@ -62,9 +49,6 @@ export function AppFrame({ initialOnboardingSeen }: AppFrameProps) {
       {/* editor WebContentsViews paint above ALL shell DOM, so the overlay only
        * renders while the home tab is active — it comes back when home does */}
       {showOnboarding && homeActive && <Onboarding onDone={finishOnboarding} />}
-      {starPromptDocOpens !== null && !showOnboarding && homeActive && (
-        <StarPromptCard docOpens={starPromptDocOpens} onClose={() => setStarPromptDocOpens(null)} />
-      )}
       {fileDragActive && (
         <div className="file-drop-overlay" data-testid="file-drop-overlay" aria-hidden="true">
           <div className="file-drop-card">{t('dropFilesToOpen')}</div>

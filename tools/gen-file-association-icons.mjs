@@ -33,6 +33,7 @@ const TYPES = {
   xlsx: 'file-xlsx.svg',
   pdf: 'file-pdf.svg',
   md: 'file-md.svg',
+  html: 'file-html.svg',
 }
 
 // macOS icons carry the standard app-icon grid margin (824/1024 content, same

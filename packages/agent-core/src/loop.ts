@@ -4,6 +4,7 @@ import type {
   AgentMessage,
   AgentStreamHandle,
   AgentToolCall,
+  AgentToolDef,
   AgentToolResult,
   AgentTransport,
   ToolExecution,
@@ -43,7 +44,7 @@ export interface AgentLoopEvents<TSnapshot> {
 
 /** Context compaction config (budget tracked in UTF-8 bytes rather than message count) */
 export interface CompactionOptions {
-  /** History size that triggers compaction (default 1 MiB, roughly 256K tokens) */
+  /** History size that triggers compaction (default 520,000 bytes, roughly 130K tokens) */
   maxBytes?: number
   /** Recent history kept after compaction (default 384 KiB, cut at a user boundary) */
   keepRecentBytes?: number
@@ -72,9 +73,12 @@ export interface AgentLoopOptions<TSnapshot = unknown> {
 /** Tool-call round budget used by the shipped document editors. */
 export const EDITOR_AGENT_MAX_TURNS = 200
 
-// Approximate 256K model tokens at four UTF-8 bytes per token while retaining
-// roughly the newest 96K tokens verbatim after compaction.
-const COMPACT_MAX_BYTES = 1024 * 1024
+/** Application-authorized context ceiling, estimated at four UTF-8 bytes per token. */
+export const EDITOR_AGENT_MAX_CONTEXT_TOKENS = 130_000
+export const EDITOR_AGENT_MAX_CONTEXT_BYTES = EDITOR_AGENT_MAX_CONTEXT_TOKENS * 4
+
+// Keep roughly the newest 96K tokens verbatim when the 130K budget is reached.
+const COMPACT_MAX_BYTES = EDITOR_AGENT_MAX_CONTEXT_BYTES
 const COMPACT_KEEP_RECENT_BYTES = 384 * 1024
 /** Pre-truncation of each tool output in the summary request (the compaction request itself must not blow up on huge outputs) */
 const SUMMARIZE_TOOL_OUTPUT_MAX = 2_000
@@ -84,10 +88,28 @@ const STALE_TOOL_KEEP_RECENT = 2
 const STALE_TOOL_OUTPUT_MAX = 1_000
 
 /** Unified turn budget across the suite's chat panels (apps may still override per loop) */
-export const DEFAULT_MAX_TURNS = 100
+export const DEFAULT_MAX_TURNS = EDITOR_AGENT_MAX_TURNS
 
-/** Cap on consecutive tool-input parse failures (a successful parse resets it); abort beyond it (keeps the model from burning turns on bad JSON) */
+/** Cap on consecutive turns whose tool input was all unusable (a turn that executes a call resets it); abort beyond it (keeps the model from burning turns on bad JSON) */
 const MAX_INPUT_PARSE_RETRIES = 3
+
+/**
+ * Required fields the model left out of a tool call, per the tool's JSON
+ * Schema. Providers turn an empty argument stream into `{}` without an
+ * inputError (the model wrote prose instead of arguments, or a gateway dropped
+ * the argument stream), so without this check the empty object reaches the
+ * skill and fails with a tool-specific message instead of a targeted retry.
+ */
+export function missingRequiredFields(
+  tool: AgentToolDef | undefined,
+  input: Record<string, unknown>,
+): string[] {
+  const required = tool?.inputSchema.required
+  if (!Array.isArray(required)) return []
+  return required.filter(
+    (field): field is string => typeof field === 'string' && input[field] === undefined,
+  )
+}
 
 /**
  * Degenerate-loop guards. Weak models (BYOK/local endpoints especially) can
@@ -106,6 +128,13 @@ const MAX_ALL_ERROR_TURNS = 8
  * retrying here keeps one gateway hiccup from killing a long multi-tool run.
  */
 const EMPTY_STREAM_RETRY_DELAYS_MS = [1_000, 3_000]
+/**
+ * A stream that closed while a tool's arguments were still streaming (buffered
+ * server-side, cut by a gateway idle timeout) never delivered a tool call, so
+ * history is untouched and one replay is safe; it is billed, hence one attempt.
+ */
+const TOOL_ARGS_DROP_MARK = 'while sending tool arguments'
+const TOOL_ARGS_DROP_RETRIES = 1
 
 const TURN_LIMIT_NOTE =
   '[System] The tool-call turn limit for this request has been reached; no more tools may be called this turn. ' +
@@ -114,6 +143,36 @@ const TURN_LIMIT_NOTE =
 const DYNAMIC_TOOL_LIMIT_RESULT =
   'The tool-call limit for this request has been reached; this tool was not executed. ' +
   'Do not call any more tools. Answer directly from the information already gathered; if the task is unfinished, briefly state what is done and what remains.'
+export const TOOL_ABORTED_OUTPUT =
+  '(the user stopped the run while this tool was still executing; its result was discarded)'
+
+const TOOL_ABORTED = Symbol('tool-aborted')
+
+async function awaitToolOrAbort(
+  tool: ToolExecution | Promise<ToolExecution>,
+  signal: AbortSignal | undefined,
+): Promise<ToolExecution | typeof TOOL_ABORTED> {
+  if (!signal) return tool
+  if (signal.aborted) return TOOL_ABORTED
+  const running = Promise.resolve(tool)
+  return new Promise<ToolExecution | typeof TOOL_ABORTED>((resolve, reject) => {
+    const onAbort = (): void => {
+      resolve(TOOL_ABORTED)
+      running.catch(() => undefined)
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+    running.then(
+      (execution) => {
+        signal.removeEventListener('abort', onAbort)
+        resolve(execution)
+      },
+      (error: unknown) => {
+        signal.removeEventListener('abort', onAbort)
+        reject(error)
+      },
+    )
+  })
+}
 
 /**
  * Terminal assistant text when tools mutated the artifact (or an edits-only
@@ -123,6 +182,18 @@ const DYNAMIC_TOOL_LIMIT_RESULT =
  * Exported so apps can substitute a localized / tool-derived summary in the UI.
  */
 export const COMPLETED_VIA_TOOLS_TEXT = '(completed tool actions; no text reply)'
+
+/**
+ * Models default to their training-cutoff year without this (e.g. web searches
+ * for "... 2024"). Leads the system prompt and spells out the year: measured
+ * against claude-opus-4-7 with the docs prompt, the date alone (front or tail)
+ * still produced cutoff-year searches in 6/6 runs; naming the year fixed all.
+ */
+export function runtimePreamble(now = new Date()): string {
+  const pad = (n: number) => String(n).padStart(2, '0')
+  const date = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
+  return `Today's date is ${date}; the current year is ${now.getFullYear()}.\n\n`
+}
 
 const SUMMARIZE_SYSTEM =
   'You are a conversation compressor. Compress this editing session between the user and the AI assistant into a concise summary so later turns can continue with context. ' +
@@ -137,11 +208,13 @@ const COMPACT_SUMMARY_ACK = 'Understood, continuing from the progress so far.'
 
 function contextBudgetError(totalBytes: number, maxBytes: number): string {
   const limit =
-    maxBytes % (1024 * 1024) === 0
-      ? `${maxBytes / (1024 * 1024)} MiB`
-      : maxBytes % 1024 === 0
-        ? `${maxBytes / 1024} KiB`
-        : `${maxBytes} bytes`
+    maxBytes === EDITOR_AGENT_MAX_CONTEXT_BYTES
+      ? '130K-token (estimated)'
+      : maxBytes % (1024 * 1024) === 0
+        ? `${maxBytes / (1024 * 1024)} MiB`
+        : maxBytes % 1024 === 0
+          ? `${maxBytes / 1024} KiB`
+          : `${maxBytes} bytes`
   return (
     `This AI request is too large for the ${limit} context budget ` +
     `(${totalBytes} estimated bytes), even after compacting earlier history. ` +
@@ -395,7 +468,7 @@ export class AgentLoop<TSnapshot = unknown> {
   private compactBudget(): { maxBytes: number; keepRecentBytes: number } {
     const opt = this.options.compaction === false ? undefined : this.options.compaction
     return {
-      maxBytes: opt?.maxBytes ?? COMPACT_MAX_BYTES,
+      maxBytes: Math.min(opt?.maxBytes ?? COMPACT_MAX_BYTES, EDITOR_AGENT_MAX_CONTEXT_BYTES),
       keepRecentBytes: opt?.keepRecentBytes ?? COMPACT_KEEP_RECENT_BYTES,
     }
   }
@@ -468,19 +541,28 @@ export class AgentLoop<TSnapshot = unknown> {
       if (m.role === 'user' && m.images?.length) return { role: 'user' as const, text: m.text }
       return m
     })
+    // Summarization is a model request too. Oversized history must use the local
+    // mechanical digest instead of exceeding the authorized budget to compact it.
+    if (historySize(slim) + utf8Size(SUMMARIZE_SYSTEM) + 128 > EDITOR_AGENT_MAX_CONTEXT_BYTES) {
+      return Promise.resolve(null)
+    }
     return new Promise((resolve) => {
       let text = ''
       let settled = false
+      let handle: AgentStreamHandle | null = null
       const finish = (v: string | null) => {
         if (settled) return
         settled = true
         clearTimeout(timer)
         resolve(v)
       }
-      const timer = setTimeout(() => finish(null), SUMMARIZE_TIMEOUT_MS)
+      const timer = setTimeout(() => {
+        finish(null)
+        handle?.cancel()
+      }, SUMMARIZE_TIMEOUT_MS)
       try {
         // Attach to this.handle so cancel() can abort the summary request when the user clicks stop
-        this.handle = this.options.transport.stream(
+        handle = this.options.transport.stream(
           {
             system: SUMMARIZE_SYSTEM,
             messages: [
@@ -491,6 +573,7 @@ export class AgentLoop<TSnapshot = unknown> {
           },
           {
             onDelta: (t) => {
+              if (settled) return
               text += t
             },
             onToolCall: () => {
@@ -500,6 +583,7 @@ export class AgentLoop<TSnapshot = unknown> {
             onError: () => finish(null),
           },
         )
+        this.handle = handle
       } catch {
         finish(null)
       }
@@ -581,13 +665,28 @@ export class AgentLoop<TSnapshot = unknown> {
     this.turnReasoning = ''
     this.toolCalls = []
     this.turnStopReason = null
+    const system =
+      runtimePreamble() + this.options.skill.systemPrompt + (this.options.systemSuffix?.() ?? '')
+    const tools = this.finalizing ? [] : this.options.skill.tools
+    const estimatedBytes =
+      historySize(this.history) + utf8Size(system) + utf8Size(JSON.stringify(tools))
+    // This safety ceiling is separate from configurable compaction thresholds:
+    // no override (including compaction:false) may authorize a larger request.
+    if (estimatedBytes > EDITOR_AGENT_MAX_CONTEXT_BYTES) {
+      this.running = false
+      this.rollbackFailedRun()
+      this.options.events?.onError?.(
+        contextBudgetError(estimatedBytes, EDITOR_AGENT_MAX_CONTEXT_BYTES),
+      )
+      return
+    }
     // Some transports emit an extra onDone after cancel — this turn may finalize only once
     let settled = false
     this.handle = this.options.transport.stream(
       {
-        system: this.options.skill.systemPrompt + (this.options.systemSuffix?.() ?? ''),
+        system,
         messages: [...this.history],
-        tools: this.finalizing ? [] : this.options.skill.tools,
+        tools,
       },
       {
         onDelta: (text) => {
@@ -634,17 +733,22 @@ export class AgentLoop<TSnapshot = unknown> {
         onError: (error) => {
           if (generation !== this.generation || settled) return
           settled = true
-          const delay = EMPTY_STREAM_RETRY_DELAYS_MS[retriesUsed]
-          // The no-partial-output guard keeps the retry idempotent (an empty
-          // stream never emits deltas, but a mislabeled error must not replay
-          // a turn whose text/tool calls the UI already saw)
-          if (
-            delay !== undefined &&
+          // The no-partial-output guard keeps the empty-stream retry idempotent (an
+          // empty stream never emits deltas, but a mislabeled error must not replay
+          // a turn whose text/tool calls the UI already saw). A dropped tool-argument
+          // stream may have shown text first; that text is simply re-rendered.
+          const emptyDelay = EMPTY_STREAM_RETRY_DELAYS_MS[retriesUsed]
+          const retryEmpty =
+            emptyDelay !== undefined &&
             error.includes('(empty stream)') &&
-            !this.cancelled &&
             !this.turnText &&
             this.toolCalls.length === 0
-          ) {
+          const retryDrop =
+            retriesUsed < TOOL_ARGS_DROP_RETRIES &&
+            error.includes(TOOL_ARGS_DROP_MARK) &&
+            this.toolCalls.length === 0
+          const delay = retryEmpty ? emptyDelay : EMPTY_STREAM_RETRY_DELAYS_MS[0]
+          if ((retryEmpty || retryDrop) && !this.cancelled) {
             setTimeout(() => {
               if (generation !== this.generation) return
               // Stopped during the backoff window: finalize like a normal cancel
@@ -728,6 +832,8 @@ export class AgentLoop<TSnapshot = unknown> {
     this.dynamicToolExecutions++
     const outcome = await this.executeOneTool(call, generation)
     if (!outcome.active || turnSerial !== this.turnSerial) return outcome.result
+    if (outcome.unusable) this.inputParseFails++
+    else if (outcome.executed) this.inputParseFails = 0
     this.recordDynamicTool(call, outcome.result)
     return outcome.result
   }
@@ -744,7 +850,13 @@ export class AgentLoop<TSnapshot = unknown> {
   private async executeOneTool(
     call: AgentToolCall,
     generation: number,
-  ): Promise<{ result: AgentToolResult; active: boolean; mutated: boolean }> {
+  ): Promise<{
+    result: AgentToolResult
+    active: boolean
+    mutated: boolean
+    unusable?: boolean
+    executed?: boolean
+  }> {
     const { events, skill, captureSnapshot } = this.options
     if (this.cancelled) {
       return {
@@ -759,26 +871,41 @@ export class AgentLoop<TSnapshot = unknown> {
       }
     }
 
-    if (call.truncated || call.inputError) {
-      this.inputParseFails++
+    const missing =
+      call.truncated || call.inputError
+        ? []
+        : missingRequiredFields(
+            skill.tools.find((tool) => tool.name === call.name),
+            call.input,
+          )
+    if (call.truncated || call.inputError || missing.length > 0) {
       const output = call.truncated
         ? 'Tool arguments were cut off by the output length limit; the tool was not executed. Split this operation into several smaller tool calls (less content per call) and try again.'
-        : `Tool input JSON failed to parse; the tool was not executed: ${call.inputError}\nFix the arguments (make sure quotes inside strings are escaped) and call again.`
+        : call.inputError
+          ? `Tool input JSON failed to parse; the tool was not executed: ${call.inputError}\nFix the arguments (make sure quotes inside strings are escaped) and call again.`
+          : `Tool call ${call.name} is missing the required argument(s) ${missing.map((field) => `"${field}"`).join(', ')}; the tool was not executed. Put the arguments in the tool call itself (not in your reply text) and call again with every required field.`
       const execution: ToolExecution = { output, isError: true, summary: call.name }
       events?.onToolExecuted?.({ call, execution })
       return {
         active: true,
         mutated: false,
+        unusable: true,
         result: { id: call.id, name: call.name, output, isError: true },
       }
     }
 
-    this.inputParseFails = 0
     events?.onToolStart?.(call)
     const snapshot = !this.mutationSeen ? captureSnapshot?.() : undefined
     let execution: ToolExecution
     try {
-      execution = await skill.executeTool(call, this.abortController?.signal)
+      const raced = await awaitToolOrAbort(
+        skill.executeTool(call, this.abortController?.signal),
+        this.abortController?.signal,
+      )
+      execution =
+        raced === TOOL_ABORTED
+          ? { output: TOOL_ABORTED_OUTPUT, isError: true, summary: call.name }
+          : raced
     } catch (error) {
       execution = {
         output: error instanceof Error ? error.message : String(error),
@@ -809,6 +936,7 @@ export class AgentLoop<TSnapshot = unknown> {
     return {
       active: true,
       mutated: !!execution.mutated,
+      executed: true,
       result: {
         id: call.id,
         name: call.name,
@@ -910,20 +1038,33 @@ export class AgentLoop<TSnapshot = unknown> {
     this.history.push({
       role: 'assistant',
       text: this.turnText,
-      toolCalls: toolCalls.map(({ id, name, input }) => ({ id, name, input })),
+      toolCalls: toolCalls.map(({ id, name, input, signature }) => ({
+        id,
+        name,
+        input,
+        ...(signature ? { signature } : {}),
+      })),
       // interleaved-thinking models degrade in tool loops unless their reasoning is echoed back
       ...(this.turnReasoning ? { reasoning: this.turnReasoning } : {}),
     })
     const generation = this.generation
     const results: AgentToolResult[] = []
     let turnMutated = false
+    // unusable-input streak is counted per turn: a batch of empty calls in one
+    // turn is one failed attempt, and any executed call in the turn resets it
+    let unusableInTurn = false
+    let executedInTurn = false
     for (const call of toolCalls) {
       const outcome = await this.executeOneTool(call, generation)
       if (!outcome.active) return
       results.push(outcome.result)
       if (outcome.mutated) turnMutated = true
+      if (outcome.unusable) unusableInTurn = true
+      if (outcome.executed) executedInTurn = true
     }
     this.history.push({ role: 'tool', results })
+    if (executedInTurn) this.inputParseFails = 0
+    else if (unusableInTurn) this.inputParseFails++
 
     // Cancelled while tools were executing: finish immediately, no further model request
     if (this.cancelled) {
@@ -938,7 +1079,7 @@ export class AgentLoop<TSnapshot = unknown> {
       this.running = false
       this.rollbackFailedRun()
       events?.onError?.(
-        `Tool input was unusable (unparseable or truncated) ${MAX_INPUT_PARSE_RETRIES} times in a row; retries stopped, please send the request again`,
+        `Tool input was unusable (unparseable, truncated or missing required arguments) ${MAX_INPUT_PARSE_RETRIES} times in a row; retries stopped, please send the request again`,
       )
       return
     }
@@ -1005,14 +1146,28 @@ export class AgentLoop<TSnapshot = unknown> {
 export function sanitizeAgentPayload(payload: string): string {
   return (
     payload
+      .replace(
+        /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
+        '[REDACTED_PRIVATE_KEY]',
+      )
+      // Truncated paste: header plus base64 body lines, no END marker.
+      .replace(
+        /-----BEGIN [A-Z ]*PRIVATE KEY-----(?:\r?\n[A-Za-z0-9+/=]+(?=\r?\n|$))*/g,
+        '[REDACTED_PRIVATE_KEY]',
+      )
       .replace(/\b(?:sk-|AIza|ghp_|secret_)[A-Za-z0-9_-]{16,}/g, '[REDACTED_API_KEY]')
-      // The leading boundary prevents a long ordinary word from being retried at
-      // every character while the engine looks for "://" (quadratic on large
-      // editor contexts). URI schemes start at a word boundary in valid input.
+      .replace(/\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g, '[REDACTED_API_KEY]')
+      .replace(/\bxox[abeoprs]-[A-Za-z0-9-]{10,}/g, '[REDACTED_API_KEY]')
       .replace(/\b([a-z][a-z0-9+.-]*:\/\/[^\s:@/]+):[^\s@/]+@/gi, '$1:[REDACTED_CREDENTIALS]@')
       .replace(
         /(password|passwd|secret_key|private_key)(\s*[:=]\s*)["'][^"']+["']/gi,
         '$1$2"[REDACTED_SECURE_TOKEN]"',
+      )
+      // Unquoted `password=abc123`: the value must be 6+ chars with a non-letter,
+      // so "password: is in the vault" prose stays untouched.
+      .replace(
+        /\b(?<!\/)(\w*(?:password|passwd|secret_key|private_key))(\s*[:=]\s*)(?=[^\s"',;]*[^A-Za-z\s"',;])[^\s"',;]{6,}/gi,
+        '$1$2[REDACTED_SECURE_TOKEN]',
       )
   )
 }

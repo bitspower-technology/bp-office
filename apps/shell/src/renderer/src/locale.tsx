@@ -4,12 +4,14 @@ import { createI18n, htmlLang, type Lang, type Params } from '@genoffice/i18n'
 import { aiProviderStrings } from './ai-provider-strings'
 import { strings as homeStrings } from './strings'
 import { CHATGPT_SUBSCRIPTION_ENABLED } from '../../shared/product-config'
+import { homeInterfaceStrings } from './home-interface-strings'
 
-function productStrings<H extends Record<string, string>, P extends Record<string, string>>(
-  home: H,
-  provider: P,
-): H & P {
-  const combined = { ...home, ...provider } as H & P
+function productStrings<
+  H extends Record<string, string>,
+  P extends Record<string, string>,
+  I extends Record<string, string>,
+>(home: H, provider: P, ui: I) {
+  const combined = { ...homeStrings.en, ...home, ...provider, ...ui }
   if (!CHATGPT_SUBSCRIPTION_ENABLED) {
     Object.assign(combined, {
       onbLocalAi: home.onbLocalAi,
@@ -20,25 +22,30 @@ function productStrings<H extends Record<string, string>, P extends Record<strin
 }
 
 const strings = {
-  zh: productStrings(homeStrings.zh, aiProviderStrings.zh),
-  en: productStrings(homeStrings.en, aiProviderStrings.en),
-  ja: productStrings(homeStrings.ja, aiProviderStrings.ja),
-  ko: productStrings(homeStrings.ko, aiProviderStrings.ko),
-  fr: productStrings(homeStrings.fr, aiProviderStrings.fr),
-  de: productStrings(homeStrings.de, aiProviderStrings.de),
-  es: productStrings(homeStrings.es, aiProviderStrings.es),
-  th: productStrings(homeStrings.th, aiProviderStrings.th),
-  id: productStrings(homeStrings.id, aiProviderStrings.id),
-  ru: productStrings(homeStrings.ru, aiProviderStrings.ru),
-  ar: productStrings(homeStrings.ar, aiProviderStrings.ar),
-  pt: productStrings(homeStrings.pt, aiProviderStrings.pt),
-  it: productStrings(homeStrings.it, aiProviderStrings.it),
-  pl: productStrings(homeStrings.pl, aiProviderStrings.pl),
-  nl: productStrings(homeStrings.nl, aiProviderStrings.nl),
-  ms: productStrings(homeStrings.ms, aiProviderStrings.ms),
-  he: productStrings(homeStrings.he, aiProviderStrings.he),
-  hi: productStrings(homeStrings.hi, aiProviderStrings.hi),
-  'zh-TW': productStrings(homeStrings['zh-TW'], aiProviderStrings['zh-TW']),
+  zh: productStrings(homeStrings['zh'], aiProviderStrings['zh'], homeInterfaceStrings['zh']),
+  en: productStrings(homeStrings['en'], aiProviderStrings['en'], homeInterfaceStrings['en']),
+  ja: productStrings(homeStrings['ja'], aiProviderStrings['ja'], homeInterfaceStrings['ja']),
+  ko: productStrings(homeStrings['ko'], aiProviderStrings['ko'], homeInterfaceStrings['ko']),
+  fr: productStrings(homeStrings['fr'], aiProviderStrings['fr'], homeInterfaceStrings['fr']),
+  de: productStrings(homeStrings['de'], aiProviderStrings['de'], homeInterfaceStrings['de']),
+  es: productStrings(homeStrings['es'], aiProviderStrings['es'], homeInterfaceStrings['es']),
+  th: productStrings(homeStrings['th'], aiProviderStrings['th'], homeInterfaceStrings['th']),
+  id: productStrings(homeStrings['id'], aiProviderStrings['id'], homeInterfaceStrings['id']),
+  ru: productStrings(homeStrings['ru'], aiProviderStrings['ru'], homeInterfaceStrings['ru']),
+  ar: productStrings(homeStrings['ar'], aiProviderStrings['ar'], homeInterfaceStrings['ar']),
+  pt: productStrings(homeStrings['pt'], aiProviderStrings['pt'], homeInterfaceStrings['pt']),
+  it: productStrings(homeStrings['it'], aiProviderStrings['it'], homeInterfaceStrings['it']),
+  pl: productStrings(homeStrings['pl'], aiProviderStrings['pl'], homeInterfaceStrings['pl']),
+  nl: productStrings(homeStrings['nl'], aiProviderStrings['nl'], homeInterfaceStrings['nl']),
+  ms: productStrings(homeStrings['ms'], aiProviderStrings['ms'], homeInterfaceStrings['ms']),
+  he: productStrings(homeStrings['he'], aiProviderStrings['he'], homeInterfaceStrings['he']),
+  hi: productStrings(homeStrings['hi'], aiProviderStrings['hi'], homeInterfaceStrings['hi']),
+  'zh-TW': productStrings(
+    homeStrings['zh-TW'],
+    aiProviderStrings['zh-TW'],
+    homeInterfaceStrings['zh-TW'],
+  ),
+  cs: productStrings(homeStrings['cs'], aiProviderStrings['cs'], homeInterfaceStrings['cs']),
 } as const
 
 const translate = createI18n(strings)
@@ -93,6 +100,7 @@ const DATE_LOCALES: Record<Lang, string> = {
   pt: 'pt-BR',
   it: 'it-IT',
   pl: 'pl-PL',
+  cs: 'cs-CZ',
   nl: 'nl-NL',
   ms: 'ms-MY',
   he: 'he-IL',

@@ -28,8 +28,9 @@ manually.
 
 An updater feed must be anonymously readable. Never put a GitHub token, personal access
 token, or other repository credential in `branding/product.json`, an environment
-override, the application source, or a packaged executable. If this repository were ever
-made private, release assets would have to move to a separate public update repository
+override, the application source, or a packaged executable. The release workflow requires
+the configured feed repository to be this same public repository; if this repository were
+ever made private, release assets would have to move to a separate public update repository
 before the next updater-enabled build.
 
 Versioning starts at `1.0.0-bp.1` with the first BP Office release; there is no legacy

@@ -14,7 +14,7 @@
  */
 
 const { execFileSync } = require('node:child_process')
-const { existsSync, rmSync, statSync } = require('node:fs')
+const { existsSync, readFileSync, rmSync, statSync } = require('node:fs')
 const { dirname, join } = require('node:path')
 const productConfig = require('../../branding/product.json')
 
@@ -115,7 +115,7 @@ function resolveCodexBinary() {
     packageJson = require.resolve(`${packageName}/package.json`)
   } catch {
     throw new Error(
-      `Official ChatGPT runtime package ${packageName} is missing (run pnpm install on the packaging host)`,
+      `Official ChatGPT runtime package ${packageName} is missing (run npm ci on the packaging host)`,
     )
   }
   const expectedVersion = require('./package.json').devDependencies['@openai/codex']
@@ -162,15 +162,17 @@ const windowsSidecar =
 // script was replaced by the lazy `install-electron` bin), and electron-builder
 // exits 0 on a missing extraResources source, so without this check the
 // installer would silently ship without the Chromium license.
-for (const rel of [
-  '../../node_modules/electron/dist/LICENSES.chromium.html',
-  '../../node_modules/@embedpdf/pdfium/dist/pdfium.wasm',
-  '../pdf/node_modules/harfbuzzjs/hb-subset.wasm',
-]) {
-  if (!existsSync(join(__dirname, rel))) {
-    throw new Error(
-      `electron-builder extraResources source missing: ${rel} (npm hoisting changed?)`,
-    )
+function assertExtraResourceSources() {
+  for (const rel of [
+    '../../node_modules/electron/dist/LICENSES.chromium.html',
+    '../../node_modules/@embedpdf/pdfium/dist/pdfium.wasm',
+    '../pdf/node_modules/harfbuzzjs/hb-subset.wasm',
+  ]) {
+    if (!existsSync(join(__dirname, rel))) {
+      throw new Error(
+        `electron-builder extraResources source missing: ${rel} (npm hoisting changed?)`,
+      )
+    }
   }
 }
 
@@ -206,23 +208,22 @@ function compileVisionOcr({ universalOnly } = { universalOnly: false }) {
   }
 }
 
-if (process.platform === 'darwin' && !existsSync(join(__dirname, VISION_OCR_HELPER))) {
-  compileVisionOcr()
-}
-
-// Windows local-OCR helper (Windows.Media.Ocr): compiled by the in-box .NET
-// Framework csc via build-win.mjs — same on-demand policy as the mac helper,
-// and Windows installers must not silently ship without it.
 const WIN_OCR_HELPER = '../../packages/pdf2docx/ocr-helper/win-ocr.exe'
-if (process.platform === 'win32' && !existsSync(join(__dirname, WIN_OCR_HELPER))) {
-  try {
-    execFileSync(
-      process.execPath,
-      [join(__dirname, '../../packages/pdf2docx/ocr-helper/build-win.mjs')],
-      { stdio: 'inherit' },
-    )
-  } catch (err) {
-    throw new Error(`win-ocr helper compile failed: ${err}`, { cause: err })
+
+function ensurePlatformHelpers() {
+  if (process.platform === 'darwin' && !existsSync(join(__dirname, VISION_OCR_HELPER))) {
+    compileVisionOcr()
+  }
+  if (process.platform === 'win32' && !existsSync(join(__dirname, WIN_OCR_HELPER))) {
+    try {
+      execFileSync(
+        process.execPath,
+        [join(__dirname, '../../packages/pdf2docx/ocr-helper/build-win.mjs')],
+        { stdio: 'inherit' },
+      )
+    } catch (err) {
+      throw new Error(`win-ocr helper compile failed: ${err}`, { cause: err })
+    }
   }
 }
 
@@ -285,7 +286,13 @@ function assertUniversalSidecar() {
 }
 
 function assertModuleTreesPresent() {
-  for (const rel of ['../docs/out', '../sheets/out', '../pdf/out', '../markdown/out']) {
+  for (const rel of [
+    '../docs/out',
+    '../sheets/out',
+    '../pdf/out',
+    '../markdown/out',
+    '../html/out',
+  ]) {
     if (!existsSync(join(__dirname, rel))) {
       throw new Error(
         `electron-builder extraResources source missing: ${rel} (run npm run build:all first)`,
@@ -298,7 +305,7 @@ function assertWindowsSidecar() {
   const sidecar = join(__dirname, windowsSidecar)
   if (!existsSync(sidecar)) {
     throw new Error(
-      `win extraResources source missing: ${sidecar} (run "pnpm --filter @genoffice/sheets native:build" first)`,
+      `win extraResources source missing: ${sidecar} (run "npm run native:build -w @genoffice/sheets" first)`,
     )
   }
 }
@@ -314,6 +321,21 @@ function assertCodexRuntimeMatches(context) {
   }
 }
 
+function ensureThirdPartyNotices() {
+  const notice = join(__dirname, 'build/THIRD-PARTY-NOTICES.txt')
+  const valid = () =>
+    existsSync(notice) &&
+    ['@embedpdf/pdfium', 'Copyright 2014 PDFium Authors', 'Apache License'].every((term) =>
+      readFileSync(notice, 'utf8').includes(term),
+    )
+  if (!valid()) {
+    execFileSync(process.execPath, [join(__dirname, '../../tools/gen-third-party-notices.mjs')], {
+      stdio: 'inherit',
+    })
+  }
+  if (!valid()) throw new Error('Third-party notice missing PDFium redistribution terms.')
+}
+
 /** @type {import('electron-builder').Configuration} */
 const config = {
   appId: productConfig.appId,
@@ -323,7 +345,7 @@ const config = {
   // the old runtime).
   electronVersion: require('electron/package.json').version,
   directories: {
-    output: 'release',
+    output: process.env.BUILD_DIR || 'release',
   },
   files: ['out/**'],
   extraResources: [
@@ -364,6 +386,10 @@ const config = {
     {
       from: '../markdown/out',
       to: 'modules/markdown',
+    },
+    {
+      from: '../html/out',
+      to: 'modules/html',
     },
     // Official Codex native runtime is packaged only for editions that expose
     // managed ChatGPT subscription authentication.
@@ -419,6 +445,7 @@ const config = {
     {
       ext: 'docx',
       name: 'Word Document',
+      description: 'Word Document',
       role: 'Editor',
       icon: 'docx',
       mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -426,6 +453,7 @@ const config = {
     {
       ext: 'xlsx',
       name: 'Excel Workbook',
+      description: 'Excel Workbook',
       role: 'Editor',
       icon: 'xlsx',
       mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -452,6 +480,14 @@ const config = {
       mimeType: 'text/csv',
     },
     {
+      // opens as a converted copy and saves as .xlsx (genoffice#1146)
+      ext: 'tsv',
+      name: 'TSV Document',
+      role: 'Editor',
+      icon: 'xlsx',
+      mimeType: 'text/tab-separated-values',
+    },
+    {
       ext: 'pdf',
       name: 'PDF Document',
       role: 'Editor',
@@ -471,6 +507,20 @@ const config = {
       role: 'Editor',
       icon: 'md',
       mimeType: 'text/markdown',
+    },
+    {
+      ext: 'html',
+      name: 'HTML Document',
+      role: 'Editor',
+      icon: 'html',
+      mimeType: 'text/html',
+    },
+    {
+      ext: 'htm',
+      name: 'HTML Document',
+      role: 'Editor',
+      icon: 'html',
+      mimeType: 'text/html',
     },
   ],
   npmRebuild: false,
@@ -517,6 +567,11 @@ const config = {
         from: windowsSidecar,
         to: 'native/xlsx-sidecar.exe',
       },
+      {
+        from: 'build/shell-new',
+        to: 'shell-new',
+        filter: ['*.docx', '*.xlsx'],
+      },
     ],
   },
   // Unlike win (which cross-compiles the sidecar to an explicit target
@@ -529,6 +584,7 @@ const config = {
     // BP Office is an independent distribution: package names, executable name and
     // desktop id all derive from product.json so nothing collides with the upstream
     // NiuOffice/GenOffice packages a machine may already have installed.
+    artifactName: `${productConfig.artifactSlug}-\${version}-\${arch}.\${ext}`,
     target: [
       { target: 'AppImage', arch: ['x64'] },
       { target: 'deb', arch: ['x64'] },
@@ -605,6 +661,9 @@ const config = {
     artifactName: `${productConfig.artifactSlug}-Portable-\${version}.\${ext}`,
   },
   beforePack: async (context) => {
+    ensurePlatformHelpers()
+    assertExtraResourceSources()
+    ensureThirdPartyNotices()
     assertModuleTreesPresent()
     if (chatGptEnabled) assertCodexRuntimeMatches(context)
     if (context.electronPlatformName === 'win32') assertWindowsSidecar()

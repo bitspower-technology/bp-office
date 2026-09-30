@@ -124,6 +124,32 @@ for (const relativePath of [
   )
 }
 
+// HTML, PDF, and Markdown use the shell-wide Docs AI handlers. Keep HTML on
+// that audited route instead of silently introducing a second provider proxy.
+const htmlIpcPath = join(ROOT, 'apps/html/src/shared/ipc.ts')
+const htmlPreloadPath = join(ROOT, 'apps/html/src/preload/index.ts')
+const htmlMainPath = join(ROOT, 'apps/html/src/main/html-main.ts')
+const htmlIpc = readFileSync(htmlIpcPath, 'utf8')
+const htmlPreload = readFileSync(htmlPreloadPath, 'utf8')
+const htmlMain = readFileSync(htmlMainPath, 'utf8')
+for (const [key, channel] of [
+  ['getSettings', 'ai:get-settings'],
+  ['stream', 'ai:stream'],
+  ['toolResult', 'ai:tool-result'],
+]) {
+  requireCondition(
+    new RegExp(`${key}: ['"]${channel}['"]`).test(htmlIpc) &&
+      htmlPreload.includes(`ipcRenderer.invoke(AI_CHANNELS.${key}`),
+    `${repoPath(htmlPreloadPath)}: ${key} must route through the shared constrained ${channel} IPC`,
+  )
+}
+requireCondition(
+  !/\b(?:chatForProvider|streamForProvider|getSharedChatGptProviderService)\s*\(|ipcMain\.handle\(\s*['"]ai:/.test(
+    htmlMain,
+  ),
+  `${repoPath(htmlMainPath)}: an independent AI proxy requires an explicit OEM provider gate`,
+)
+
 const shellMainPath = join(ROOT, 'apps/shell/src/main/index.ts')
 const shellMain = existsSync(shellMainPath) ? readFileSync(shellMainPath, 'utf8') : ''
 requireCondition(
@@ -216,6 +242,15 @@ if (existsSync(releaseWorkflowPath)) {
     /\+refs\/heads\/main:refs\/remotes\/origin\/main/.test(releaseWorkflow) &&
       /\$tagCommit -cne \$mainCommit/.test(releaseWorkflow),
     `${repoPath(releaseWorkflowPath)}: release tag must be verified against origin/main`,
+  )
+}
+
+const packageWorkflowPath = join(ROOT, '.github/workflows/build-packages.yml')
+if (existsSync(packageWorkflowPath)) {
+  const packageWorkflow = readFileSync(packageWorkflowPath, 'utf8').replace(/\s+/g, '')
+  requireCondition(
+    packageWorkflow.includes("if(p.edition!=='main'||!p.features.chatgptSubscription)throw"),
+    `${repoPath(packageWorkflowPath)}: package artifacts must be refused for the source-only OEM edition`,
   )
 }
 

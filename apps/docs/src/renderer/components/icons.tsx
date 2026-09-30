@@ -319,6 +319,44 @@ export function IconPaste(props: IconProps) {
   )
 }
 
+const PASTE_BOARD = (
+  <>
+    <path d="M 5.43 12.11 H 3.93 C 3.23 12.11 2.67 11.54 2.67 10.84 V 4.53 C 2.67 3.83 3.23 3.26 3.93 3.26 H 4.88 M 11.51 5.16 V 4.53 C 11.51 3.83 10.94 3.26 10.25 3.26 H 9.3" />
+    <rect x="5.19" y="2" width="3.79" height="1.89" rx="0.63" />
+    <path d="M 12.14 5.16 H 6.46 C 5.76 5.16 5.19 5.72 5.19 6.42 V 12.74 C 5.19 13.43 5.76 14 6.46 14 H 12.14 C 12.84 14 13.4 13.43 13.4 12.74 V 6.42 C 13.4 5.72 12.84 5.16 12.14 5.16 Z" />
+  </>
+)
+
+/** Keep Source Formatting: clipboard with a paintbrush */
+export function IconPasteSource(props: IconProps) {
+  return (
+    <Svg {...props}>
+      {PASTE_BOARD}
+      <path d="M 11.6 6.9 L 8.6 9.9 M 8.6 9.9 C 7.6 9.9 7.1 10.6 7.1 11.7 C 7.9 11.9 9 11.6 9.2 10.5" />
+    </Svg>
+  )
+}
+
+/** Merge Formatting: clipboard with two arrows joining */
+export function IconPasteMerge(props: IconProps) {
+  return (
+    <Svg {...props}>
+      {PASTE_BOARD}
+      <path d="M 7 7.2 L 9.3 9.5 L 7 11.8 M 11.6 7.2 L 9.3 9.5 L 11.6 11.8" />
+    </Svg>
+  )
+}
+
+/** Keep Text Only: clipboard with a plain A */
+export function IconPasteText(props: IconProps) {
+  return (
+    <Svg {...props}>
+      {PASTE_BOARD}
+      <path d="M 7.2 12 L 9.3 7 L 11.4 12 M 7.9 10.4 H 10.7" />
+    </Svg>
+  )
+}
+
 export function IconCut(props: IconProps) {
   return (
     <Svg {...props}>
@@ -458,6 +496,15 @@ export function IconShapes(props: IconProps) {
   )
 }
 
+export function IconSearch(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <circle cx="6.9" cy="6.9" r="4.2" />
+      <path d="M 10 10 13.4 13.4" />
+    </Svg>
+  )
+}
+
 export function IconLink(props: IconProps) {
   return (
     <Svg {...props}>
@@ -473,6 +520,24 @@ export function IconComment(props: IconProps) {
     <Svg {...props}>
       <path d="M 2.99 3.91 h 10.01 v 6.83 h -5.46 L 4.81 13.46 v -2.73 h -1.82 z" />
       <path d="M 5.27 6.18 h 5.46 M 5.27 8.46 h 3.64" />
+    </Svg>
+  )
+}
+
+export function IconCommentPrev(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M 2.99 3.91 h 10.01 v 6.83 h -5.46 L 4.81 13.46 v -2.73 h -1.82 z" />
+      <path d="M 9 5.5 L 7 7.33 L 9 9.15" />
+    </Svg>
+  )
+}
+
+export function IconCommentNext(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M 2.99 3.91 h 10.01 v 6.83 h -5.46 L 4.81 13.46 v -2.73 h -1.82 z" />
+      <path d="M 7 5.5 L 9 7.33 L 7 9.15" />
     </Svg>
   )
 }
@@ -769,6 +834,75 @@ export function IconBorderNone(props: IconProps) {
         strokeDasharray="1.5 1.7"
         opacity="0.55"
       />
+    </Svg>
+  )
+}
+
+function IconBorderDashedFrame() {
+  return (
+    <rect
+      x="3.02"
+      y="3.02"
+      width="9.96"
+      height="9.96"
+      rx="0.42"
+      strokeWidth="1"
+      strokeDasharray="1.5 1.7"
+      opacity="0.55"
+    />
+  )
+}
+
+export function IconBorderTop(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <IconBorderDashedFrame />
+      <path d="M 3.02 3.02 h 9.96" />
+    </Svg>
+  )
+}
+
+export function IconBorderBottom(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <IconBorderDashedFrame />
+      <path d="M 3.02 12.98 h 9.96" />
+    </Svg>
+  )
+}
+
+export function IconBorderLeft(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <IconBorderDashedFrame />
+      <path d="M 3.02 3.02 v 9.96" />
+    </Svg>
+  )
+}
+
+export function IconBorderRight(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <IconBorderDashedFrame />
+      <path d="M 12.98 3.02 v 9.96" />
+    </Svg>
+  )
+}
+
+export function IconBorderInsideH(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <IconBorderDashedFrame />
+      <path d="M 3.02 8 h 9.96" />
+    </Svg>
+  )
+}
+
+export function IconBorderInsideV(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <IconBorderDashedFrame />
+      <path d="M 8 3.02 v 9.96" />
     </Svg>
   )
 }
@@ -1143,6 +1277,14 @@ function Magnifier({ children }: { children?: ReactNode }) {
       <path d="M 10.21 10.21 13.1 13.1" strokeWidth="1" />
       {children}
     </>
+  )
+}
+
+export function IconZoom(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <Magnifier />
+    </Svg>
   )
 }
 
@@ -1545,6 +1687,15 @@ export function IconWordArt(props: IconProps) {
   )
 }
 
+export function IconPencil(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M10.9 2.9a1.1 1.1 0 0 1 1.56 0l.64.64a1.1 1.1 0 0 1 0 1.56L6.2 12l-3.1.9.9-3.1 6.9-6.9Z" />
+      <path d="M9.6 4.2l2.2 2.2" />
+    </Svg>
+  )
+}
+
 export function IconTrash(props: IconProps) {
   return (
     <Svg {...props}>
@@ -1647,10 +1798,42 @@ export function IconCheckboxChecked(props: IconProps) {
   )
 }
 
+/** Word's Styles Pane glyph: a pane with an "A" beside a list */
+export function IconStylesPane(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <rect x="2" y="2.5" width="12" height="11" rx="1" />
+      <path d="M 4 10.6 5.9 5.6 7.8 10.6 M 4.7 9 7.1 9" />
+      <path d="M 9.6 6 12.2 6 M 9.6 8.2 12.2 8.2 M 9.6 10.4 12.2 10.4" />
+    </Svg>
+  )
+}
+
 export function IconClose(props: IconProps) {
   return (
     <Svg {...props}>
       <path d="M3.5 3.5l9 9M12.5 3.5l-9 9" />
+    </Svg>
+  )
+}
+export function IconReplace(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M 2.5 6 2.5 3.5 7 3.5" />
+      <path d="M 5.3 1.9 7 3.5 5.3 5.1" />
+      <path d="M 13.5 10 13.5 12.5 9 12.5" />
+      <path d="M 10.7 14.1 9 12.5 10.7 10.9" />
+      <rect x="8.5" y="2" width="5" height="5" rx="0.8" />
+      <rect x="2.5" y="9" width="5" height="5" rx="0.8" />
+    </Svg>
+  )
+}
+
+export function IconSelectAll(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <rect x="2.5" y="2.5" width="11" height="11" rx="1" strokeDasharray="2 1.4" />
+      <path d="M 5 8.2 7 10.2 11 6.2" />
     </Svg>
   )
 }

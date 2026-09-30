@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { AgentToolCall } from '@genoffice/agent-core'
+import type { AgentMessage, AgentToolCall } from '@genoffice/agent-core'
+import {
+  MAX_RESPONSE_BODY_BYTES,
+  jsonBodyInsteadOfSse,
+  parseToolInput,
+} from '../src/protocols/shared'
 import { sseLines, streamForProvider } from '../src/stream'
 import { jsonResponse, okResponse, sseStream } from './test-utils'
 
@@ -24,6 +29,37 @@ function collector() {
   }
 }
 
+function streamingToolArguments(
+  fragmentLength: number,
+  maxFragments: number,
+  makeLine: (fragment: string) => string,
+  firstLines: string[] = [],
+) {
+  let fragments = 0
+  const encoder = new TextEncoder()
+  const enqueue = (controller: ReadableStreamDefaultController<Uint8Array>) => {
+    if (fragments >= maxFragments) return
+    const fragment = 'x'.repeat(fragmentLength)
+    controller.enqueue(encoder.encode(`${makeLine(fragment)}\n`))
+    fragments += 1
+  }
+  return {
+    body: new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const line of firstLines) controller.enqueue(encoder.encode(line))
+        enqueue(controller)
+      },
+      pull(controller) {
+        while ((controller.desiredSize ?? 0) > 0 && fragments < maxFragments) enqueue(controller)
+        if (fragments >= maxFragments) controller.close()
+      },
+    }),
+    get fragments() {
+      return fragments
+    },
+  }
+}
+
 describe('sseLines', () => {
   it('splits a stream into lines, including a trailing line with no newline', async () => {
     const encoder = new TextEncoder()
@@ -40,9 +76,54 @@ describe('sseLines', () => {
   })
 })
 
+describe('non-SSE response body cap', () => {
+  it.each([
+    ['anthropic', { apiKey: 'k', model: 'm' }],
+    ['gemini', { apiKey: 'k', model: 'm' }],
+    ['openai', { apiKey: 'k', model: 'm' }],
+  ] as const)('caps oversized JSON for %s', async (provider, config) => {
+    let cancelled = false
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(MAX_RESPONSE_BODY_BYTES + 1))
+      },
+      cancel() {
+        cancelled = true
+      },
+    })
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValue(new Response(body, { headers: { 'content-type': 'application/json' } })),
+    )
+    const { cb } = collector()
+    await expect(streamForProvider(provider, config, 'sys', [], [], 100, cb)).rejects.toThrow(
+      /Response body exceeded/,
+    )
+    expect(cancelled).toBe(true)
+  })
+})
+
 describe('streamForProvider: temperature policy', () => {
   const okTurn = () =>
     okResponse(sseStream(['data: {"choices":[{"delta":{"content":"hi"},"finish_reason":"stop"}]}']))
+
+  it('deepseek: sends the listed V4.1 Flash name under the vendor wire id', async () => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(okTurn()))
+    vi.stubGlobal('fetch', fetchMock)
+    await streamForProvider(
+      'deepseek',
+      { apiKey: 'k', model: 'deep-seek-v4.1-flash' },
+      'sys',
+      [],
+      [],
+      100,
+      collector().cb,
+    )
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body as string)
+    expect(body.model).toBe('deepseek-flash')
+  })
 
   it('omits temperature for fixed-sampling endpoints (Kimi) and keeps 0.3 elsewhere', async () => {
     const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(okTurn()))
@@ -108,7 +189,7 @@ describe('streamForProvider: temperature policy', () => {
 describe('streamForProvider: empty SSE streams surface as errors', () => {
   // A 200 SSE stream with zero text and zero tool calls previously dissolved
   // into an empty "successful" turn; the UI then showed a generic "no content"
-  // message with no diagnostics (alpha rows 36/37)
+  // message with no diagnostics
   it.each([
     ['anthropic', 'claude-sonnet-5', /Claude returned no content/],
     ['gemini', 'gemini-2.5-flash', /Gemini returned no content/],
@@ -163,6 +244,7 @@ describe('streamForProvider: empty SSE streams surface as errors', () => {
       'data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"t1","name":"do_thing"}}',
       'data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{}"}}',
       'data: {"type":"content_block_stop","index":0}',
+      'data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}',
     ])
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(okResponse(body)))
     const { toolCalls, cb } = collector()
@@ -179,6 +261,53 @@ describe('streamForProvider: empty SSE streams surface as errors', () => {
   })
 })
 
+describe('streamForProvider: terminal framing', () => {
+  it.each([
+    [
+      'anthropic',
+      'claude-sonnet-5',
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"partial"}}',
+      /Claude stream ended before a stop_reason/,
+    ],
+    [
+      'gemini',
+      'gemini-2.5-flash',
+      'data: {"candidates":[{"content":{"parts":[{"text":"partial"}]}}]}',
+      /Gemini stream ended before a finishReason/,
+    ],
+    [
+      'openai',
+      'gpt-4.1-mini',
+      'data: {"choices":[{"delta":{"content":"partial"}}]}',
+      /model stream ended before a finish_reason or \[DONE\] marker/,
+    ],
+  ] as const)(
+    '%s rejects partial text without terminal framing',
+    async (provider, model, line, error) => {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(okResponse(sseStream([line]))))
+      await expect(
+        streamForProvider(provider, { apiKey: 'k', model }, 'sys', [], [], 100, collector().cb),
+      ).rejects.toThrow(error)
+    },
+  )
+
+  it('treats reasoning-only output as emitted when checking terminal framing', async () => {
+    const body = sseStream(['data: {"choices":[{"delta":{"reasoning_content":"thinking"}}]}'])
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(okResponse(body)))
+    await expect(
+      streamForProvider(
+        'openai',
+        { apiKey: 'k', model: 'gpt-4.1-mini' },
+        'sys',
+        [],
+        [],
+        100,
+        collector().cb,
+      ),
+    ).rejects.toThrow(/model stream ended before a finish_reason or \[DONE\] marker/)
+  })
+})
+
 describe('streamForProvider: anthropic', () => {
   it('emits text deltas and a completed tool call', async () => {
     const body = sseStream([
@@ -188,6 +317,7 @@ describe('streamForProvider: anthropic', () => {
       'data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"1}"}}',
       'data: {"type":"content_block_stop","index":1}',
       'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"world"}}',
+      'data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}',
     ])
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(okResponse(body)))
     const { deltas, toolCalls, cb } = collector()
@@ -204,6 +334,69 @@ describe('streamForProvider: anthropic', () => {
     expect(toolCalls).toEqual([{ id: 't1', name: 'do_thing', input: { a: 1 } }])
   })
 
+  it('aborts when streamed tool arguments exceed the per-tool buffer limit', async () => {
+    const { body, fragments } = streamingToolArguments(
+      1024,
+      10_000,
+      (fragment) =>
+        `data: ${JSON.stringify({
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'input_json_delta', partial_json: fragment },
+        })}`,
+      [
+        `data: ${JSON.stringify({
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'tool_use', id: 't1', name: 'do_thing' },
+        })}\n`,
+      ],
+    )
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(okResponse(body)))
+    const onDelta = vi.fn()
+    const onToolCall = vi.fn()
+    const { cb } = collector()
+    const run = streamForProvider(
+      'anthropic',
+      { apiKey: 'k', model: 'claude-sonnet-5' },
+      'sys',
+      [],
+      [],
+      100,
+      { ...cb, onDelta, onToolCall },
+    )
+
+    await expect(run).rejects.toThrow(/Tool call arguments exceeded the .* buffer limit/)
+    expect(fragments).toBeLessThan(10_000)
+    expect(onDelta).not.toHaveBeenCalled()
+    expect(onToolCall).not.toHaveBeenCalled()
+  })
+
+  it('aborts when a turn starts more tool calls than the count cap', async () => {
+    const starts = Array.from(
+      { length: 150 },
+      (_, i) =>
+        `data: ${JSON.stringify({
+          type: 'content_block_start',
+          index: i,
+          content_block: { type: 'tool_use', id: `t${i}`, name: 'do_thing' },
+        })}`,
+    )
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(okResponse(sseStream(starts))))
+    const { cb } = collector()
+    await expect(
+      streamForProvider(
+        'anthropic',
+        { apiKey: 'k', model: 'claude-sonnet-5' },
+        'sys',
+        [],
+        [],
+        100,
+        cb,
+      ),
+    ).rejects.toThrow(/Too many streamed tool calls/)
+  })
+
   it('repairs unescaped quotes inside tool input string values', async () => {
     const partial = JSON.stringify({
       type: 'content_block_delta',
@@ -214,6 +407,7 @@ describe('streamForProvider: anthropic', () => {
       'data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"t1","name":"gen"}}',
       `data: ${partial}`,
       'data: {"type":"content_block_stop","index":1}',
+      'data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}',
     ])
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(okResponse(body)))
     const { toolCalls, cb } = collector()
@@ -234,6 +428,7 @@ describe('streamForProvider: anthropic', () => {
       `data: ${partial}`,
       'data: {"type":"content_block_stop","index":1}',
       'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"after"}}',
+      'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}',
     ])
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(okResponse(body)))
     const { deltas, toolCalls, cb } = collector()
@@ -413,7 +608,7 @@ describe('streamForProvider: anthropic', () => {
     const { cb } = collector()
     await expect(
       streamForProvider('anthropic', { apiKey: 'k', model: 'm' }, 'sys', [], [], 100, cb),
-    ).rejects.toThrow(/Claude HTTP 403: .*web page instead of an API response/)
+    ).rejects.toThrow(/Claude HTTP 403: .*web page.*instead of an API response/)
   })
 })
 
@@ -421,7 +616,7 @@ describe('streamForProvider: gemini', () => {
   it('emits text and a whole (non-partial) function call', async () => {
     const body = sseStream([
       'data: {"candidates":[{"content":{"parts":[{"text":"hi there"}]}}]}',
-      'data: {"candidates":[{"content":{"parts":[{"functionCall":{"name":"set_cell","args":{"a1":"42"}}}]}}]}',
+      'data: {"candidates":[{"content":{"parts":[{"functionCall":{"name":"set_cell","args":{"a1":"42"}}}]},"finishReason":"STOP"}]}',
     ])
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(okResponse(body)))
     const { deltas, toolCalls, cb } = collector()
@@ -437,6 +632,128 @@ describe('streamForProvider: gemini', () => {
     expect(deltas.join('')).toBe('hi there')
     expect(toolCalls).toHaveLength(1)
     expect(toolCalls[0]).toMatchObject({ name: 'set_cell', input: { a1: '42' } })
+  })
+
+  it('flags array functionCall args as inputError (genoffice#1106)', async () => {
+    const body = sseStream([
+      'data: {"candidates":[{"content":{"parts":[{"functionCall":{"name":"set_cell","args":[1,2]}}]},"finishReason":"STOP"}]}',
+    ])
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(okResponse(body)))
+    const { toolCalls, cb } = collector()
+    await streamForProvider(
+      'gemini',
+      { apiKey: 'k', model: 'gemini-2.5-flash' },
+      'sys',
+      [],
+      [],
+      100,
+      cb,
+    )
+    expect(toolCalls).toHaveLength(1)
+    expect(toolCalls[0]!.input).toEqual({})
+    expect(toolCalls[0]!.inputError).toMatch(/must be a JSON object/)
+  })
+
+  it('captures the thoughtSignature issued with a function call (SSE and JSON body)', async () => {
+    const part = '{"functionCall":{"name":"write_document","args":{}},"thoughtSignature":"c2ln"}'
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValue(
+          okResponse(
+            sseStream([
+              `data: {"candidates":[{"content":{"parts":[${part}]},"finishReason":"STOP"}]}`,
+            ]),
+          ),
+        ),
+    )
+    const sse = collector()
+    await streamForProvider('gemini', { apiKey: 'k', model: 'm' }, 'sys', [], [], 100, sse.cb)
+    expect(sse.toolCalls[0]).toMatchObject({ name: 'write_document', signature: 'c2ln' })
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        jsonResponse({
+          candidates: [
+            {
+              content: {
+                parts: [{ functionCall: { name: 'f', args: {} }, thought_signature: 'c25ha2U=' }],
+              },
+              finishReason: 'STOP',
+            },
+          ],
+        }),
+      ),
+    )
+    const json = collector()
+    await streamForProvider('gemini', { apiKey: 'k', model: 'm' }, 'sys', [], [], 100, json.cb)
+    expect(json.toolCalls[0]).toMatchObject({ name: 'f', signature: 'c25ha2U=' })
+  })
+
+  it('echoes signatures back on history function calls; an unsigned first call gets the bypass sentinel', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        okResponse(
+          sseStream([
+            'data: {"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}]}',
+          ]),
+        ),
+      )
+    vi.stubGlobal('fetch', fetchMock)
+    const history: AgentMessage[] = [
+      { role: 'user', text: 'go' },
+      {
+        role: 'assistant',
+        text: '',
+        toolCalls: [
+          { id: 'a', name: 'signed', input: {}, signature: 'c2ln' },
+          { id: 'b', name: 'parallel', input: {} },
+        ],
+      },
+      {
+        role: 'tool',
+        results: [
+          { id: 'a', name: 'signed', output: '1' },
+          { id: 'b', name: 'parallel', output: '2' },
+        ],
+      },
+      { role: 'assistant', text: '', toolCalls: [{ id: 'c', name: 'legacy', input: {} }] },
+      { role: 'tool', results: [{ id: 'c', name: 'legacy', output: '3' }] },
+    ]
+    const { cb } = collector()
+    await streamForProvider('gemini', { apiKey: 'k', model: 'm' }, 'sys', history, [], 100, cb)
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body as string)
+    expect(body.contents[1].parts).toEqual([
+      { functionCall: { name: 'signed', args: {} }, thoughtSignature: 'c2ln' },
+      { functionCall: { name: 'parallel', args: {} } },
+    ])
+    expect(body.contents[3].parts).toEqual([
+      {
+        functionCall: { name: 'legacy', args: {} },
+        thoughtSignature: 'skip_thought_signature_validator',
+      },
+    ])
+  })
+
+  it('aborts when a turn starts more tool calls than the count cap', async () => {
+    const calls = Array.from(
+      { length: 101 },
+      (_, index) =>
+        `data: ${JSON.stringify({
+          candidates: [
+            { content: { parts: [{ functionCall: { name: 'do_thing', args: { index } } }] } },
+          ],
+        })}`,
+    )
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(okResponse(sseStream(calls))))
+    const { toolCalls, cb } = collector()
+    await expect(
+      streamForProvider('gemini', { apiKey: 'k', model: 'm' }, 'sys', [], [], 100, cb),
+    ).rejects.toThrow(/Too many streamed tool calls/)
+    expect(toolCalls).toHaveLength(100)
   })
 
   it('throws when the prompt is blocked instead of finishing an empty turn', async () => {
@@ -548,6 +865,82 @@ describe('streamForProvider: openai-compatible', () => {
     )
     expect(deltas.join('')).toBe('partial ')
     expect(toolCalls).toEqual([{ id: 'c1', name: 'replace', input: { x: 1 } }])
+  })
+
+  it('turns non-object tool arguments into inputError instead of executing them (genoffice#1106)', async () => {
+    const body = sseStream([
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"replace","arguments":"null"}}]}}]}',
+      'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}',
+      'data: [DONE]',
+    ])
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(okResponse(body)))
+    const { toolCalls, cb } = collector()
+    await streamForProvider(
+      'openai',
+      { apiKey: 'k', model: 'gpt-4.1-mini' },
+      'sys',
+      [],
+      [],
+      100,
+      cb,
+    )
+    expect(toolCalls).toHaveLength(1)
+    expect(toolCalls[0]!.input).toEqual({})
+    expect(toolCalls[0]!.inputError).toMatch(/must be a JSON object/)
+  })
+
+  it('aborts when streamed tool arguments exceed the per-tool buffer limit', async () => {
+    const { body, fragments } = streamingToolArguments(
+      1024,
+      10_000,
+      (fragment) =>
+        `data: ${JSON.stringify({
+          choices: [
+            {
+              delta: {
+                tool_calls: [
+                  { index: 0, id: 'c1', function: { name: 'do_thing', arguments: fragment } },
+                ],
+              },
+            },
+          ],
+        })}`,
+    )
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(okResponse(body)))
+    const onDelta = vi.fn()
+    const onToolCall = vi.fn()
+    const { cb } = collector()
+    const run = streamForProvider(
+      'openai',
+      { apiKey: 'k', model: 'gpt-4.1-mini' },
+      'sys',
+      [],
+      [],
+      100,
+      { ...cb, onDelta, onToolCall },
+    )
+
+    await expect(run).rejects.toThrow(/Tool call arguments exceeded the .* buffer limit/)
+    expect(fragments).toBeLessThan(10_000)
+    expect(onDelta).not.toHaveBeenCalled()
+    expect(onToolCall).not.toHaveBeenCalled()
+  })
+
+  it('aborts when a turn starts more tool calls than the count cap', async () => {
+    const starts = Array.from(
+      { length: 150 },
+      (_, i) =>
+        `data: ${JSON.stringify({
+          choices: [
+            { delta: { tool_calls: [{ index: i, id: `c${i}`, function: { name: 'do_thing' } }] } },
+          ],
+        })}`,
+    )
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(okResponse(sseStream(starts))))
+    const { cb } = collector()
+    await expect(
+      streamForProvider('openai', { apiKey: 'k', model: 'gpt-4.1-mini' }, 'sys', [], [], 100, cb),
+    ).rejects.toThrow(/Too many streamed tool calls/)
   })
 
   it('tolerates servers that resend the full tool name on every delta', async () => {
@@ -803,6 +1196,24 @@ describe('streamForProvider: openai-compatible', () => {
     ).rejects.toThrow(/Base URL/)
     expect(fetchMock).not.toHaveBeenCalled()
   })
+
+  it('rejects keyless custom endpoints before making an unidentified request', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(okResponse(sseStream(['data: [DONE]'])))
+    vi.stubGlobal('fetch', fetchMock)
+    const { cb } = collector()
+    await expect(
+      streamForProvider(
+        'custom',
+        { apiKey: '', model: 'llama3', baseUrl: 'http://localhost:11434/v1' },
+        'sys',
+        [],
+        [],
+        100,
+        cb,
+      ),
+    ).rejects.toThrow(/requires an API key/)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
 })
 
 describe('streamForProvider: lmstudio', () => {
@@ -886,6 +1297,52 @@ describe('streamForProvider: lmstudio', () => {
       model: 'auto-tool-model',
     })
   })
+
+  it('opencode: sends the renderer session id as x-opencode-session on every route', async () => {
+    for (const [provider, model] of [
+      ['opencode-go', 'kimi-k2.7-code'],
+      ['opencode-go', 'minimax-m3'],
+      ['opencode-zen', 'claude-sonnet-5'],
+      ['opencode-zen', 'gemini-3.7-flash'],
+    ] as const) {
+      const fetchMock = vi.fn().mockResolvedValue(okResponse(sseStream([])))
+      vi.stubGlobal('fetch', fetchMock)
+      const { cb } = collector()
+      await streamForProvider(provider, { apiKey: 'k', model }, 'sys', [], [], 100, {
+        ...cb,
+        sessionId: 'tab-42',
+      }).catch(() => {})
+      const headers = fetchMock.mock.calls[0]![1].headers as Record<string, string>
+      expect(headers['x-opencode-session']).toBe('tab-42')
+    }
+  })
+
+  it('opencode: a turn without a renderer session id still carries a session header', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(okResponse(sseStream([])))
+    vi.stubGlobal('fetch', fetchMock)
+    await streamForProvider(
+      'opencode-go',
+      { apiKey: 'k', model: 'kimi-k2.7-code' },
+      'sys',
+      [],
+      [],
+      100,
+      collector().cb,
+    ).catch(() => {})
+    const headers = fetchMock.mock.calls[0]![1].headers as Record<string, string>
+    expect(headers['x-opencode-session']).toMatch(/^[0-9a-f-]{36}$/)
+  })
+
+  it('never sends x-opencode-session to other gateways', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(okResponse(sseStream([])))
+    vi.stubGlobal('fetch', fetchMock)
+    await streamForProvider('kimi', { apiKey: 'k', model: 'kimi-k3' }, 'sys', [], [], 100, {
+      ...collector().cb,
+      sessionId: 'tab-42',
+    }).catch(() => {})
+    const headers = fetchMock.mock.calls[0]![1].headers as Record<string, string>
+    expect(headers['x-opencode-session']).toBeUndefined()
+  })
 })
 
 describe('streamForProvider: complete JSON instead of SSE', () => {
@@ -938,6 +1395,7 @@ describe('streamForProvider: complete JSON instead of SSE', () => {
   it('a missing Content-Type is still treated as a stream', async () => {
     const body = sseStream([
       'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}',
+      'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}',
     ])
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(okResponse(body)))
     const { deltas, cb } = collector()
@@ -1021,5 +1479,105 @@ describe('streamForProvider: interleaved-thinking reasoning', () => {
     const body = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string)
     const assistant = body.messages.find((m: { role: string }) => m.role === 'assistant')
     expect('reasoning_content' in assistant).toBe(false)
+  })
+})
+
+describe('streamForProvider: a connection dropped mid tool arguments is not an empty stream', () => {
+  // Tool arguments are buffered upstream; the Genspark gateway closes the SSE
+  // after ~125s of that silence. The turn was billed and in progress, so it
+  // must not match the "(empty stream)" contract that agent-core replays.
+  it('anthropic: open tool_use block with no stop_reason rejects as a dropped connection', async () => {
+    const body = sseStream([
+      'data: {"type":"message_start","message":{}}',
+      'data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"t1","name":"write_html"}}',
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":""}}',
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"html\\":\\"<!doc"}}',
+    ])
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(okResponse(body)))
+    const { cb, toolCalls } = collector()
+    const run = streamForProvider(
+      'anthropic',
+      { apiKey: 'k', model: 'claude-sonnet-5' },
+      'sys',
+      [],
+      [],
+      100,
+      cb,
+    )
+    await expect(run).rejects.toThrow(/connection was dropped/)
+    await expect(run).rejects.not.toThrow(/empty stream/)
+    expect(toolCalls).toEqual([])
+  })
+
+  it('openai-compatible: half-received tool arguments with no finish reject as a dropped connection', async () => {
+    const body = sseStream([
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"write_html","arguments":"{\\"html\\":"}}]}}]}',
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\"<!doctype"}}]}}]}',
+    ])
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(okResponse(body)))
+    const { cb, toolCalls } = collector()
+    const run = streamForProvider(
+      'openai',
+      { apiKey: 'k', model: 'gpt-4.1-mini' },
+      'sys',
+      [],
+      [],
+      100,
+      cb,
+    )
+    await expect(run).rejects.toThrow(/connection was dropped/)
+    await expect(run).rejects.not.toThrow(/empty stream/)
+    expect(toolCalls).toEqual([])
+  })
+
+  it('openai-compatible: complete arguments with [DONE] still flush as a tool call', async () => {
+    const body = sseStream([
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"ping","arguments":"{\\"a\\":1}"}}]}}]}',
+      'data: [DONE]',
+    ])
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(okResponse(body)))
+    const { cb, toolCalls } = collector()
+    await streamForProvider(
+      'openai',
+      { apiKey: 'k', model: 'gpt-4.1-mini' },
+      'sys',
+      [],
+      [],
+      100,
+      cb,
+    )
+    expect(toolCalls.map((c) => [c.name, c.input])).toEqual([['ping', { a: 1 }]])
+  })
+})
+
+describe('jsonBodyInsteadOfSse', () => {
+  it('detects JSON bodies regardless of Content-Type casing', async () => {
+    const payload = JSON.stringify({ choices: [] })
+    for (const contentType of [
+      'application/json',
+      'Application/JSON',
+      'APPLICATION/JSON; charset=utf-8',
+      'Application/Json; charset=utf-8',
+    ]) {
+      const res = new Response(payload, { status: 200, headers: { 'content-type': contentType } })
+      await expect(jsonBodyInsteadOfSse(res)).resolves.toBe(payload)
+    }
+    const sse = new Response('data: hi\n', {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' },
+    })
+    await expect(jsonBodyInsteadOfSse(sse)).resolves.toBeNull()
+  })
+})
+
+describe('parseToolInput', () => {
+  it('rejects non-object JSON through the inputError channel (genoffice#1106)', () => {
+    for (const raw of ['null', '[]', '42', '"x"', 'true']) {
+      const r = parseToolInput(raw)
+      expect(r.input).toEqual({})
+      expect(r.error).toMatch(/must be a JSON object/)
+    }
+    expect(parseToolInput('{"a":1}')).toEqual({ input: { a: 1 } })
+    expect(parseToolInput('')).toEqual({ input: {} })
   })
 })

@@ -4,8 +4,8 @@
 
 BP Office is a free, open-source desktop office suite from Bitspower Technology
 with local-first editing and optional AI assistance. It works with Word
-(`.docx`), Excel (`.xlsx`, `.xlsm`, `.xls`, `.csv`), PDF, and Markdown files and
-keeps those editors together in one tabbed application.
+(`.docx`), Excel (`.xlsx`, `.xlsm`, `.xls`, `.csv`, `.tsv`), PDF, Markdown, and HTML
+files and keeps those editors together in one tabbed application.
 
 > **Distributor build:** BP Office is the endpoint-only OEM edition. It exposes
 > OpenAI Endpoint only, never packages the ChatGPT subscription runtime, ships no
@@ -32,11 +32,13 @@ keeps those editors together in one tabbed application.
 - Fully local PDF-to-Word and PDF-to-Excel conversion. PDF-to-PowerPoint is not
   included.
 - Plain Markdown editing with local Markdown-to-Word export.
+- HTML source editing, live preview, and local export.
 - Explorer drag-and-drop opens compatible files in new tabs and reuses an
   existing tab when the file is already open.
 - Light, dark, and system themes.
 - No Slides editor, Genspark account/cloud integration, network AI Search, or
-  usage telemetry.
+  usage telemetry. External MCP, command-line automation, and headless servers
+  are not included.
 
 ## Branches and releases
 
@@ -79,8 +81,8 @@ The status row in the bottom-left corner reports whether OpenAI Endpoint is
 connected, has no models, requires authentication, or is unreachable. ChatGPT
 subscription selection, OAuth IPC, and the Codex runtime are disabled and not
 packaged. BP Office permits up to 200 tool turns per run, restores up to 512
-messages, and maintains a 1 MiB conversation budget (approximately 256K tokens)
-with compaction retaining the newest 384 KiB. The selected endpoint model's own
+messages, and caps estimated input context at 130,000 tokens (520,000 UTF-8
+bytes, including instructions and tool schemas). The selected endpoint model's own
 context limit still applies.
 
 BP Office has no network search tool. Ordinary Ctrl+F, PDF/document search,
@@ -115,6 +117,11 @@ accepts only a tag whose commit is the current `main` commit, and it never
 overwrites the assets of an already published release. `latest.yml` references
 only the setup executable — portable builds stay deliberately manual-update-only.
 
+The maintained release workflow requires the configured feed repository to be the
+same public repository as the source. Using a separate public asset repository
+requires an explicit workflow adaptation before building; do not merely change the
+URL afterward.
+
 Releases are unsigned until Bitspower Technology configures its own Windows code
 signing certificate as `WINDOWS_CSC_LINK` / `WINDOWS_CSC_KEY_PASSWORD` in this
 repository's Actions secrets. Unsigned builds are labelled `unsigned contributor
@@ -129,6 +136,7 @@ launch.
 | `apps/sheets`   | BP Office Sheets   | `.xlsx`, `.xlsm`, `.xls`, `.csv` |
 | `apps/pdf`      | BP Office PDF      | `.pdf`                           |
 | `apps/markdown` | BP Office Markdown | `.md`, `.markdown`               |
+| `apps/html`     | BP Office HTML     | `.html`, `.htm`                  |
 | `apps/shell`    | BP Office          | Tabbed desktop shell             |
 
 Upstream Slides source and presentation-engine packages may remain in the tree
@@ -169,8 +177,8 @@ python apps/shell/build/generate-brand-assets.py
 
 ## Development
 
-BP Office is built on the upstream OEM snapshot `0.8.970-niu.1`
-(`93b8938c456eb1194ad8dc505ec5d1398f4e5654`). It keeps the internal
+BP Office is built on the upstream OEM snapshot `0.10.1467-niu.1`
+(`dd6d31f343a2bd99092950cf0b9ade5b9bf29837`). It keeps the internal
 `@genoffice/*` workspace package names and imports: they are dependency
 identities inside the repository, not shipped branding. The shipped identity is
 BP Office (see the table above).
@@ -194,6 +202,8 @@ npm run build:all
 npm run dist:win
 ```
 
+See [BUILD_RELEASE.md](BUILD_RELEASE.md) for Windows and Fedora builds,
+source delivery, package verification, and update-feed requirements.
 Core packages include `docx-engine`, `pdf2docx`, `file-parse`, `agent-core`,
 `ai-provider`, `project-store`, `electron-utils`, `i18n`, and `ui`. The removed
 `ai-search` workspace is intentionally absent.

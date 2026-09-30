@@ -3,7 +3,13 @@ import type { Node as PmNode } from '@tiptap/pm/model'
 import { isInTable, mergeCells, selectedRect, splitCell } from '@tiptap/pm/tables'
 import type { DocDefaults, Run, StyleInfo, TextboxDisplay } from '@genoffice/docx-engine'
 import { getActiveSubEditor } from '../editor/active-editor'
-import { effectiveSizeHalfPoints } from '../editor/text-style-resolve'
+import { tableCellsSelection } from '../editor/table-ops'
+import { effectiveBidi, selectionHasBidi } from '../editor/direction'
+import {
+  effectiveSizeHalfPoints,
+  selectedFonts,
+  selectedSizeMixed,
+} from '../editor/text-style-resolve'
 import { textHasCjk } from '../line-metrics'
 import { cachedByDoc } from '../doc-cache'
 
@@ -23,6 +29,8 @@ export interface RibbonFormatState {
   inTable: boolean
   canMergeCells: boolean
   canSplitCell: boolean
+  /** Split Table needs a row above the caret's */
+  canSplitTable: boolean
   imageSelected: boolean
   imageDataUrl: string | null
   imageWrap: string | null
@@ -32,6 +40,8 @@ export interface RibbonFormatState {
   imageFlipH: boolean
   imageFlipV: boolean
   imageHasDocxIndex: boolean
+  /** document position of the selected picture: per-picture UI state keys on it */
+  imageKey: number | null
   textboxSelected: boolean
   shapeFill: string | null
   shapeBorderColor: string | null
@@ -51,9 +61,10 @@ export interface RibbonFormatState {
   shapeTextColor: string | null
   shapeTextAlign: string | null
   cellKey: number | null
-  cellHeightCm: number | null
-  cellWidthCm: number | null
+  cellHeightTwips: number | null
+  cellWidthPx: number | null
   cellVAlign: string | null
+  cellTextDirection: string | null
   bold: boolean
   italic: boolean
   underline: boolean
@@ -62,7 +73,13 @@ export interface RibbonFormatState {
   highlight: string | null
   textColor: string | null
   charStyleId: string | null
+  /** w:pStyle of the paragraph at the caret (null = the default paragraph style) */
+  paraStyleId: string | null
   fontSizePt: number
+  /** selection spans more than one size: the size box shows blank (Word) */
+  fontSizeMixed: boolean
+  fontEastAsia: string | null
+  fontLatin: string | null
   fontFamily: string
   headingLevel: number | null
   listBullet: boolean
@@ -70,6 +87,8 @@ export interface RibbonFormatState {
   align: string | null
   /** RTL paragraph (w:bidi) at the cursor */
   bidi: boolean
+  /** an RTL paragraph is at the cursor or inside the selection */
+  selectionBidi: boolean
   lineSpacing: number | null
   shadingFill: string | null
   paraBorders: unknown
@@ -87,6 +106,7 @@ export const EMPTY_FORMAT_STATE: RibbonFormatState = {
   inTable: false,
   canMergeCells: false,
   canSplitCell: false,
+  canSplitTable: false,
   imageSelected: false,
   imageDataUrl: null,
   imageWrap: null,
@@ -96,6 +116,7 @@ export const EMPTY_FORMAT_STATE: RibbonFormatState = {
   imageFlipH: false,
   imageFlipV: false,
   imageHasDocxIndex: false,
+  imageKey: null,
   textboxSelected: false,
   shapeFill: null,
   shapeBorderColor: null,
@@ -107,9 +128,10 @@ export const EMPTY_FORMAT_STATE: RibbonFormatState = {
   shapeTextColor: null,
   shapeTextAlign: null,
   cellKey: null,
-  cellHeightCm: null,
-  cellWidthCm: null,
+  cellHeightTwips: null,
+  cellWidthPx: null,
   cellVAlign: null,
+  cellTextDirection: null,
   bold: false,
   italic: false,
   underline: false,
@@ -118,13 +140,18 @@ export const EMPTY_FORMAT_STATE: RibbonFormatState = {
   highlight: null,
   textColor: null,
   charStyleId: null,
+  paraStyleId: null,
   fontSizePt: 11,
+  fontSizeMixed: false,
   fontFamily: '',
+  fontEastAsia: '',
+  fontLatin: '',
   headingLevel: null,
   listBullet: false,
   listOrdered: false,
   align: null,
   bidi: false,
+  selectionBidi: false,
   lineSpacing: null,
   shadingFill: null,
   paraBorders: null,
@@ -134,7 +161,17 @@ export const EMPTY_FORMAT_STATE: RibbonFormatState = {
   spaceAfter: 0,
 }
 
-const docEmptyOf = cachedByDoc((doc: PmNode) => doc.textContent.trim() === '')
+// stops at the first character instead of building the whole document's text
+const docEmptyOf = cachedByDoc((doc: PmNode) => {
+  let empty = true
+  doc.descendants((node) => {
+    if (!empty) return false
+    if (node.isText && node.text?.trim()) empty = false
+    else if (node.isLeaf && !node.isText) empty = false
+    return empty
+  })
+  return empty
+})
 
 const str = (v: unknown): string | null => (typeof v === 'string' && v !== '' ? v : null)
 const num = (v: unknown): number | null => {
@@ -178,16 +215,17 @@ function shapeTextStateOf(
     }
   }
   const every = (has: (run: Run) => boolean): boolean => runs.every(has)
-  const firstColor = runs[0].color ?? box.textColor ?? null
+  // auto (Word's automatic colour) shows as "no colour" in the swatch
+  const colorOf = (r: Run): string | null =>
+    r.color === 'auto' ? null : (r.color ?? box.textColor ?? null)
+  const firstColor = colorOf(runs[0])
   const firstAlign = box.paras[0]?.align ?? null
   return {
     shapeHasText: true,
     shapeTextBold: every((r) => r.bold === true),
     shapeTextItalic: every((r) => r.italic === true),
     shapeTextUnderline: every((r) => r.underline === true),
-    shapeTextColor: every((r) => (r.color ?? box.textColor ?? null) === firstColor)
-      ? firstColor
-      : null,
+    shapeTextColor: every((r) => colorOf(r) === firstColor) ? firstColor : null,
     shapeTextAlign: box.paras.every((p) => (p.align ?? null) === firstAlign) ? firstAlign : null,
   }
 }
@@ -201,24 +239,29 @@ export function computeFormatState(
   const sub = getActiveSubEditor()
   const ed = sub ?? editor
 
-  const inTable = !sub && isInTable(editor.state)
+  // Select Table / the move handle: the ribbon reads a selected table as every cell selected (Word)
+  const cells = sub ? null : tableCellsSelection(editor.state)
+  const tableState = cells ? editor.state.apply(editor.state.tr.setSelection(cells)) : editor.state
+  const inTable = !sub && isInTable(tableState)
   let cellKey: number | null = null
-  let cellHeightCm: number | null = null
-  let cellWidthCm: number | null = null
+  let cellHeightTwips: number | null = null
+  let cellWidthPx: number | null = null
   let cellVAlign: string | null = null
+  let cellTextDirection: string | null = null
+  let canSplitTable = false
   if (inTable) {
     try {
-      const rect = selectedRect(editor.state)
+      const rect = selectedRect(tableState)
       const rowNode = rect.table.maybeChild(rect.top)
       const cellPos = rect.map.map[rect.top * rect.map.width + rect.left]
-      const cellNode = editor.state.doc.nodeAt(rect.tableStart + cellPos)
+      const cellNode = tableState.doc.nodeAt(rect.tableStart + cellPos)
       const colwidth = (cellNode?.attrs.colwidth as number[] | null) ?? null
       cellKey = rect.tableStart * 100000 + cellPos
-      cellHeightCm = rowNode?.attrs.heightTwips
-        ? ((rowNode.attrs.heightTwips as number) / 1440) * 2.54
-        : null
-      cellWidthCm = colwidth?.[0] ? (colwidth[0] / 96) * 2.54 : null
+      cellHeightTwips = (rowNode?.attrs.heightTwips as number | null) || null
+      cellWidthPx = colwidth?.[0] || null
       cellVAlign = (cellNode?.attrs.vAlign as string | null) ?? null
+      cellTextDirection = (cellNode?.attrs.textDirection as string | null) ?? null
+      canSplitTable = rect.top > 0
     } catch {
       /* degenerate selection: leave cell fields empty like the old activeCellInfo */
     }
@@ -228,11 +271,9 @@ export function computeFormatState(
   const imageSelected = protAttrs.blockType === 'image' && !!protAttrs.imageDataUrl
 
   const textAttrs = ed.getAttributes('docTextStyle')
-  // Dual-slot runs: like Word's font box, show the slot matching the script at the caret
+  const fonts = selectedFonts(ed, styles, docDefaults)
+  // Word's font box names the slot matching the script at the caret; null = mixed
   const displayFont = (): string => {
-    const font = str(textAttrs.font)
-    const fontAscii = str(textAttrs.fontAscii)
-    if (!font || !fontAscii || font === fontAscii) return font ?? fontAscii ?? ''
     const { from, to } = ed.state.selection
     const sample =
       from === to
@@ -241,7 +282,12 @@ export function computeFormatState(
             Math.min(ed.state.doc.content.size, from + 1),
           )
         : ed.state.doc.textBetween(from, Math.min(to, from + 32), ' ')
-    return textHasCjk(sample) ? font : fontAscii
+    const slot = textHasCjk(sample)
+      ? fonts.fontEastAsia === ''
+        ? fonts.fontLatin
+        : fonts.fontEastAsia
+      : fonts.fontLatin
+    return slot ?? ''
   }
   const paraAttrs = sub ? ed.getAttributes('docParagraph') : paraAttrsOf(editor)
   const mainPara = paraAttrsOf(editor)
@@ -252,8 +298,9 @@ export function computeFormatState(
     sub,
     editable: editor.isEditable,
     inTable,
-    canMergeCells: inTable && !!mergeCells(editor.state),
-    canSplitCell: inTable && !!splitCell(editor.state),
+    canMergeCells: inTable && !!mergeCells(tableState),
+    canSplitCell: inTable && !!splitCell(tableState),
+    canSplitTable,
     imageSelected,
     imageDataUrl: imageSelected ? str(protAttrs.imageDataUrl) : null,
     imageWrap: str(protAttrs.imageWrap),
@@ -263,6 +310,7 @@ export function computeFormatState(
     imageFlipH: !!protAttrs.imageFlipH,
     imageFlipV: !!protAttrs.imageFlipV,
     imageHasDocxIndex: protAttrs.docxIndex != null,
+    imageKey: imageSelected ? editor.state.selection.from : null,
     textboxSelected: Array.isArray(protAttrs.textboxes) && protAttrs.textboxes.length > 0,
     shapeFill: Array.isArray(protAttrs.textboxes)
       ? str((protAttrs.textboxes[0] as { fill?: string } | undefined)?.fill)
@@ -279,19 +327,23 @@ export function computeFormatState(
         : undefined,
     ),
     cellKey,
-    cellHeightCm,
-    cellWidthCm,
+    cellHeightTwips,
+    cellWidthPx,
     cellVAlign,
+    cellTextDirection,
     bold: ed.isActive('bold'),
     italic: ed.isActive('italic'),
     underline: ed.isActive('underline'),
     strike: ed.isActive('strike'),
     vertAlign: str(textAttrs.vertAlign),
     highlight: str(textAttrs.highlight),
-    textColor: str(textAttrs.color),
+    textColor: textAttrs.color === 'auto' ? null : str(textAttrs.color),
     charStyleId: str(textAttrs.styleId),
-    fontSizePt: (effectiveSizeHalfPoints(ed, styles, docDefaults) ?? 22) / 2,
+    paraStyleId: str(paraAttrs.styleId),
+    fontSizePt: (effectiveSizeHalfPoints(ed, styles, docDefaults) ?? 20) / 2,
+    fontSizeMixed: selectedSizeMixed(ed, styles, docDefaults),
     fontFamily: displayFont(),
+    ...fonts,
     headingLevel: editor.isActive('docHeading')
       ? Number(editor.getAttributes('docHeading').level ?? 1)
       : null,
@@ -299,6 +351,7 @@ export function computeFormatState(
     listOrdered: editor.isActive('docListItem', { kind: 'ordered' }),
     align: str(paraAttrs.align),
     bidi: paraAttrs.bidi === true || paraAttrs.bidiInferred === true,
+    selectionBidi: effectiveBidi(paraAttrs) || (!sub && selectionHasBidi(editor)),
     lineSpacing: typeof paraAttrs.lineSpacing === 'number' ? paraAttrs.lineSpacing : null,
     shadingFill: str(paraAttrs.shadingFill),
     paraBorders: paraAttrs.borders ?? null,

@@ -1,7 +1,14 @@
+import { normalizeAiPanelPrefs, type AiPanelPrefs } from '@genoffice/ui/ai-panel-prefs'
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { IpcRendererEvent } from 'electron'
 import type {
   AiConnectionProvider,
+  AutoSaveDefault,
+  DefaultAppStatus,
+  FileSearchPage,
+  FolderRoot,
+  FolderListing,
+  MoveResult,
   ChatGptConfig,
   ChatGptLoginCompleted,
   ChatGptLoginSession,
@@ -12,9 +19,6 @@ import type {
   RecentEntry,
   RecentPage,
   RenameResult,
-  ProjectHomeApi,
-  ProjectSummaryEntry,
-  TimelineEntryItem,
   UiLanguage,
   OpenDroppedFilesResult,
 } from '../shared/home-api'
@@ -23,7 +27,6 @@ import {
   CHATGPT_LOGIN_COMPLETED_CHANNEL,
   HOME_CHANNELS,
   MAX_DROPPED_FILES,
-  PROJECT_CHANNELS,
 } from '../shared/home-api'
 import type { TabsApi, TabSummary } from '../shared/tabs-api'
 import { TABS_CHANNELS } from '../shared/tabs-api'
@@ -43,6 +46,7 @@ const UI_LANGUAGES: readonly UiLanguage[] = [
   'pt',
   'it',
   'pl',
+  'cs',
   'nl',
   'ms',
   'he',
@@ -149,9 +153,47 @@ function localPathsForDroppedFiles(files: File[]): string[] {
   return paths
 }
 
+function asSearchPage(result: unknown): FileSearchPage {
+  if (result && typeof result === 'object' && Array.isArray((result as FileSearchPage).hits)) {
+    return result as FileSearchPage
+  }
+  return { hits: [], total: 0, index: { indexed: 0, pending: 0, scanning: false } }
+}
+
+function normalizeDefaultAppStatus(result: unknown): DefaultAppStatus {
+  const r = (result ?? {}) as Partial<DefaultAppStatus>
+  const state = r.state
+  return {
+    state: state === 'default' || state === 'other' || state === 'unknown' ? state : 'unsupported',
+    others: Array.isArray(r.others) ? r.others.filter((x) => typeof x === 'string') : [],
+    manualOnly: r.manualOnly === true,
+  }
+}
+
 const homeApi: HomeApi = {
+  async getAutoSaveDefault() {
+    return (await ipcRenderer.invoke(HOME_CHANNELS.getAutoSaveDefault)) as AutoSaveDefault
+  },
+  async setAutoSaveDefault(on) {
+    await ipcRenderer.invoke(HOME_CHANNELS.setAutoSaveDefault, on)
+  },
+  async getAiPanelPrefs() {
+    return normalizeAiPanelPrefs(await ipcRenderer.invoke(HOME_CHANNELS.getAiPanelPrefs))
+  },
+  async setAiPanelPrefs(patch: Partial<AiPanelPrefs>) {
+    return normalizeAiPanelPrefs(await ipcRenderer.invoke(HOME_CHANNELS.setAiPanelPrefs, patch))
+  },
+  async newHtml(opts) {
+    await ipcRenderer.invoke(HOME_CHANNELS.newHtml, opts)
+  },
+  async newPdf(opts) {
+    await ipcRenderer.invoke(HOME_CHANNELS.newPdf, opts)
+  },
   async recents(query) {
     return asRecentPage(await ipcRenderer.invoke(HOME_CHANNELS.recents, query))
+  },
+  async searchFiles(query) {
+    return asSearchPage(await ipcRenderer.invoke(HOME_CHANNELS.searchFiles, query))
   },
   async starred(query) {
     return asRecentPage(await ipcRenderer.invoke(HOME_CHANNELS.starred, query))
@@ -204,6 +246,48 @@ const homeApi: HomeApi = {
   },
   async deleteFiles(paths) {
     await ipcRenderer.invoke(HOME_CHANNELS.deleteFiles, paths)
+  },
+  async folderRoots() {
+    return (await ipcRenderer.invoke(HOME_CHANNELS.folderRoots)) as FolderRoot[]
+  },
+  async addFolderRoot() {
+    return (await ipcRenderer.invoke(HOME_CHANNELS.addFolderRoot)) as FolderRoot | null
+  },
+  async dropFolderRoots(paths) {
+    return (await ipcRenderer.invoke(HOME_CHANNELS.dropFolderRoots, paths)) as FolderRoot[]
+  },
+  async removeFolderRoot(path) {
+    await ipcRenderer.invoke(HOME_CHANNELS.removeFolderRoot, path)
+  },
+  pathForFile(file) {
+    return webUtils.getPathForFile(file)
+  },
+  async listFolder(dir) {
+    return (await ipcRenderer.invoke(HOME_CHANNELS.listFolder, dir)) as FolderListing
+  },
+  async createFolder(parent, name) {
+    return (await ipcRenderer.invoke(HOME_CHANNELS.createFolder, parent, name)) as RenameResult
+  },
+  async renameFolder(dir, newName) {
+    return (await ipcRenderer.invoke(HOME_CHANNELS.renameFolder, dir, newName)) as RenameResult
+  },
+  async movePaths(paths, targetDir, onConflict) {
+    return (await ipcRenderer.invoke(
+      HOME_CHANNELS.movePaths,
+      paths,
+      targetDir,
+      onConflict,
+    )) as MoveResult
+  },
+  async deleteFolder(dir) {
+    await ipcRenderer.invoke(HOME_CHANNELS.deleteFolder, dir)
+  },
+  onFolderChanged(handler) {
+    const listener = (_event: IpcRendererEvent, dirs: unknown) => {
+      if (Array.isArray(dirs)) handler(dirs.filter((d): d is string => typeof d === 'string'))
+    }
+    ipcRenderer.on(HOME_CHANNELS.folderChanged, listener)
+    return () => ipcRenderer.removeListener(HOME_CHANNELS.folderChanged, listener)
   },
   async openTrash() {
     await ipcRenderer.invoke(HOME_CHANNELS.openTrash)
@@ -340,6 +424,12 @@ const homeApi: HomeApi = {
     const result: unknown = await ipcRenderer.invoke(HOME_CHANNELS.getDefaultSaveDir)
     return typeof result === 'string' ? result : ''
   },
+  async getDefaultAppStatus() {
+    return normalizeDefaultAppStatus(await ipcRenderer.invoke(HOME_CHANNELS.getDefaultAppStatus))
+  },
+  async setDefaultApp() {
+    return normalizeDefaultAppStatus(await ipcRenderer.invoke(HOME_CHANNELS.setDefaultApp))
+  },
   async pickDefaultSaveDir() {
     const result: unknown = await ipcRenderer.invoke(HOME_CHANNELS.pickDefaultSaveDir)
     return typeof result === 'string' && result ? result : null
@@ -357,59 +447,9 @@ const homeApi: HomeApi = {
   async openGitHubRepo() {
     await ipcRenderer.invoke(HOME_CHANNELS.openGitHubRepo)
   },
-  async starPromptShouldShow() {
-    const result: unknown = await ipcRenderer.invoke(HOME_CHANNELS.starPromptShouldShow)
-    const raw = (result ?? {}) as { show?: unknown; docOpens?: unknown }
-    return {
-      show: raw.show === true,
-      docOpens:
-        typeof raw.docOpens === 'number' && Number.isFinite(raw.docOpens) ? raw.docOpens : 0,
-    }
-  },
-  async starPromptAction(action) {
-    if (action !== 'starred' && action !== 'later') {
-      throw new Error('Invalid star prompt action.')
-    }
-    await ipcRenderer.invoke(HOME_CHANNELS.starPromptAction, action)
-  },
 }
 
 contextBridge.exposeInMainWorld('aiOffice', homeApi)
-
-const projectApi: ProjectHomeApi = {
-  async listProjects() {
-    const result: unknown = await ipcRenderer.invoke(PROJECT_CHANNELS.list)
-    return Array.isArray(result) ? (result as ProjectSummaryEntry[]) : []
-  },
-  async listFiles(projectId) {
-    const result: unknown = await ipcRenderer.invoke(PROJECT_CHANNELS.files, { projectId })
-    return Array.isArray(result)
-      ? result.filter((path): path is string => typeof path === 'string')
-      : []
-  },
-  async createProject(name) {
-    const result: unknown = await ipcRenderer.invoke(PROJECT_CHANNELS.create, { name })
-    return result as ProjectSummaryEntry
-  },
-  async renameProject(id, name) {
-    await ipcRenderer.invoke(PROJECT_CHANNELS.rename, { id, name })
-  },
-  async deleteProject(id) {
-    await ipcRenderer.invoke(PROJECT_CHANNELS.delete, { id })
-  },
-  async moveFile(filePath, projectId) {
-    await ipcRenderer.invoke(PROJECT_CHANNELS.moveFile, { filePath, projectId })
-  },
-  async getTimeline(projectId, limit) {
-    const result: unknown = await ipcRenderer.invoke(PROJECT_CHANNELS.timeline, {
-      projectId,
-      limit,
-    })
-    return Array.isArray(result) ? (result as TimelineEntryItem[]) : []
-  },
-}
-
-contextBridge.exposeInMainWorld('aiOfficeProject', projectApi)
 
 const tabsApi: TabsApi = {
   async list() {
@@ -427,6 +467,15 @@ const tabsApi: TabsApi = {
   },
   async showNewMenu(x, y) {
     await ipcRenderer.invoke(TABS_CHANNELS.showNewMenu, x, y)
+  },
+  async showTabMenu(id, x, y) {
+    await ipcRenderer.invoke(TABS_CHANNELS.showTabMenu, id, x, y)
+  },
+  async detach(id) {
+    await ipcRenderer.invoke(TABS_CHANNELS.detach, id)
+  },
+  async showAppMenu(x, y) {
+    await ipcRenderer.invoke(TABS_CHANNELS.showAppMenu, x, y)
   },
   async reorder(id, toIndex) {
     await ipcRenderer.invoke(TABS_CHANNELS.reorder, id, toIndex)
