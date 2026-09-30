@@ -345,6 +345,7 @@ export const th = {
   appTranslateTo: 'แปลเป็น{lang}',
   appLangEnglish: 'ภาษาอังกฤษ',
   appLangSimplifiedChinese: 'ภาษาจีนตัวย่อ',
+  appLangTraditionalChinese: 'ภาษาจีนตัวเต็ม (ไต้หวัน)',
   appLangJapanese: 'ภาษาญี่ปุ่น',
   appLangKorean: 'ภาษาเกาหลี',
   appLangFrench: 'ภาษาฝรั่งเศส',

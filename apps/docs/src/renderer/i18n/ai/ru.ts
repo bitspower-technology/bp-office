@@ -11,7 +11,7 @@ export const ru = {
   aiStarterContinue: 'Продолжи текст с того места, где он обрывается',
   aiStarterFillTemplate: 'Найди и заполни местозаполнители в документе',
 
-  aiPanelTitle: 'NiuOffice AI',
+  aiPanelTitle: 'BP Office AI',
   aiOpenAssistant: 'Открыть ИИ-помощника',
   aiSummarizeBtn: 'ИИ-резюме',
   aiSummarizePrompt: 'Кратко изложите основное содержание и ключевые моменты этого документа',

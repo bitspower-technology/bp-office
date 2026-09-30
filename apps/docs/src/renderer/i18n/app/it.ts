@@ -352,6 +352,7 @@ export const it = {
   appTranslateTo: 'Traduci in {lang}',
   appLangEnglish: 'Inglese',
   appLangSimplifiedChinese: 'Cinese semplificato',
+  appLangTraditionalChinese: 'Cinese tradizionale (Taiwan)',
   appLangJapanese: 'Giapponese',
   appLangKorean: 'Coreano',
   appLangFrench: 'Francese',

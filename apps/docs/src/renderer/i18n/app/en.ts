@@ -342,6 +342,7 @@ export const en = {
   appTranslateTo: 'Translate to {lang}',
   appLangEnglish: 'English',
   appLangSimplifiedChinese: 'Simplified Chinese',
+  appLangTraditionalChinese: 'Traditional Chinese (Taiwan)',
   appLangJapanese: 'Japanese',
   appLangKorean: 'Korean',
   appLangFrench: 'French',

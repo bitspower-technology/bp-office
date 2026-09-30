@@ -341,6 +341,7 @@ export const ar = {
   appTranslateTo: 'ترجمة إلى {lang}',
   appLangEnglish: 'الإنجليزية',
   appLangSimplifiedChinese: 'الصينية المبسطة',
+  appLangTraditionalChinese: 'الصينية التقليدية (تايوان)',
   appLangJapanese: 'اليابانية',
   appLangKorean: 'الكورية',
   appLangFrench: 'الفرنسية',

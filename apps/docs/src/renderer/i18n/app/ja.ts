@@ -366,6 +366,7 @@ export const ja = {
   appTranslateTo: '{lang}に翻訳',
   appLangEnglish: '英語',
   appLangSimplifiedChinese: '簡体字中国語',
+  appLangTraditionalChinese: '繁体字中国語（台湾）',
   appLangJapanese: '日本語',
   appLangKorean: '韓国語',
   appLangFrench: 'フランス語',

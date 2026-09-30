@@ -356,6 +356,7 @@ export const nl = {
   appTranslateTo: 'Vertalen naar {lang}',
   appLangEnglish: 'Engels',
   appLangSimplifiedChinese: 'Vereenvoudigd Chinees',
+  appLangTraditionalChinese: 'Traditioneel Chinees (Taiwan)',
   appLangJapanese: 'Japans',
   appLangKorean: 'Koreaans',
   appLangFrench: 'Frans',

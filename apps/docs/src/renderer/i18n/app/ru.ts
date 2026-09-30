@@ -350,6 +350,7 @@ export const ru = {
   appTranslateTo: 'Перевести на {lang}',
   appLangEnglish: 'английский',
   appLangSimplifiedChinese: 'китайский (упрощенное письмо)',
+  appLangTraditionalChinese: 'китайский (традиционное письмо, Тайвань)',
   appLangJapanese: 'японский',
   appLangKorean: 'корейский',
   appLangFrench: 'французский',

@@ -66,7 +66,7 @@ chain order; advances are 1.0em everywhere, so line breaking is unchanged.
 | ------------------------------------ | ----------------------------------------------------------- |
 | NiuOffice Serif KR (subset woff2)    | Batang-metric stand-in for Korean serif families            |
 | NiuOffice Sans KR (subset woff2)     | fallback for Korean sans families (Malgun etc.)             |
-| NiuOffice Che Latin KR (ASCII woff2) | half-width Latin for BatangChe/GulimChe/DotumChe/GungsuhChe |
+| BP Office Che Latin KR (ASCII woff2) | half-width Latin for BatangChe/GulimChe/DotumChe/GungsuhChe |
 
 Source: Noto Serif/Sans CJK KR Regular from [notofonts/noto-cjk](https://github.com/notofonts/noto-cjk)
 (SIL OFL 1.1), subset with fonttools to the 2,350 KS X 1001 syllables + jamo

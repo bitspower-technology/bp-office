@@ -366,6 +366,7 @@ export const ko = {
   appTranslateTo: '{lang}(으)로 번역',
   appLangEnglish: '영어',
   appLangSimplifiedChinese: '중국어 간체',
+  appLangTraditionalChinese: '중국어 번체(대만)',
   appLangJapanese: '일본어',
   appLangKorean: '한국어',
   appLangFrench: '프랑스어',

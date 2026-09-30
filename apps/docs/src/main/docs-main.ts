@@ -2124,7 +2124,7 @@ const tMain = createI18n({
     menuWindow: 'Okno',
     menuHelp: 'Nápověda',
     menuShortcuts: 'Klávesové zkratky',
-    menuDocsHelp: 'Nápověda NiuOffice Docs',
+    menuDocsHelp: 'Nápověda BP Office Docs',
   },
   nl: {
     dlgOpenDoc: 'Document openen',
@@ -4040,7 +4040,7 @@ export function registerDocsIpc(): void {
   void app.whenReady().then(registerLazyMediaProtocol)
   // Node fetch (undici) direct connections get reset under VPN/tun setups; retry over Chromium's stack
   setRescueFetch((url, init) => net.fetch(url, init))
-  setAiUserAgent(`NiuOffice/${app.getVersion()}`)
+  setAiUserAgent(`${app.name}/${app.getVersion()}`)
 
   // shared with the other editor modules — last (identical) registration wins
   ipcMain.removeHandler('app:get-language')

@@ -1075,7 +1075,7 @@ export function cssFontFamily(font: string, followAltName = true): string {
     // claims: hangul lands on Batang (1em, Word probe 2026-09-06). The
     // SC/TC/JP chains carry no hangul, so without this tail Chromium falls to
     // the system sans (Apple SD Gothic Neo, 0.865em) and lines wrap late
-    const hangulTail = !isKr && missingLocally() ? ['NiuOffice Batang', 'NiuOffice Serif KR'] : []
+    const hangulTail = !isKr && missingLocally() ? ['BP Office Batang', 'NiuOffice Serif KR'] : []
     return `${chain(...head, ...krLatin, ...chainFor, ...hangulTail)},${serif ? 'serif' : 'sans-serif'}`
   }
   if (

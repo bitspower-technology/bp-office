@@ -339,6 +339,7 @@ export const he = {
   appTranslateTo: 'תרגום ל{lang}',
   appLangEnglish: 'אנגלית',
   appLangSimplifiedChinese: 'סינית פשוטה',
+  appLangTraditionalChinese: 'סינית מסורתית (טייוואן)',
   appLangJapanese: 'יפנית',
   appLangKorean: 'קוריאנית',
   appLangFrench: 'צרפתית',

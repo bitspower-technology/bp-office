@@ -27,9 +27,9 @@ export const aiProviderStrings = {
   },
   cs: {
     setSecAiProvider: 'AI Provider',
-    onbLocalAi: 'NiuOffice AI works with OpenAI Endpoint or ChatGPT',
+    onbLocalAi: 'BP Office AI works with OpenAI Endpoint or ChatGPT',
     onbNote3: 'Use a running OpenAI Endpoint server or sign in with your ChatGPT subscription.',
-    aiProviderChoose: 'Choose how NiuOffice AI connects.',
+    aiProviderChoose: 'Choose how BP Office AI connects.',
     aiProviderLmStudioHint: 'OpenAI-compatible server authenticated with a Bearer API key',
     aiProviderChatGptHint: 'Use your ChatGPT subscription',
     aiProviderOpenSettings: 'Open AI provider settings',

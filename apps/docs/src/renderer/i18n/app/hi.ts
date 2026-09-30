@@ -346,6 +346,7 @@ export const hi = {
   appTranslateTo: '{lang} में अनुवाद करें',
   appLangEnglish: 'अंग्रेज़ी',
   appLangSimplifiedChinese: 'सरलीकृत चीनी',
+  appLangTraditionalChinese: 'पारंपरिक चीनी (ताइवान)',
   appLangJapanese: 'जापानी',
   appLangKorean: 'कोरियाई',
   appLangFrench: 'फ़्रेंच',

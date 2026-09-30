@@ -350,6 +350,7 @@ export const ms = {
   appTranslateTo: 'Terjemah ke {lang}',
   appLangEnglish: 'Bahasa Inggeris',
   appLangSimplifiedChinese: 'Bahasa Cina Ringkas',
+  appLangTraditionalChinese: 'Bahasa Cina Tradisional (Taiwan)',
   appLangJapanese: 'Bahasa Jepun',
   appLangKorean: 'Bahasa Korea',
   appLangFrench: 'Bahasa Perancis',

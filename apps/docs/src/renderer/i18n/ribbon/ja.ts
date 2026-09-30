@@ -190,7 +190,7 @@ export const ja = {
   ribbonSelectAll: 'すべて選択',
   ribbonSelectAllTip: '文書全体を選択',
   // Home · AI
-  ribbonAiAssistant: 'NiuOffice AI',
+  ribbonAiAssistant: 'BP Office AI',
   ribbonAiAssistantTip: 'AI アシスタントを開く',
   // Table Design
   ribbonRemoveTableStyleTip: '表のスタイルを削除',
@@ -689,6 +689,7 @@ export const ja = {
   ribbonTranslateTo: '{lang}に翻訳',
   ribbonLangEnglish: '英語',
   ribbonLangSimplifiedChinese: '簡体字中国語',
+  ribbonLangTraditionalChinese: '繁体字中国語（台湾）',
   ribbonLangJapanese: '日本語',
   ribbonLangKorean: '韓国語',
   ribbonLangFrench: 'フランス語',

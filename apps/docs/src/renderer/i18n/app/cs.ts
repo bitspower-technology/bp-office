@@ -346,6 +346,7 @@ export const cs = {
   appTranslateTo: 'Přeložit do jazyka {lang}',
   appLangEnglish: 'angličtina',
   appLangSimplifiedChinese: 'zjednodušená čínština',
+  appLangTraditionalChinese: 'tradiční čínština (Tchaj-wan)',
   appLangJapanese: 'japonština',
   appLangKorean: 'korejština',
   appLangFrench: 'francouzština',

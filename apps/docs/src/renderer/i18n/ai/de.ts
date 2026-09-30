@@ -11,7 +11,7 @@ export const de = {
   aiStarterContinue: 'Dort weiterschreiben, wo das Dokument aufhört',
   aiStarterFillTemplate: 'Platzhalter im Dokument finden und ausfüllen',
 
-  aiPanelTitle: 'NiuOffice AI',
+  aiPanelTitle: 'BP Office AI',
   aiOpenAssistant: 'KI-Assistenten öffnen',
   aiSummarizeBtn: 'KI-Zusammenfassung',
   aiSummarizePrompt: 'Fasse den Hauptinhalt und die Kernpunkte dieses Dokuments zusammen',

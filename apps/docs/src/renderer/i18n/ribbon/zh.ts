@@ -187,7 +187,7 @@ export const zh = {
   ribbonSelectAll: '全选',
   ribbonSelectAllTip: '选择整个文档',
   // Home · AI
-  ribbonAiAssistant: 'NiuOffice AI',
+  ribbonAiAssistant: 'BP Office AI',
   ribbonAiAssistantTip: '打开 AI 助手',
   // Table Design
   ribbonRemoveTableStyleTip: '移除表格样式',
@@ -678,6 +678,7 @@ export const zh = {
   ribbonTranslateTo: '翻译为{lang}',
   ribbonLangEnglish: '英文',
   ribbonLangSimplifiedChinese: '简体中文',
+  ribbonLangTraditionalChinese: '繁体中文（台湾）',
   ribbonLangJapanese: '日文',
   ribbonLangKorean: '韩文',
   ribbonLangFrench: '法文',

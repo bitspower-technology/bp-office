@@ -348,6 +348,7 @@ export const id = {
   appTranslateTo: 'Terjemahkan ke {lang}',
   appLangEnglish: 'bahasa Inggris',
   appLangSimplifiedChinese: 'bahasa Tionghoa Sederhana',
+  appLangTraditionalChinese: 'bahasa Tionghoa Tradisional (Taiwan)',
   appLangJapanese: 'bahasa Jepang',
   appLangKorean: 'bahasa Korea',
   appLangFrench: 'bahasa Prancis',

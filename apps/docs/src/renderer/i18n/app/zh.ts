@@ -354,6 +354,7 @@ export const zh = {
   appTranslateTo: '翻译成{lang}',
   appLangEnglish: '英文',
   appLangSimplifiedChinese: '简体中文',
+  appLangTraditionalChinese: '繁体中文（台湾）',
   appLangJapanese: '日文',
   appLangKorean: '韩文',
   appLangFrench: '法文',

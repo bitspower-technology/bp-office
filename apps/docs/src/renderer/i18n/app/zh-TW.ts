@@ -334,6 +334,7 @@ export const zhTW = {
   appTranslateTo: '翻譯成{lang}',
   appLangEnglish: '英文',
   appLangSimplifiedChinese: '簡體中文',
+  appLangTraditionalChinese: '繁體中文（台灣）',
   appLangJapanese: '日文',
   appLangKorean: '韓文',
   appLangFrench: '法文',

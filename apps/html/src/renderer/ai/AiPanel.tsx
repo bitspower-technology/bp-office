@@ -8,7 +8,7 @@ import { ATTACHMENT_IMAGE_EXTS } from '../../shared/ipc'
 import type { AttachmentAddResult, AttachmentMeta } from '../../shared/ipc'
 import {
   AiComposer,
-  NiuOfficeMark,
+  BPOfficeMark,
   AiScopeQuote,
   AiTypingIndicator,
   Markdown,
@@ -1130,8 +1130,8 @@ export function AiPanel({
       />
       <header className="ai-panel-header">
         <span className="ai-panel-title">
-          <NiuOfficeMark size={22} />
-          NiuOffice AI
+          <BPOfficeMark size={22} />
+          BP Office AI
         </span>
         <div className="ai-panel-header-actions">
           <AiPanelSideButton

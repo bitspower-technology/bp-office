@@ -188,7 +188,7 @@ export const ko = {
   ribbonSelectAll: '모두 선택',
   ribbonSelectAllTip: '문서 전체 선택',
   // Home · AI
-  ribbonAiAssistant: 'NiuOffice AI',
+  ribbonAiAssistant: 'BP Office AI',
   ribbonAiAssistantTip: 'AI 도우미 열기',
   // Table Design
   ribbonRemoveTableStyleTip: '표 스타일 제거',
@@ -687,6 +687,7 @@ export const ko = {
   ribbonTranslateTo: '{lang}(으)로 번역',
   ribbonLangEnglish: '영어',
   ribbonLangSimplifiedChinese: '중국어 간체',
+  ribbonLangTraditionalChinese: '중국어 번체(대만)',
   ribbonLangJapanese: '일본어',
   ribbonLangKorean: '한국어',
   ribbonLangFrench: '프랑스어',

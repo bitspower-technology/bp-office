@@ -5161,7 +5161,7 @@ export const strings = {
     removeStamp: 'Kliknutím vyberete tento vodoznak / záhlaví / zápatí',
     props: 'Vlastnosti',
     propsTitle: 'Vlastnosti dokumentu',
-    ribbonAiAssistant: 'NiuOffice AI',
+    ribbonAiAssistant: 'BP Office AI',
     ribbonAiAssistantTip: 'Otevřít asistenta AI',
     propTitle: 'Název',
     propAuthor: 'Autor',

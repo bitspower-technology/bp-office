@@ -11,7 +11,7 @@ export const cs = {
   aiStarterContinue: 'Pokračovat v psaní tam, kde dokument končí',
   aiStarterFillTemplate: 'Najít a vyplnit zástupné texty v tomto dokumentu',
 
-  aiPanelTitle: 'NiuOffice AI',
+  aiPanelTitle: 'BP Office AI',
   aiOpenAssistant: 'Otevřít asistenta AI',
   aiSummarizeBtn: 'Shrnutí AI',
   aiSummarizePrompt: 'Shrňte hlavní obsah a klíčové body tohoto dokumentu',
