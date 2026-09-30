@@ -82,7 +82,32 @@ describe('no-thinking request policy', () => {
     vi.stubGlobal('fetch', fetchMock)
     await streamForProvider(
       'gemini',
+      // Gemini 3 has fixed sampling (see modelHasFixedSampling): the request must carry
+      // no temperature at all, but it still gets the explicit thinking-off hint.
       { apiKey: 'k', model: 'gemini-3.7-flash' },
+      'sys',
+      [],
+      [],
+      100,
+      {
+        signal: new AbortController().signal,
+        onDelta: () => {},
+        onToolCall: () => {},
+      },
+    )
+    expect(sentBody(fetchMock).generationConfig).toEqual({
+      maxOutputTokens: 100,
+      includeThoughts: false,
+      thinkingBudget: 0,
+    })
+  })
+
+  it('keeps temperature on a Gemini model with tunable sampling', async () => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(okGeminiTurn()))
+    vi.stubGlobal('fetch', fetchMock)
+    await streamForProvider(
+      'gemini',
+      { apiKey: 'k', model: 'gemini-2.5-flash' },
       'sys',
       [],
       [],

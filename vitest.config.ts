@@ -10,6 +10,7 @@ export default defineConfig({
       'apps/sheets/vitest.config.ts',
       'apps/pdf/vitest.config.ts',
       'apps/markdown/vitest.config.ts',
+      'apps/html/vitest.config.ts',
       'apps/shell/vitest.config.ts',
       'packages/*/vitest.config.ts',
     ],
