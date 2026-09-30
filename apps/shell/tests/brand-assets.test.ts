@@ -440,17 +440,28 @@ describe('generated BP Office brand assets', () => {
   })
 
   it('keeps every shipped document-kind icon surface in sync and omits Slides', () => {
+    // The tab strip renders the distributor-owned tiles rather than upstream's
+    // inline Office-coloured badge components: every shipped kind maps through
+    // BrandFileIcon onto the same file-*.svg asset that Home and the OS file
+    // associations use, so the three layers cannot drift apart.
     const tabBar = readFileSync(join(shellRenderer, 'TabBar.tsx'), 'utf8')
-    for (const component of ['DocIcon', 'SheetIcon', 'PdfIcon', 'MarkdownIcon']) {
-      expect(tabBar).toContain(`function ${component}()`)
+    for (const [kind, symbol] of [
+      ['docs', 'iconDocx'],
+      ['sheets', 'iconXlsx'],
+      ['pdf', 'iconPdf'],
+      ['markdown', 'iconMd'],
+      ['html', 'iconHtml'],
+    ] as const) {
+      expect(tabBar, `KIND_ICON.${kind} must use the BP Office tile`).toMatch(
+        new RegExp(
+          `const KIND_ICON:[\\s\\S]*?${kind}:\\s*<BrandFileIcon src=\\{${symbol}\\}\\s*/>`,
+        ),
+      )
+      expect(tabBar, `TabBar must import ${symbol}`).toContain(`import ${symbol} from`)
     }
-    expect(tabBar).toMatch(/const KIND_ICON:[\s\S]*?docs:\s*<DocIcon\s*\/>/)
-    expect(tabBar).toMatch(/const KIND_ICON:[\s\S]*?sheets:\s*<SheetIcon\s*\/>/)
-    expect(tabBar).toMatch(/const KIND_ICON:[\s\S]*?pdf:\s*<PdfIcon\s*\/>/)
-    expect(tabBar).toMatch(/const KIND_ICON:[\s\S]*?markdown:\s*<MarkdownIcon\s*\/>/)
     expect(tabBar).not.toMatch(/SlideIcon|\bslides\s*:/)
 
-    for (const kind of ['docx', 'xlsx', 'pdf', 'md']) {
+    for (const kind of ['docx', 'xlsx', 'pdf', 'md', 'html']) {
       expect(existsSync(join(shellRenderer, 'assets', `file-${kind}.svg`))).toBe(true)
       expect(
         existsSync(repoFile('apps', 'shell', 'src', 'main', 'assets', `menu-${kind}.png`)),
@@ -474,6 +485,7 @@ describe('generated BP Office brand assets', () => {
     expect(generator).toMatch(/xlsx:\s*'file-xlsx\.svg'/)
     expect(generator).toMatch(/pdf:\s*'file-pdf\.svg'/)
     expect(generator).toMatch(/md:\s*'file-md\.svg'/)
+    expect(generator).toMatch(/html:\s*'file-html\.svg'/)
     expect(generator).not.toMatch(/pptx|file-pptx/i)
   })
 

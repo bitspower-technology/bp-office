@@ -11,7 +11,7 @@ vi.mock('../src/renderer/i18n/locale', () => ({ t: (key: string) => key }))
 
 afterEach(() => vi.unstubAllGlobals())
 
-describe('NiuOffice HTML integration', () => {
+describe('BP Office HTML integration', () => {
   it('reads live provider settings for each run and bridges managed dynamic-tool replies', async () => {
     let settings: AiSettings = defaultAiSettings()
     let listener: ((chunk: AiStreamChunk) => void) | undefined
@@ -67,7 +67,7 @@ describe('NiuOffice HTML integration', () => {
     expect(unsubscribe).toHaveBeenCalledTimes(2)
   })
 
-  it('keeps local document tools and NiuOffice prompts without removed network tools', () => {
+  it('keeps local document tools and BP Office prompts without removed network tools', () => {
     const text = '<html><body><h1>Local report</h1></body></html>'
     const skill = createDocumentSkill({
       getText: () => text,
@@ -79,7 +79,7 @@ describe('NiuOffice HTML integration', () => {
       applyOps: () => ({ ok: true, ranges: [] }),
       replaceAll: () => {},
     })
-    expect(skill.systemPrompt).toContain('NiuOffice AI')
+    expect(skill.systemPrompt).toContain('BP Office AI')
     expect(skill.tools.map((tool) => tool.name)).toContain('read_source')
     expect(skill.tools.map((tool) => tool.name)).toContain('apply_ops')
     expect(JSON.stringify(skill.tools) + skill.systemPrompt).not.toMatch(

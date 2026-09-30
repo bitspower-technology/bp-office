@@ -7,7 +7,7 @@ const zhKeys = Object.keys(dicts.zh!).sort()
 
 /** "Traditional" in every UI language the table serves, plus both Chinese scripts. */
 const TRADITIONAL_LABEL =
-  /繁體|繁体|傳統|传统|tradition|tradicional|tradizional|tradycyjny|Tradisional|традиц|التقليدية|מסורתית|पारंपरिक|번체|ตัวเต็ม/i
+  /繁體|繁体|傳統|传统|tradition|tradicional|tradizional|tradycyjny|tradiční|Tradisional|традиц|التقليدية|מסורתית|पारंपरिक|번체|ตัวเต็ม/i
 
 /**
  * The ribbon and the right-click menu build their Translate target list straight

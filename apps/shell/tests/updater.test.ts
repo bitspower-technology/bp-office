@@ -17,7 +17,9 @@ vi.mock('../src/shared/product-config', () => ({
       return { enabled: appState.updatesEnabled }
     },
   },
-  PRODUCT_RELEASES_URL: 'https://github.com/Niuulh/NiuOffice/releases/latest',
+  // The real constant is derived from branding/product.json, so the mock has to
+  // carry the distributor's own repository or the test asserts a URL no build ships.
+  PRODUCT_RELEASES_URL: 'https://github.com/bitspower-technology/bp-office/releases/latest',
 }))
 
 vi.mock('electron', () => ({
@@ -420,7 +422,9 @@ describe('checkForUpdatesNow (r148 manual check)', () => {
 
     expect(showMessageBox).toHaveBeenCalledTimes(1)
     expect(lastDialogOpts().buttons.length).toBe(2)
-    expect(openExternal).toHaveBeenCalledWith('https://github.com/Niuulh/NiuOffice/releases/latest')
+    expect(openExternal).toHaveBeenCalledWith(
+      'https://github.com/bitspower-technology/bp-office/releases/latest',
+    )
     expect(checkForUpdates).not.toHaveBeenCalled()
   })
 
