@@ -81,7 +81,11 @@ const stripInset = (page: Page, selector: string) =>
     .locator(selector)
     .first()
     .evaluate((el) => {
-      const paper = el.closest('.page-wrap')!.querySelector('.doc-page') as HTMLElement
+      // A gap strip is briefly detached from its page while the canvas re-lays out, so the
+      // ancestor lookup can miss. Report NaN instead of throwing: it never satisfies
+      // toBeCloseTo(), so expect.poll simply retries against a settled layout.
+      const paper = el.closest('.page-wrap')?.querySelector('.doc-page') as HTMLElement | null
+      if (!paper) return Number.NaN
       const pr = paper.getBoundingClientRect()
       return (el.getBoundingClientRect().left - pr.left) / (pr.width / paper.offsetWidth)
     })
