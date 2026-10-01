@@ -75,8 +75,10 @@ Find, workbook inspection, ordinary editing, and PDF conversion remain available
 
 ## Known limitations
 
-- A spreadsheet typing/save-path end-to-end case inherited from upstream is still unresolved;
-  it does not affect normal editing but keeps that E2E spec red in CI when run with a display.
+- Two end-to-end specs inherited from upstream are intermittent under CI's headful Electron run
+  (a Sheets focus/typing case and a Docs mirrored-margins case); both pass on re-run, and the
+  underlying spreadsheet typing/save-path weakness is recorded as unresolved in the upstream
+  handoff. Normal editing is not affected.
 - Windows only: no Linux AppImage or RPM is built, published, or supported for BP Office.
 - Unsigned binaries draw SmartScreen and browser download warnings until a certificate is
   provisioned.

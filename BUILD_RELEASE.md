@@ -63,6 +63,15 @@ npm run notices
 They fail when ChatGPT/Codex surfaces, the Slides workspace, cloud or AI Search wiring, or
 an upstream update feed reappears in an OEM build.
 
+CI additionally runs the Playwright E2E suite against a real Electron window (Linux only). Two
+inherited specs are intermittent there - a Sheets focus/typing case (`open-focus-typing`) and a
+Docs mirrored-margins case. Re-run the failed job before treating either as a regression; both
+have passed and failed on identical product code.
+
+The release job builds on `windows-2022`, which has no system Chrome, so it installs Playwright's
+Chromium and exports `CHROME_PATH` before `npm test`. The CI test job needs neither step because
+Ubuntu runners ship Google Chrome at a path `packages/html2docx` already probes.
+
 ## Package (Windows)
 
 ```sh
