@@ -96,7 +96,9 @@ test.describe('sheets: tiled paste of formulas survives save', () => {
         wc?.send('menu:action', 'save')
       })
 
-      const saveDir = join(scratch, 'GenOffice')
+      // a silent first save lands in <Documents>/<BP Office folder>; see
+      // configuredDefaultSaveDir() in packages/electron-utils/src/default-save-dir.ts
+      const saveDir = join(scratch, 'BP Office')
       await expect(async () => {
         const files = (await readdir(saveDir)).filter((f) => f.endsWith('.xlsx'))
         expect(files).toHaveLength(1)
