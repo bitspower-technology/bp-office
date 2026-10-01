@@ -1,18 +1,22 @@
 name: Release BP Office (Windows)
 
 # Distributor-owned release automation for BP Office. It builds Windows installers only
-# from the exact tip of the authorized release branch, publishes them to the public
-# bitspower-technology/bp-office Releases feed that installed clients read, and refuses
-# everything else. The upstream NiuOffice repository is never involved.
+# from the exact tip of the authorized release branch named by RELEASE_BRANCH below,
+# publishes them to the public bitspower-technology/bp-office Releases feed that installed
+# clients read, and refuses everything else. The upstream NiuOffice repository is never
+# involved.
 
 on:
   push:
     tags:
-      - 'v*-bp.*'
+      # Every v-tag is inspected; preflight rejects any tag that is not exactly
+      # vMAJOR.MINOR.PATCH (optionally -bp.N) or does not match the app version, so an
+      # unexpected tag fails closed instead of publishing.
+      - 'v*'
   workflow_dispatch:
     inputs:
       release_tag:
-        description: Existing vX.Y.Z-bp.N tag to release (must point at the current main tip)
+        description: Existing vX.Y.Z tag to release (must point at the current release-branch tip)
         required: true
         type: string
 
@@ -24,8 +28,10 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # BP Office is released from the exact tip of this branch and nowhere else.
-  RELEASE_BRANCH: main
+  # BP Office is released from the exact tip of this branch and nowhere else. The 1.1 line
+  # is authorized on bp/1.1 while it is still being validated; when bp/1.1 lands on main,
+  # set this back to main in the same change that merges it (see BRANCHES.md).
+  RELEASE_BRANCH: bp/1.1
   # branding/product.json must name exactly this public repository as its update feed.
   EXPECTED_REPOSITORY: bitspower-technology/bp-office
 
@@ -51,8 +57,8 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $false
 
           $tag = $env:REQUESTED_TAG.Trim()
-          if ($tag -notmatch '^v\d+\.\d+\.\d+-bp\.\d+$') {
-            throw "Release tag must use the exact vX.Y.Z-bp.N form; received '$tag'."
+          if ($tag -notmatch '^v\d+\.\d+\.\d+(-bp\.\d+)?$') {
+            throw "Release tag must use the exact vX.Y.Z form (a legacy -bp.N suffix is also accepted); received '$tag'."
           }
 
           $package = Get-Content -Raw -LiteralPath 'apps/shell/package.json' | ConvertFrom-Json
@@ -341,7 +347,11 @@ jobs:
           if (-not [string]::IsNullOrWhiteSpace($env:CSC_LINK) -and -not $signed) {
             throw 'Signing credentials were supplied, but the setup executable is not Authenticode-signed.'
           }
-          $signingLabel = if ($signed) { 'signed' } else { 'unsigned contributor' }
+          $signingLabel = if ($signed) {
+            'Authenticode-signed'
+          } else {
+            'unsigned contributor build (no Bitspower Technology code signing certificate is provisioned yet)'
+          }
           Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "asset_directory=$assetDirectory"
           Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "signing_label=$signingLabel"
 
@@ -393,7 +403,7 @@ jobs:
           - Complete tagged source archive
           - SHA-256 checksums for every uploaded asset
 
-          This is a $env:SIGNING_LABEL build.
+          Signing: $env:SIGNING_LABEL
           "@ | Set-Content -LiteralPath $notesPath -Encoding utf8
 
           $releaseLookup = (& gh api "repos/$env:UPDATE_REPOSITORY/releases/tags/$env:RELEASE_TAG" --jq '.draft' 2>&1 | Out-String).Trim()

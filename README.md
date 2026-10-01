@@ -42,14 +42,18 @@ files and keeps those editors together in one tabbed application.
 
 ## Branches and releases
 
-BP Office keeps one trunk:
+BP Office keeps one trunk and one authorized release branch:
 
-- `main` is both the development branch and the authorized release branch. A
-  Windows binary may only be produced from a tag whose commit is the exact tip
-  of `main`, by [`.github/workflows/release-bpoffice.yml`](.github/workflows/release-bpoffice.yml).
+- `main` is the long-lived trunk. Binaries may only be produced from a tag whose
+  commit is the exact tip of the branch named by `RELEASE_BRANCH` in
+  [`.github/workflows/release-bpoffice.yml`](.github/workflows/release-bpoffice.yml);
+  for the 1.1 line that branch is `bp/1.1`, until 1.1.0 is accepted and merged.
+- Windows only: each release publishes a Setup and a Portable executable, plus
+  tagged source and checksums. No Linux AppImage or RPM is delivered.
 - Release tags use `v<apps/shell/package.json version>` — for example
-  `v1.0.1-bp.1` — and every published release is public, non-prerelease, and
-  marked Latest so the updater feed resolves anonymously.
+  `v1.1.0` — and every published release is public, non-prerelease, and
+  marked Latest so the updater feed resolves anonymously. Releases are unsigned
+  until Bitspower Technology provisions its own code signing certificate.
 
 Upstream work flows in one direction: shared changes land in the upstream BP Office
 `main`, are integrated into its `OEM` template branch, and are then merged into this
