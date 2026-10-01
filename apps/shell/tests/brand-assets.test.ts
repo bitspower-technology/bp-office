@@ -508,7 +508,7 @@ describe('generated BP Office brand assets', () => {
       features: { chatgptSubscription: boolean }
       updates: { enabled: boolean }
     }
-    expect(manifest).toMatchObject({ productName: 'BP Office', version: '1.1.0-bp.1' })
+    expect(manifest).toMatchObject({ productName: 'BP Office', version: '1.1.0' })
     expect(productConfig).toMatchObject({
       productName: 'BP Office',
       artifactSlug: 'BPOffice',
