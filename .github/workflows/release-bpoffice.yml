@@ -183,6 +183,26 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "Release gate failed: $gate" }
           }
 
+      # The html2docx conversion tests drive a standalone Chromium (the packaged app
+      # uses its Electron driver at runtime). Linux runners ship Google Chrome at one
+      # of the paths packages/html2docx/src/drivers/playwright.ts probes; Windows
+      # runners ship none, so install Playwright's Chromium and hand its exact path to
+      # the suite. Without this, `npm test` fails here with "Chrome/Chromium not found".
+      - name: Install Chromium for the html2docx tests
+        if: steps.preflight.outputs.action == 'upload'
+        run: npx playwright install chromium
+
+      - name: Point CHROME_PATH at the installed Chromium
+        if: steps.preflight.outputs.action == 'upload'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # ask playwright-core itself, so the versioned ms-playwright directory name never hardcodes here
+          $chrome = (& node -p "require('playwright-core').chromium.executablePath()").Trim()
+          if (-not (Test-Path -LiteralPath $chrome)) { throw "Expected Playwright Chromium at $chrome after install." }
+          "CHROME_PATH=$chrome" | Add-Content -LiteralPath $env:GITHUB_ENV
+          Write-Host "Using Chromium: $chrome"
+
       - name: Test
         if: steps.preflight.outputs.action == 'upload'
         run: npm test
