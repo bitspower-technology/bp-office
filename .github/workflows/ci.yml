@@ -7,9 +7,9 @@ name: CI
 
 on:
   push:
-    # main is both the BP Office development branch and the authorized release branch
-    # whose exact tip may produce client binaries.
-    branches: [main, 'dev_*', 'release_*']
+    # main is the long-lived trunk; bp/* carries the currently authorized BP Office
+    # release line (BRANCHES.md), whose exact tip is what a release tag must point at.
+    branches: [main, 'bp/*', 'dev_*', 'release_*']
   pull_request:
     branches: [main]
   workflow_dispatch:
