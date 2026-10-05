@@ -40,6 +40,25 @@ export function xmllintAvailable() {
   return spawnSync('xmllint', ['--version'], { encoding: 'utf8' }).status === 0
 }
 
+/**
+ * xmllint stderr, split into clean lines.
+ *
+ * On Windows the binary writes CRLF. Splitting on "\n" alone leaves a trailing \r on every
+ * line, which breaks the ` validates` success filter - so each cleanly validated part would be
+ * reported as a schema violation and a correct .pptx would fail the gate. Normalising here keeps
+ * the reported messages identical across platforms (newProblems() diffs them as strings).
+ *
+ * @param {string | undefined} stderr
+ * @returns {string[]}
+ */
+export function parseXmllintStderr(stderr) {
+  return (stderr ?? '')
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .map((line) => line.trimEnd())
+    .filter((line) => line !== '')
+}
+
 /** Markup Compatibility preprocessing against the base schema (no extension namespace understood). */
 export function mcePreprocess(xml) {
   const doc = new DOMParser().parseFromString(xml, 'text/xml')
@@ -102,7 +121,7 @@ export async function validatePptx(input) {
     })
     if (wf.error) throw wf.error
     const malformed = new Set()
-    for (const line of wf.stderr.split('\n')) {
+    for (const line of parseXmllintStderr(wf.stderr)) {
       const m = /^(.*?):(\d+): (.*)$/.exec(line)
       if (!m) continue
       const part = raw.find((p) => p.file === m[1])?.name
@@ -126,7 +145,7 @@ export async function validatePptx(input) {
         { cwd: SCHEMA_DIR, encoding: 'utf8', maxBuffer: 256 << 20 },
       )
       if (r.error) throw r.error
-      for (const line of r.stderr.split('\n')) {
+      for (const line of parseXmllintStderr(r.stderr)) {
         if (!line || / validates$/.test(line) || / fails to validate$/.test(line)) continue
         const m = /^(.*?):(\d+): (.*)$/.exec(line)
         const part = m ? (parts.find((p) => p.file === m[1])?.name ?? m[1]) : parts[0]?.name
