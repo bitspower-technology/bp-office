@@ -5,10 +5,10 @@ import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { pathToFileURL } from 'node:url'
 import { createBlankPptx } from '../src/index'
-import { xmllintAvailable } from '../../../tools/ooxml-validate/validate-pptx.mjs'
+import { schemaGateAvailable } from './schema-gate'
 
 // Exercise the real validator from a path with spaces even in a space-free CI checkout.
-describe.skipIf(!xmllintAvailable() && !process.env.CI)('schema validator paths', () => {
+describe.skipIf(!schemaGateAvailable)('schema validator paths', () => {
   it('validates a clean deck when the schema directory contains spaces', async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'genoffice schema path '))
     try {

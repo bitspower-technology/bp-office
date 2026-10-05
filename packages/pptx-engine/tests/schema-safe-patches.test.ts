@@ -9,7 +9,8 @@
 import { describe, it, expect } from 'vitest'
 import JSZip from 'jszip'
 import { XMLValidator } from 'fast-xml-parser'
-import { validatePptx, xmllintAvailable } from '../../../tools/ooxml-validate/validate-pptx.mjs'
+import { validatePptx } from '../../../tools/ooxml-validate/validate-pptx.mjs'
+import { schemaGateAvailable } from './schema-gate'
 import {
   openPptx,
   savePptx,
@@ -50,7 +51,8 @@ async function deckWith(fragment: string) {
   return { opened: reopened, slide: s, el: s.elements[s.elements.length - 1]! }
 }
 
-const schemaGate = xmllintAvailable() || !!process.env.CI
+// Only assert against the real schema where xmllint exists; see ./schema-gate.ts.
+const schemaGate = schemaGateAvailable
 
 async function savedSlideXml(opened: Awaited<ReturnType<typeof openPptx>>) {
   const saved = await savePptx(opened)

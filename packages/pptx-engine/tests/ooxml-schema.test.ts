@@ -8,11 +8,8 @@ import { describe, it, expect } from 'vitest'
 import fs from 'node:fs'
 import path from 'node:path'
 import JSZip from 'jszip'
-import {
-  validatePptx,
-  newProblems,
-  xmllintAvailable,
-} from '../../../tools/ooxml-validate/validate-pptx.mjs'
+import { validatePptx, newProblems } from '../../../tools/ooxml-validate/validate-pptx.mjs'
+import { schemaGateAvailable, schemaGateExpectedHere } from './schema-gate'
 import {
   openPptx,
   savePptx,
@@ -25,10 +22,24 @@ import {
   type TextElement,
 } from '../src/index'
 
-const available = xmllintAvailable()
-if (!available && !process.env.CI) console.warn('xmllint not on PATH: ooxml-schema tests skipped')
+if (!schemaGateAvailable) {
+  console.warn(`xmllint not on PATH: OOXML schema gate skipped (${process.platform})`)
+}
 
-describe.skipIf(!available && !process.env.CI)('OOXML schema gate', () => {
+// The gate is only meaningful where xmllint exists, but a runner that is supposed to provide
+// it must not lose the check quietly - this test is what keeps Linux CI honest.
+describe('OOXML schema gate availability', () => {
+  it('is present on runners that are expected to provide it', () => {
+    if (schemaGateExpectedHere && !schemaGateAvailable) {
+      throw new Error(
+        'CI Linux runner has no xmllint: install libxml2-utils, or the OOXML schema gate is silently disabled',
+      )
+    }
+    expect(schemaGateExpectedHere ? schemaGateAvailable : true).toBe(true)
+  })
+})
+
+describe.skipIf(!schemaGateAvailable)('OOXML schema gate', () => {
   const damage: Array<[string, (xml: string) => string, RegExp]> = [
     [
       'sz below 100',
