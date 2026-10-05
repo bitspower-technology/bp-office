@@ -131,27 +131,37 @@ the workflow never runs on an ordinary push, and published assets are immutable.
 
 ### Release decision record - v1.1.0 (2026-10-05)
 
-`v1.1.0` was tagged from the `bp/1.1` tip and published with the distributor's explicit approval,
-under one recorded deviation from the "CI green first" rule in [BRANCHES.md](BRANCHES.md):
+`v1.1.0` is published from the `bp/1.1` tip with the distributor's explicit approval, and no
+deviation from the "CI green first" rule in [BRANCHES.md](BRANCHES.md) was needed:
 
-- **Green on the release commit:** all seven gates (format, theme colors, English comments,
-  product boundaries, OEM boundaries, lint with 0 errors, typecheck) and the full `npm test`
-  suite. The release workflow itself runs exactly these, plus build and packaged-app audit.
-- **The deviation:** the CI Playwright E2E job was not green on the tagged commit. It is not
-  part of the release workflow; it exists only in `ci.yml`.
-- **Why this was accepted:** the shipped application is unchanged since the last fully green E2E
-  run (134 passed). Between that commit and the tag, only a workflow file, two Markdown
-  documents and one spec changed - `git diff --name-only <green>..<tag> -- apps packages tools
-branding scripts` is empty.
-- **The E2E failures were intermittent, not deterministic:** across four runs they hit three
-  different specs (`open-focus-typing`, `docs-mirrored-margins`, `markdown-tab`) on identical
-  product code. Two are now fixed or hardened; the remaining ones are inherited upstream
-  focus/cursor timing races already noted in the upstream handoff.
-- **What this record does not license:** it is not a standing waiver. The next release must be
-  tagged from a commit whose CI run - including E2E - is green, and these specs still need to be
-  made deterministic rather than worked around.
-- **Not performed for 1.1.0:** the manual desktop acceptance checklist above was not completed by
-  a human before publishing. Reviewers installing the build are performing that validation.
+- **CI on the tagged commit (`8276df7`) was fully green** - both jobs, `test` (1114s) and the
+  Playwright `e2e` job (756s). Run: actions/runs/37254880322.
+- **The release workflow on the same commit was green end to end** - all seven gates, `npm test`,
+  build of Setup + Portable, packaged-app audit, updater-metadata verification and publish.
+  Run: actions/runs/37254912453.
+- **Getting there required five Windows-host fixes**, because the release job builds on
+  `windows-2022` while CI's test suite runs on Ubuntu. Each was a real defect in this repo's
+  tooling that only ever ran on Linux:
+  1. `release-bpoffice.yml` installed no Chromium, so `html2docx` tests failed with
+     "Chrome/Chromium not found" (fixed: install Playwright Chromium, export `CHROME_PATH`).
+  2. Two E2E specs inherited from the upstream snapshot looked for saved workbooks in the
+     upstream product's folder instead of `<Documents>/BP Office`.
+  3. The OOXML schema gate treated xmllint's _successful_ "`... validates`" lines as violations,
+     because Windows writes CRLF and `/ validates$/` never matched - 21 false failures on every
+     correct .pptx (`parseXmllintStderr`).
+  4. The same gate then discarded genuine diagnostics: the Windows xmllint adds a column
+     (`file:line:col:`), and the parser's non-greedy path group returned `...slide1.xml:1` as the
+     filename, matching no part (`parseDiagnostic`, `sameDiagnosticPath`).
+  5. `packages/pptx-render` was built without a `testTimeout`, so its three 130,000-point chart
+     tests overran vitest's 5s default on a loaded runner (now 20s, matching sibling packages).
+- **Intermittent E2E specs seen during this work** (`open-focus-typing`, `docs-mirrored-margins`,
+  `markdown-tab`) were inherited focus/cursor timing races: they failed on three different specs
+  across four runs of byte-identical shipped code, and the mirrored-margins probe now returns NaN
+  instead of throwing so `expect.poll` retries. They passed on the tagged commit; they still
+  deserve deterministic fixes rather than reliance on retry timing.
+- **Not performed for 1.1.0:** the manual desktop acceptance checklist above was not completed by a
+  human before publishing, and no code-signing certificate exists yet, so SmartScreen shows an
+  "unknown publisher" warning on first launch.
 
 ```sh
 git tag -d v1.1.0            # only if the branch moved after testing
