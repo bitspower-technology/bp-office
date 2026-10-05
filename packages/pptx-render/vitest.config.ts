@@ -20,5 +20,9 @@ export default defineConfig({
   },
   test: {
     include: ['tests/**/*.test.ts'],
+    // build-chart.test.ts builds three 130,000-point charts. That clears vitest's 5s default in a
+    // fraction of a second on an idle machine but overruns it on a loaded CI runner, where this
+    // package had no override at all. Same 20s the other compute-heavy workspaces use.
+    testTimeout: 20000,
   },
 })
