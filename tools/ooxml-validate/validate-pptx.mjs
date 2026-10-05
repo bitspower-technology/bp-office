@@ -59,6 +59,41 @@ export function parseXmllintStderr(stderr) {
     .filter((line) => line !== '')
 }
 
+/**
+ * One diagnostic line -> { file, line, message }, or null when the line is not a diagnostic.
+ *
+ * Two shapes have to work. Unix libxml2 writes `file:line: severity : message`; the Windows build
+ * adds a column (`file:line:col: severity : message`). Without the optional column group, matching
+ * `...slide1.xml:1:28: parser error : ...` cannot end the position at `:1:` (no space follows), so
+ * the engine backtracks and returns a file of `...slide1.xml:1` - which matches no part, and every
+ * Windows diagnostic was silently discarded. The colon inside a drive letter is never mistaken for
+ * a position because it is not followed by digits.
+ *
+ * @param {string} line
+ * @returns {{ file: string, line: number, message: string } | null}
+ */
+export function parseDiagnostic(line) {
+  const m = /^(.*?):(\d+)(?::(\d+))?: (.*)$/.exec(line)
+  if (!m) return null
+  return { file: m[1], line: Number(m[2]), message: m[4] }
+}
+
+/** true when xmllint echoed the given path, allowing for Windows separators and case */
+export function sameDiagnosticPath(echoed, expected) {
+  if (echoed === expected) return true
+  const norm = (p) => p.replace(/\\/g, '/')
+  if (norm(echoed) === norm(expected)) return true
+  return process.platform === 'win32' && norm(echoed).toLowerCase() === norm(expected).toLowerCase()
+}
+
+/** which part does an echoed path refer to? exact match first, then basename */
+function findPart(items, echoed) {
+  const exact = items.find((it) => sameDiagnosticPath(echoed, it.file))
+  if (exact) return exact
+  const base = (p) => p.replace(/\\/g, '/').split('/').pop()
+  return items.find((it) => base(it.file) === base(echoed))
+}
+
 /** Markup Compatibility preprocessing against the base schema (no extension namespace understood). */
 export function mcePreprocess(xml) {
   const doc = new DOMParser().parseFromString(xml, 'text/xml')
@@ -122,12 +157,12 @@ export async function validatePptx(input) {
     if (wf.error) throw wf.error
     const malformed = new Set()
     for (const line of parseXmllintStderr(wf.stderr)) {
-      const m = /^(.*?):(\d+): (.*)$/.exec(line)
-      if (!m) continue
-      const part = raw.find((p) => p.file === m[1])?.name
-      if (!part) continue
-      malformed.add(part)
-      problems.push({ part, message: m[3] })
+      const d = parseDiagnostic(line)
+      if (!d) continue
+      const hit = findPart(raw, d.file)
+      if (!hit) continue
+      malformed.add(hit.name)
+      problems.push({ part: hit.name, message: d.message })
     }
     const groups = new Map()
     for (const name of Object.keys(zip.files)) {
@@ -146,10 +181,13 @@ export async function validatePptx(input) {
       )
       if (r.error) throw r.error
       for (const line of parseXmllintStderr(r.stderr)) {
-        if (!line || / validates$/.test(line) || / fails to validate$/.test(line)) continue
-        const m = /^(.*?):(\d+): (.*)$/.exec(line)
-        const part = m ? (parts.find((p) => p.file === m[1])?.name ?? m[1]) : parts[0]?.name
-        problems.push({ part, message: m ? m[3] : line })
+        if (/ validates$/.test(line) || / fails to validate$/.test(line)) continue
+        const d = parseDiagnostic(line)
+        const hit = d ? findPart(parts, d.file) : null
+        problems.push({
+          part: hit?.name ?? (d ? d.file : parts[0]?.name),
+          message: d?.message ?? line,
+        })
       }
     }
     return problems
